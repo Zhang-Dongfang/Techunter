@@ -1,0 +1,54 @@
+import Conf from 'conf';
+import { z } from 'zod';
+import type { TechunterConfig } from '../types.js';
+
+const configSchema = z.object({
+  anthropicApiKey: z.string().min(1),
+  githubToken: z.string().min(1),
+  githubClientId: z.string().optional(),
+  github: z.object({
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+  }),
+});
+
+const store = new Conf<TechunterConfig>({
+  projectName: 'techunter',
+  defaults: {} as TechunterConfig,
+});
+
+export function getConfig(): TechunterConfig {
+  const raw = store.store;
+
+  const result = configSchema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(
+      'Configuration is missing or invalid. Run `tch init` first.'
+    );
+  }
+
+  return result.data;
+}
+
+export function setConfig(partial: Partial<TechunterConfig>): void {
+  const current = store.store as unknown as Record<string, unknown>;
+
+  if (partial.github) {
+    current['github'] = {
+      ...(current['github'] as Record<string, unknown> | undefined ?? {}),
+      ...partial.github,
+    };
+  }
+  if (partial.anthropicApiKey !== undefined) {
+    current['anthropicApiKey'] = partial.anthropicApiKey;
+  }
+  if (partial.githubToken !== undefined) {
+    current['githubToken'] = partial.githubToken;
+  }
+
+  store.store = current as unknown as TechunterConfig;
+}
+
+export function getConfigPath(): string {
+  return store.path;
+}

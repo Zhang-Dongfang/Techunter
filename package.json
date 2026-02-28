@@ -1,0 +1,47 @@
+{
+  "name": "techunter",
+  "version": "0.1.0",
+  "description": "AI-powered task distribution CLI for development teams",
+  "type": "module",
+  "bin": {
+    "techunter": "./dist/index.js",
+    "tch": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.3",
+    "@octokit/auth-oauth-device": "^8.0.3",
+    "@octokit/rest": "^21.0.2",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "conf": "^13.0.1",
+    "globby": "^14.0.2",
+    "ignore": "^6.0.2",
+    "inquirer": "^12.3.2",
+    "open": "^11.0.0",
+    "ora": "^8.1.1",
+    "simple-git": "^3.27.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "github",
+    "tasks",
+    "developer-tools"
+  ],
+  "license": "MIT"
+}
