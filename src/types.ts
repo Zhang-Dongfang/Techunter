@@ -1,5 +1,5 @@
 export interface TechunterConfig {
-  anthropicApiKey: string;
+  aiApiKey: string;
   githubToken: string;
   githubClientId?: string; // set when authenticated via Device Flow
   github: {

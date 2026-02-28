@@ -108,13 +108,13 @@ export async function claimCommand(issueNumberStr: string): Promise<void> {
     throw err;
   }
 
-  // Generate guide with Claude
-  spinner = ora('Generating task guide with Claude...').start();
+  // Generate guide with GLM
+  spinner = ora('Generating task guide with GLM...').start();
   let guide: TaskGuide;
 
   try {
     guide = await generateGuide(
-      config.anthropicApiKey,
+      config.aiApiKey,
       projectContext,
       issueNumber,
       issue.title,

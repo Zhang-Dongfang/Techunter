@@ -1,12 +1,17 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import OpenAI from 'openai';
 import ora from 'ora';
+import chalk from 'chalk';
+import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../types.js';
 import {
   listTasks,
   getTask,
   createTask,
   claimTask,
-  postGuideComment,
+  closeTask,
+  postComment,
   createPR,
   markInReview,
   getAuthenticatedUser,
@@ -20,62 +25,187 @@ import {
   makeBranchName,
 } from './git.js';
 import { buildProjectContext } from './project.js';
-import { generateGuide } from './ai.js';
 
-const tools: Anthropic.Tool[] = [
+function formatInput(input: Record<string, unknown>): string {
+  return Object.entries(input)
+    .map(([k, v]) => {
+      if (typeof v === 'number') return `${k}=${v}`;
+      if (typeof v === 'string') {
+        if (k === 'body' || v.length > 50) return `${k}=[${v.length} chars]`;
+        return `${k}="${v}"`;
+      }
+      return `${k}=${JSON.stringify(v)}`;
+    })
+    .join('  ');
+}
+
+function summarize(result: string): string {
+  const first = result.split('\n').find((l) => l.trim()) ?? result;
+  return first.length > 100 ? first.slice(0, 97) + '...' : first;
+}
+
+const tools: OpenAI.ChatCompletionTool[] = [
   {
-    name: 'list_tasks',
-    description: 'List all available and claimed tasks from GitHub Issues',
-    input_schema: {
-      type: 'object' as const,
-      properties: {},
-      required: [],
+    type: 'function',
+    function: {
+      name: 'list_tasks',
+      description: 'List all available and claimed tasks from GitHub Issues',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {
-    name: 'create_task',
-    description: 'Create a new task (GitHub Issue) marked as available',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        title: { type: 'string', description: 'Task title' },
-        body: { type: 'string', description: 'Optional task description' },
-      },
-      required: ['title'],
-    },
-  },
-  {
-    name: 'claim_task',
-    description:
-      'Claim a task by issue number: generates AI guide, assigns the issue, and creates a git branch',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        issue_number: {
-          type: 'number',
-          description: 'The GitHub issue number to claim',
+    type: 'function',
+    function: {
+      name: 'get_task',
+      description: 'Get full details of a specific GitHub issue: title, body, status, assignee.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number' },
         },
+        required: ['issue_number'],
       },
-      required: ['issue_number'],
     },
   },
   {
-    name: 'deliver_task',
-    description:
-      'Deliver the current task: push the branch, create a pull request, and mark the issue as in-review',
-    input_schema: {
-      type: 'object' as const,
-      properties: {},
-      required: [],
+    type: 'function',
+    function: {
+      name: 'create_task',
+      description: 'Create a new task (GitHub Issue) marked as available',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Task title' },
+          body: { type: 'string', description: 'Optional task description' },
+        },
+        required: ['title'],
+      },
     },
   },
   {
-    name: 'get_my_status',
-    description: 'Show tasks currently assigned to the authenticated GitHub user',
-    input_schema: {
-      type: 'object' as const,
-      properties: {},
-      required: [],
+    type: 'function',
+    function: {
+      name: 'scan_project',
+      description:
+        'Scan the current project directory: returns the file tree and contents of the most relevant files. Call this before claiming a task so you have enough context to write a useful guide.',
+      parameters: {
+        type: 'object',
+        properties: {
+          focus: {
+            type: 'string',
+            description:
+              'Keywords describing the task (e.g. issue title). Used to prioritise which files to read.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read the full contents of a specific file in the project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'File path relative to the project root',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'claim_task',
+      description:
+        'Assign a GitHub issue to yourself and create a local git branch. Call scan_project first, write a guide, post it with post_comment, then call this.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: {
+            type: 'number',
+            description: 'The GitHub issue number to claim',
+          },
+        },
+        required: ['issue_number'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'post_comment',
+      description: 'Post a markdown comment on a GitHub issue.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number' },
+          body: { type: 'string', description: 'Comment body (markdown)' },
+        },
+        required: ['issue_number', 'body'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'close_task',
+      description: 'Close a GitHub issue and remove all techunter labels (equivalent to deleting a task).',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number to close' },
+        },
+        required: ['issue_number'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        'Ask the user a clarifying question before writing the task guide. ' +
+        'Present 2–4 concrete options derived from what you found in the codebase. ' +
+        'Use this at most 3 times per task. Do NOT use it for yes/no confirmation — ' +
+        'post_comment handles confirmation automatically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'The question to ask the user',
+          },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '2–4 concrete answer choices based on codebase context',
+          },
+        },
+        required: ['question', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'deliver_task',
+      description:
+        'Deliver the current task: push the branch, create a pull request, and mark the issue as in-review',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_my_status',
+      description: 'Show tasks currently assigned to the authenticated GitHub user',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
 ];
@@ -107,6 +237,22 @@ async function executeTool(
         }
       }
 
+      case 'get_task': {
+        const issueNumber = input['issue_number'] as number;
+        const issue = await getTask(config, issueNumber);
+        const status =
+          issue.labels.find((l) => l.startsWith('techunter:'))?.replace('techunter:', '') ??
+          'unknown';
+        const assignee = issue.assignee ? `@${issue.assignee}` : '—';
+        const lines = [
+          `#${issue.number}  [${status}]  ${assignee}`,
+          `Title: ${issue.title}`,
+          `URL: ${issue.htmlUrl}`,
+        ];
+        if (issue.body) lines.push(`\n${issue.body}`);
+        return lines.join('\n');
+      }
+
       case 'create_task': {
         const title = input['title'] as string;
         const body = input['body'] as string | undefined;
@@ -121,9 +267,59 @@ async function executeTool(
         }
       }
 
+      case 'close_task': {
+        const issueNumber = input['issue_number'] as number;
+        const spinner = ora(`Closing task #${issueNumber}...`).start();
+        try {
+          await closeTask(config, issueNumber);
+          spinner.stop();
+          return `Task #${issueNumber} closed.`;
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+      }
+
+      case 'scan_project': {
+        const focus = (input['focus'] as string | undefined) ?? '';
+        const spinner = ora('Scanning project...').start();
+        try {
+          const cwd = process.cwd();
+          const context = await buildProjectContext(cwd, focus, '');
+          spinner.stop();
+
+          const fileCount = context.fileTree.split('\n').filter(Boolean).length;
+          const readCount = Object.keys(context.keyFiles).length;
+          const totalBytes = Object.values(context.keyFiles).reduce((s, c) => s + c.length, 0);
+          const summary = `Scanned ${fileCount} files · ${readCount} read · ${(totalBytes / 1024).toFixed(1)} KB`;
+
+          const parts: string[] = [summary, `## File tree\n\`\`\`\n${context.fileTree}\n\`\`\``];
+          for (const [filePath, content] of Object.entries(context.keyFiles)) {
+            parts.push(`## ${filePath}\n\`\`\`\n${content}\n\`\`\``);
+          }
+          return parts.join('\n\n');
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+      }
+
+      case 'read_file': {
+        const filePath = input['path'] as string;
+        try {
+          const cwd = process.cwd();
+          const fullPath = path.join(cwd, filePath);
+          const content = await readFile(fullPath, 'utf-8');
+          return content.length > 15_000
+            ? content.slice(0, 15_000) + `\n\n... (truncated)`
+            : content;
+        } catch (err) {
+          return `Error reading file: ${(err as Error).message}`;
+        }
+      }
+
       case 'claim_task': {
         const issueNumber = input['issue_number'] as number;
-        const cwd = process.cwd();
 
         let spinner = ora(`Fetching issue #${issueNumber}...`).start();
         const [issue, me] = await Promise.all([
@@ -135,24 +331,6 @@ async function executeTool(
         if (issue.assignee && issue.assignee !== me) {
           return `Issue #${issueNumber} is already claimed by @${issue.assignee}.`;
         }
-
-        spinner = ora('Reading project files...').start();
-        const context = await buildProjectContext(cwd, issue.title, issue.body ?? '');
-        spinner.stop();
-
-        spinner = ora('Generating task guide with Claude...').start();
-        const guide = await generateGuide(
-          config.anthropicApiKey,
-          context,
-          issueNumber,
-          issue.title,
-          issue.body ?? ''
-        );
-        spinner.stop();
-
-        spinner = ora('Posting guide to GitHub...').start();
-        await postGuideComment(config, issueNumber, guide);
-        spinner.stop();
 
         spinner = ora('Claiming task...').start();
         await claimTask(config, issueNumber, me);
@@ -175,13 +353,98 @@ async function executeTool(
           spinner.warn(`Could not push branch ${branchName}`);
         }
 
-        const stepLines =
-          guide.suggestedSteps.length > 0
-            ? '\nSteps:\n' +
-              guide.suggestedSteps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')
-            : '';
+        return `Task #${issueNumber} claimed by @${me}. Branch: ${branchName}`;
+      }
 
-        return `Task #${issueNumber} claimed! Branch: ${branchName}\nSummary: ${guide.summary}${stepLines}`;
+      case 'ask_user': {
+        const question = input['question'] as string;
+        const options = input['options'] as string[];
+        const OTHER = '__other__';
+
+        console.log('');
+        console.log(chalk.dim('  ┌─ Agent question ' + '─'.repeat(51)));
+        console.log(chalk.dim('  │'));
+        for (const line of question.split('\n')) {
+          console.log(chalk.dim('  │ ') + line);
+        }
+        console.log(chalk.dim('  └' + '─'.repeat(67)));
+
+        let answer: string;
+        try {
+          const chosen = await select({
+            message: ' ',
+            choices: [
+              ...options.map((o) => ({ name: o, value: o })),
+              { name: chalk.dim('Other (describe below)'), value: OTHER },
+            ],
+          });
+          if (chosen === OTHER) {
+            answer = await promptInput({ message: 'Your answer:' });
+          } else {
+            answer = chosen;
+          }
+        } catch {
+          answer = 'User skipped this question — use your best judgement.';
+        }
+
+        console.log('');
+        return answer;
+      }
+
+      case 'post_comment': {
+        const issueNumber = input['issue_number'] as number;
+        const body = input['body'] as string;
+
+        // Show guide outline for preview
+        const divider = chalk.dim('─'.repeat(70));
+        console.log('\n' + divider);
+        console.log(chalk.bold(`  Guide preview — issue #${issueNumber}`));
+        console.log(divider);
+        const headers = body.split('\n').filter((l) => l.match(/^#{1,3} /));
+        if (headers.length > 0) {
+          for (const h of headers) console.log('  ' + chalk.dim(h));
+        } else {
+          const preview = body.slice(0, 300);
+          console.log(chalk.dim(preview + (body.length > 300 ? '\n  ...' : '')));
+        }
+        console.log(divider + '\n');
+
+        // Confirm before posting
+        let decision: string;
+        try {
+          decision = await select({
+            message: `Post this guide to issue #${issueNumber}?`,
+            choices: [
+              { name: 'Yes, post it', value: 'yes' },
+              { name: 'No — describe what to change', value: 'revise' },
+              { name: 'Cancel', value: 'cancel' },
+            ],
+          });
+        } catch {
+          return 'User cancelled posting.';
+        }
+
+        if (decision === 'cancel') return 'User cancelled posting.';
+
+        if (decision === 'revise') {
+          let feedback: string;
+          try {
+            feedback = await promptInput({ message: 'What should be changed?' });
+          } catch {
+            return 'User cancelled.';
+          }
+          return `User declined. Feedback: "${feedback}". Revise the guide and call post_comment again.`;
+        }
+
+        const spinner = ora(`Posting comment on #${issueNumber}...`).start();
+        try {
+          await postComment(config, issueNumber, body);
+          spinner.stop();
+          return `Comment posted on issue #${issueNumber}.`;
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
       }
 
       case 'deliver_task': {
@@ -250,59 +513,124 @@ async function executeTool(
 
 export async function runAgentLoop(
   config: TechunterConfig,
-  messages: Anthropic.MessageParam[]
+  messages: OpenAI.ChatCompletionMessageParam[]
 ): Promise<string> {
-  const client = new Anthropic({ apiKey: config.anthropicApiKey });
+  const client = new OpenAI({
+    baseURL: 'https://api.ppio.com/openai',
+    apiKey: config.aiApiKey,
+  });
+
   const { owner, repo } = config.github;
 
-  const systemPrompt = [
-    'You are Techunter, an AI assistant managing GitHub tasks for a development team.',
-    `Repository: ${owner}/${repo}`,
-    'Respond in the same language the user writes in (Chinese or English).',
-    'Be concise and action-oriented. Always use tools when the user requests an action.',
-  ].join('\n');
+  const systemMessage: OpenAI.ChatCompletionSystemMessageParam = {
+    role: 'system',
+    content: [
+      'You are Techunter, an AI assistant managing GitHub tasks for a development team.',
+      `Repository: ${owner}/${repo}`,
+      'Respond in the same language the user writes in (Chinese or English).',
+      'For conversational replies be concise. For task guides be thorough and detailed.',
+      'Always use tools when the user requests an action.',
+      '',
+      '## Claiming a task — required sequence',
+      '1. Call scan_project with the issue title as focus.',
+      '2. Call read_file on any files that need closer inspection.',
+      '3. If you have genuine uncertainty about scope or approach, call ask_user (max 3 times).',
+      '   Base each question on concrete findings from the codebase — never ask obvious things.',
+      '4. Write the task guide (see format below) and call post_comment to post it.',
+      '   post_comment will automatically show the user a preview and ask for confirmation.',
+      '   If the user requests changes, revise and call post_comment again.',
+      '5. Call claim_task to assign the issue and create the branch.',
+      '',
+      '## Task guide format',
+      'The guide is a complete technical document a developer can work from independently.',
+      'Write it in the same language as the conversation. Use markdown. Include ALL sections:',
+      '',
+      '### 📋 任务概述 / Task Overview',
+      'One paragraph explaining what this task is, why it matters, and what done looks like.',
+      '',
+      '### 🏗 架构背景 / Architecture Context',
+      'Explain where this task fits in the codebase. Reference specific files and modules.',
+      'Describe how the affected code is currently structured and what will change.',
+      '',
+      '### ⚙️ 技术要求 / Technical Requirements',
+      'Bullet list of specific technical constraints, patterns to follow, APIs to use,',
+      'coding conventions found in the codebase that must be respected.',
+      '',
+      '### 📁 涉及文件 / Files Involved',
+      'Table or list: each file path, whether to CREATE/MODIFY/DELETE, and what change is needed.',
+      '',
+      '### 🪜 实现步骤 / Implementation Steps',
+      'Numbered, ordered, concrete steps. Each step should reference specific functions,',
+      'classes, or file locations. Include code snippets where helpful.',
+      '',
+      '### ✅ 验收标准 / Acceptance Criteria',
+      'Checkbox list of testable conditions that must all be true before the task is done.',
+      '',
+      '### ⚠️ 注意事项 / Pitfalls & Considerations',
+      'Known edge cases, potential breaking changes, performance concerns, or gotchas',
+      'specific to this codebase.',
+    ].join('\n'),
+  };
+
+  let turn = 0;
 
   for (;;) {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      system: systemPrompt,
+    turn++;
+
+    const response = await client.chat.completions.create({
+      model: 'zai-org/glm-5',
       tools,
-      messages,
+      messages: [systemMessage, ...messages],
     });
 
-    // Mutate caller's array so full conversation history is preserved
-    messages.push({ role: 'assistant', content: response.content });
+    const choice = response.choices[0];
+    const assistantMessage: OpenAI.ChatCompletionAssistantMessageParam = {
+      role: 'assistant',
+      content: choice.message.content ?? null,
+      ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls } : {}),
+    };
+    messages.push(assistantMessage);
 
-    if (response.stop_reason === 'end_turn') {
-      const textBlock = response.content.find((b) => b.type === 'text');
-      return textBlock?.type === 'text' ? textBlock.text : '';
+    if (choice.finish_reason === 'stop') {
+      return choice.message.content ?? '';
     }
 
-    if (response.stop_reason === 'tool_use') {
-      const toolUseBlocks = response.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use'
-      );
+    if (choice.finish_reason === 'tool_calls') {
+      const toolCalls = choice.message.tool_calls ?? [];
 
-      // Execute all tool calls (in parallel where safe)
+      console.log(chalk.dim(`\n  ── Turn ${turn} ${'─'.repeat(50 - String(turn).length)}`));
+
+      // Print what the agent is about to call
+      for (const tc of toolCalls) {
+        const params = formatInput(JSON.parse(tc.function.arguments) as Record<string, unknown>);
+        console.log(`  ${chalk.cyan('→')} ${chalk.bold(tc.function.name)}${params ? '  ' + chalk.dim(params) : ''}`);
+      }
+
       const results = await Promise.all(
-        toolUseBlocks.map((block) =>
-          executeTool(block.name, block.input as Record<string, unknown>, config)
+        toolCalls.map((tc) =>
+          executeTool(
+            tc.function.name,
+            JSON.parse(tc.function.arguments) as Record<string, unknown>,
+            config
+          )
         )
       );
 
-      const toolResults: Anthropic.ToolResultBlockParam[] = toolUseBlocks.map((block, i) => ({
-        type: 'tool_result' as const,
-        tool_use_id: block.id,
-        content: results[i],
-      }));
+      // Print result summaries
+      for (let i = 0; i < toolCalls.length; i++) {
+        const ok = !results[i].startsWith('Error:');
+        const icon = ok ? chalk.green('✓') : chalk.red('✗');
+        console.log(`  ${icon} ${chalk.dim(summarize(results[i]))}`);
 
-      messages.push({ role: 'user', content: toolResults });
-      // Loop continues for next Claude response
+        const toolMessage: OpenAI.ChatCompletionToolMessageParam = {
+          role: 'tool',
+          tool_call_id: toolCalls[i].id,
+          content: results[i],
+        };
+        messages.push(toolMessage);
+      }
     } else {
-      // Unexpected stop reason — return whatever text we have
-      const textBlock = response.content.find((b) => b.type === 'text');
-      return textBlock?.type === 'text' ? textBlock.text : '';
+      return choice.message.content ?? '';
     }
   }
 }

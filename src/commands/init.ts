@@ -117,8 +117,8 @@ export async function initCommand(): Promise<void> {
     githubToken = result.token;
   }
 
-  const anthropicApiKey = await password({
-    message: 'Anthropic API Key:',
+  const aiApiKey = await password({
+    message: 'PPIO API Key (https://api.ppio.com):',
     mask: '*',
   });
 
@@ -137,7 +137,7 @@ export async function initCommand(): Promise<void> {
   const config: TechunterConfig = {
     githubToken,
     githubClientId,
-    anthropicApiKey: anthropicApiKey.trim(),
+    aiApiKey: aiApiKey.trim(),
     github: {
       owner: owner.trim(),
       repo: repo.trim(),

@@ -4,7 +4,8 @@
       "Bash(npm show:*)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(npm:*)"
     ]
   }
 }

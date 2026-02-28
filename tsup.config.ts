@@ -7,7 +7,7 @@ export default defineConfig({
   // Keep all node_modules external — don't inline them
   noExternal: [],
   external: [
-    '@anthropic-ai/sdk',
+    'openai',
     '@octokit/rest',
     'chalk',
     'commander',

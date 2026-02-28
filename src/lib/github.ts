@@ -189,6 +189,16 @@ export function formatGuideAsMarkdown(guide: TaskGuide, issueNumber: number): st
   return lines.join('\n');
 }
 
+export async function postComment(
+  config: TechunterConfig,
+  number: number,
+  body: string
+): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  await octokit.issues.createComment({ owner, repo, issue_number: number, body });
+}
+
 export async function postGuideComment(
   config: TechunterConfig,
   number: number,
@@ -253,6 +263,22 @@ export async function markInReview(
     issue_number: number,
     labels: [LABEL_IN_REVIEW],
   });
+}
+
+export async function closeTask(config: TechunterConfig, number: number): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+
+  const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  const techunterLabels = (issue.labels as Array<{ name?: string }>)
+    .map((l) => l.name ?? '')
+    .filter((l) => [LABEL_AVAILABLE, LABEL_CLAIMED, LABEL_IN_REVIEW].includes(l));
+
+  await octokit.issues.update({ owner, repo, issue_number: number, state: 'closed' });
+
+  for (const label of techunterLabels) {
+    await octokit.issues.removeLabel({ owner, repo, issue_number: number, name: label });
+  }
 }
 
 export async function getAuthenticatedUser(config: TechunterConfig): Promise<string> {

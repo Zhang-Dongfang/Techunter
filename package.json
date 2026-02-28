@@ -13,7 +13,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.36.3",
     "@octokit/auth-oauth-device": "^8.0.3",
     "@octokit/rest": "^21.0.2",
     "chalk": "^5.3.0",
@@ -23,6 +22,7 @@
     "ignore": "^6.0.2",
     "inquirer": "^12.3.2",
     "open": "^11.0.0",
+    "openai": "^4.104.0",
     "ora": "^8.1.1",
     "simple-git": "^3.27.0",
     "zod": "^3.24.1"

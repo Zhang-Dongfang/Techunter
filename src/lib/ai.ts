@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { z } from 'zod';
 import type { ProjectContext, TaskGuide } from '../types.js';
 
@@ -35,7 +35,10 @@ export async function generateGuide(
   issueTitle: string,
   issueBody: string
 ): Promise<TaskGuide> {
-  const client = new Anthropic({ apiKey });
+  const client = new OpenAI({
+    baseURL: 'https://api.ppio.com/openai',
+    apiKey,
+  });
 
   const projectInfo = formatProjectContext(projectContext);
 
@@ -61,12 +64,15 @@ Generate a deliverable guide in JSON format with these exact fields:
 
 Respond ONLY with valid JSON. No markdown code fences, no explanation, just the JSON object.`;
 
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+  const response = await client.chat.completions.create({
+    model: 'zai-org/glm-5',
     max_tokens: 2048,
-    system:
-      'You are a senior software architect helping a development team break down tasks into clear, actionable deliverable guides. You have deep knowledge of software engineering best practices and can analyze codebases to provide specific, relevant guidance.',
     messages: [
+      {
+        role: 'system',
+        content:
+          'You are a senior software architect helping a development team break down tasks into clear, actionable deliverable guides. You have deep knowledge of software engineering best practices and can analyze codebases to provide specific, relevant guidance.',
+      },
       {
         role: 'user',
         content: userPrompt,
@@ -74,26 +80,25 @@ Respond ONLY with valid JSON. No markdown code fences, no explanation, just the 
     ],
   });
 
-  const textBlock = message.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('Claude returned no text response');
+  const text = response.choices[0].message.content ?? '';
+  if (!text) {
+    throw new Error('GLM returned no text response');
   }
 
   let parsed: unknown;
   try {
-    // Strip any accidental markdown fences
-    const cleaned = textBlock.text
+    const cleaned = text
       .replace(/^```(?:json)?\n?/m, '')
       .replace(/\n?```$/m, '')
       .trim();
     parsed = JSON.parse(cleaned);
   } catch (err) {
-    throw new Error(`Failed to parse Claude's response as JSON: ${err}`);
+    throw new Error(`Failed to parse GLM's response as JSON: ${err}`);
   }
 
   const result = taskGuideSchema.safeParse(parsed);
   if (!result.success) {
-    throw new Error(`Claude's response didn't match expected schema: ${result.error.message}`);
+    throw new Error(`GLM's response didn't match expected schema: ${result.error.message}`);
   }
 
   return result.data;
