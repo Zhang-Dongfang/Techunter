@@ -101,8 +101,11 @@ export async function getDiff(): Promise<string> {
 }
 
 export async function stageAllAndCommit(message: string): Promise<void> {
-  await git.add('.');
-  await git.commit(message);
+  const status = await git.status();
+  if (!status.isClean()) {
+    await git.add('.');
+    await git.commit(message);
+  }
   const branch = (await git.branch()).current;
   await git.push('origin', branch, ['--set-upstream']);
 }

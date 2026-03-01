@@ -483,17 +483,14 @@ async function main(): Promise<void> {
           if (!reviewPassed) break;
 
           const dirty = await hasUncommittedChanges();
-          if (!dirty) {
-            console.log(chalk.dim('  (no uncommitted changes)\n'));
-            break;
-          }
+          const commitLabel = dirty ? 'Yes, commit and push' : 'Yes, push current commits';
 
           let shouldCommit: boolean;
           try {
             shouldCommit = await select({
-              message: 'Commit and push these changes?',
+              message: dirty ? 'Commit and push these changes?' : 'No uncommitted changes — push anyway?',
               choices: [
-                { name: 'Yes, commit', value: true },
+                { name: commitLabel, value: true },
                 { name: 'No', value: false },
               ],
             });
