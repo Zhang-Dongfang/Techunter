@@ -9,9 +9,14 @@ import {
   getTask,
   createTask,
   closeTask,
+  claimTask,
+  createPR,
+  markInReview,
+  getDefaultBranch,
   getAuthenticatedUser,
   listMyTasks,
 } from './lib/github.js';
+import { getCurrentBranch, pushBranch, makeBranchName, createAndSwitchBranch, stageAllAndCommit, hasUncommittedChanges } from './lib/git.js';
 import { runAgentLoop } from './lib/agent.js';
 import type { TechunterConfig, GitHubIssue } from './types.js';
 
@@ -92,6 +97,7 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/pick',    alias: '/p',  desc: 'Browse tasks and view details' },
   { cmd: '/new',     alias: '/n',  desc: 'Create a new task interactively' },
   { cmd: '/close',   alias: '/d',  desc: 'Close (delete) a task' },
+  { cmd: '/submit',  alias: '/s',  desc: 'Review changes and sync to remote' },
   { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
 ];
 
@@ -106,18 +112,19 @@ function cmdHelp(): void {
   console.log(chalk.dim('\n  Anything else is sent to the AI agent.\n'));
 }
 
-async function cmdPick(config: TechunterConfig): Promise<void> {
+// Returns an agent request string if the user chose an action, otherwise null
+async function cmdPick(config: TechunterConfig): Promise<string | null> {
   let tasks: GitHubIssue[];
   try {
     tasks = await listTasks(config);
   } catch (err) {
     console.log(chalk.red(`  Could not load tasks: ${(err as Error).message}`));
-    return;
+    return null;
   }
 
   if (tasks.length === 0) {
     console.log(chalk.dim('\n  (no tasks)\n'));
-    return;
+    return null;
   }
 
   let chosen: number;
@@ -130,15 +137,40 @@ async function cmdPick(config: TechunterConfig): Promise<void> {
       })),
     });
   } catch {
-    return;
+    return null;
   }
 
+  let issue: GitHubIssue;
   try {
-    const issue = await getTask(config, chosen);
-    printTaskDetail(issue);
+    issue = await getTask(config, chosen);
   } catch (err) {
     console.log(chalk.red(`  Could not load task: ${(err as Error).message}`));
+    return null;
   }
+
+  printTaskDetail(issue);
+
+  const status = getStatus(issue);
+  const actions: { name: string; value: string | null }[] = [];
+
+  if (status === 'available') {
+    actions.push({ name: 'Claim this task', value: `__claim__${chosen}` });
+  }
+  if (status === 'claimed') {
+    actions.push({ name: 'Submit changes (/submit)', value: '__submit__' });
+    actions.push({ name: 'Create PR (deliver)', value: `__deliver__${chosen}` });
+  }
+  actions.push({ name: 'Close this task', value: `__close__${chosen}` });
+  actions.push({ name: 'Nothing, just viewing', value: null });
+
+  let action: string | null;
+  try {
+    action = await select({ message: 'Action:', choices: actions });
+  } catch {
+    return null;
+  }
+
+  return action;
 }
 
 async function cmdNew(config: TechunterConfig): Promise<void> {
@@ -237,6 +269,32 @@ async function cmdClose(config: TechunterConfig): Promise<void> {
   }
 }
 
+// ─── Banner ───────────────────────────────────────────────────────────────────
+
+function printBanner(config: TechunterConfig): void {
+  const { owner, repo } = config.github;
+  const s = chalk.bold.white;
+
+  // Horizontal sword: ◆ pommel · grip · crossguard · blade · tip ▶
+  const sword = [
+    s('   ▗▄▄▄▄▖   '),
+    s('◆──▐████▌══▶'),
+    s('   ▝▀▀▀▀▘   '),
+  ];
+
+  const info = [
+    chalk.bold('Techunter') + chalk.dim(' v0.1.0'),
+    chalk.cyan('GLM-5') + chalk.dim(' · zai-org'),
+    chalk.dim(`${owner}/${repo}`),
+  ];
+
+  console.log('');
+  for (let i = 0; i < 3; i++) {
+    console.log(sword[i] + '  ' + info[i]);
+  }
+  console.log('');
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -261,9 +319,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { owner, repo } = config.github;
-  console.log(chalk.bold(`\nTechunter — ${owner}/${repo}`));
-  console.log(chalk.dim('Type /help for commands, or describe what you want in natural language.\n'));
+  printBanner(config);
+  console.log(chalk.dim('  Type /help for commands, or describe what you want.\n'));
 
   await printTaskList(config);
 
@@ -297,13 +354,175 @@ async function main(): Promise<void> {
         case '/refresh': case '/r':
           await printTaskList(config);
           break;
-        case '/pick': case '/p':
-          await cmdPick(config);
+        case '/pick': case '/p': {
+          const action = await cmdPick(config);
+          if (!action) break;
+
+          if (action.startsWith('__claim__')) {
+            // Direct claim: no LLM needed
+            const num = parseInt(action.replace('__claim__', ''), 10);
+            try {
+              const me = await getAuthenticatedUser(config);
+              const issue = await getTask(config, num);
+              console.log(chalk.dim(`  Claiming #${num}…`));
+              await claimTask(config, num, me);
+              const branch = makeBranchName(num, issue.title);
+              console.log(chalk.dim(`  Creating branch ${branch}…`));
+              await createAndSwitchBranch(branch);
+              await pushBranch(branch);
+              console.log(chalk.green(`\n  Claimed! Branch: ${branch}\n`));
+            } catch (err) {
+              console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+            }
+          } else if (action === '__submit__') {
+            // reuse submit flow
+            const submitMsg = `Please review the current git changes against the acceptance criteria for task #${chosen}. If all criteria are met, commit and push. If not, clearly list what is missing.`;
+            const prevLen = messages.length;
+            messages.push({ role: 'user', content: submitMsg });
+            try {
+              const r = await runAgentLoop(config, messages);
+              console.log('\n' + chalk.green('Techunter:') + ' ' + r + '\n');
+            } catch (err) {
+              messages.splice(prevLen);
+              console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
+            }
+          } else if (action.startsWith('__deliver__')) {
+            // Direct deliver: no LLM needed
+            const num = parseInt(action.replace('__deliver__', ''), 10);
+            try {
+              const branch = await getCurrentBranch();
+              const [issue, defaultBranch] = await Promise.all([
+                getTask(config, num),
+                getDefaultBranch(config),
+              ]);
+              console.log(chalk.dim(`  Pushing ${branch}…`));
+              await pushBranch(branch);
+              console.log(chalk.dim('  Creating pull request…'));
+              const prUrl = await createPR(
+                config,
+                issue.title,
+                `Closes #${num}\n\n${issue.body ?? ''}`.trim(),
+                branch,
+                defaultBranch,
+              );
+              await markInReview(config, num);
+              console.log(chalk.green(`\n  PR created: ${prUrl}\n`));
+            } catch (err) {
+              console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+            }
+          } else if (action.startsWith('__close__')) {
+            const num = parseInt(action.replace('__close__', ''), 10);
+            try {
+              await closeTask(config, num);
+              console.log(chalk.green(`\n  Task #${num} closed.\n`));
+            } catch (err) {
+              console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+            }
+          } else {
+            // Natural language action → agent
+            const prevLen = messages.length;
+            messages.push({ role: 'user', content: action });
+            try {
+              const r = await runAgentLoop(config, messages);
+              console.log('\n' + chalk.green('Techunter:') + ' ' + r + '\n');
+            } catch (err) {
+              messages.splice(prevLen);
+              console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
+            }
+          }
+          await printTaskList(config);
           break;
+        }
         case '/new': case '/n':
           await cmdNew(config);
           await printTaskList(config);
           break;
+        case '/submit': case '/s': {
+          let submitTasks: GitHubIssue[];
+          try {
+            submitTasks = await listTasks(config);
+          } catch (err) {
+            console.log(chalk.red(`  Could not load tasks: ${(err as Error).message}`));
+            break;
+          }
+
+          const claimedTasks = submitTasks.filter((t) => getStatus(t) === 'claimed');
+          if (claimedTasks.length === 0) {
+            console.log(chalk.dim('\n  (no claimed tasks to submit)\n'));
+            break;
+          }
+
+          let submitIssue: number;
+          try {
+            submitIssue = await select({
+              message: 'Select a task to submit:',
+              choices: claimedTasks.map((t) => ({
+                name: `#${String(t.number).padEnd(4)} ${colorStatus(getStatus(t))} ${t.title}`,
+                value: t.number,
+              })),
+            });
+          } catch {
+            break;
+          }
+
+          // Agent reviews only — commit is handled by the REPL
+          const submitMsg = `Review the current git changes against the acceptance criteria for task #${submitIssue}. List what is complete and what is missing. Do NOT call stage_and_commit.`;
+          const prevLen = messages.length;
+          messages.push({ role: 'user', content: submitMsg });
+          let reviewPassed = false;
+          try {
+            const response = await runAgentLoop(config, messages);
+            console.log('\n' + chalk.green('Techunter:') + ' ' + response + '\n');
+            reviewPassed = true;
+          } catch (err) {
+            messages.splice(prevLen);
+            console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
+            break;
+          }
+
+          if (!reviewPassed) break;
+
+          const dirty = await hasUncommittedChanges();
+          if (!dirty) {
+            console.log(chalk.dim('  (no uncommitted changes)\n'));
+            break;
+          }
+
+          let shouldCommit: boolean;
+          try {
+            shouldCommit = await select({
+              message: 'Commit and push these changes?',
+              choices: [
+                { name: 'Yes, commit', value: true },
+                { name: 'No', value: false },
+              ],
+            });
+          } catch {
+            break;
+          }
+
+          if (!shouldCommit) break;
+
+          let commitMsg: string;
+          try {
+            commitMsg = await input({ message: 'Commit message:' });
+          } catch {
+            break;
+          }
+
+          if (!commitMsg.trim()) break;
+
+          try {
+            process.stdout.write(chalk.dim('  Committing…'));
+            await stageAllAndCommit(commitMsg.trim());
+            process.stdout.write('\r' + ' '.repeat(20) + '\r');
+            console.log(chalk.green(`  Committed and pushed: "${commitMsg.trim()}"\n`));
+          } catch (err) {
+            process.stdout.write('\r' + ' '.repeat(20) + '\r');
+            console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+          }
+          break;
+        }
         case '/close': case '/d':
           await cmdClose(config);
           await printTaskList(config);

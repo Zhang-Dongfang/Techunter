@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
+
+const execAsync = promisify(exec);
 import OpenAI from 'openai';
 import ora from 'ora';
 import chalk from 'chalk';
@@ -23,6 +27,8 @@ import {
   createAndSwitchBranch,
   pushBranch,
   makeBranchName,
+  getDiff,
+  stageAllAndCommit,
 } from './git.js';
 import { buildProjectContext } from './project.js';
 
@@ -121,6 +127,26 @@ const tools: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'run_command',
+      description:
+        'Run a shell command in the project root directory. ' +
+        'Use for building, testing, linting, git status checks, or any other project operations. ' +
+        'stdout and stderr are both returned. Commands time out after 60 seconds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'The shell command to run (executed in the project root)',
+          },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'claim_task',
       description:
         'Assign a GitHub issue to yourself and create a local git branch. Call scan_project first, write a guide, post it with post_comment, then call this.',
@@ -170,8 +196,9 @@ const tools: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'ask_user',
       description:
-        'Ask the user a clarifying question before writing the task guide. ' +
-        'Present 2–4 concrete options derived from what you found in the codebase. ' +
+        'Ask the user to clarify something that is ambiguous or missing in the task description — ' +
+        'scope boundaries, expected behaviour, edge cases, or decisions that affect what needs to be built. ' +
+        'Do NOT ask about technical implementation choices (those are your job). ' +
         'Use this at most 3 times per task. Do NOT use it for yes/no confirmation — ' +
         'post_comment handles confirmation automatically.',
       parameters: {
@@ -188,6 +215,35 @@ const tools: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['question', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_diff',
+      description:
+        'Get the current git diff: changed files, diff vs HEAD, and any unpushed commits. ' +
+        'Call this before reviewing or submitting changes.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'stage_and_commit',
+      description:
+        'Stage all changes, commit with the given message, and push to origin. ' +
+        'Only call this after reviewing the diff and confirming it meets the acceptance criteria.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Commit message summarising what was done',
+          },
+        },
+        required: ['message'],
       },
     },
   },
@@ -318,6 +374,28 @@ async function executeTool(
         }
       }
 
+      case 'run_command': {
+        const command = input['command'] as string;
+        const cwd = process.cwd();
+        const spinner = ora(`$ ${command}`).start();
+        try {
+          const { stdout, stderr } = await execAsync(command, {
+            cwd,
+            timeout: 60_000,
+            maxBuffer: 1024 * 1024,
+          });
+          spinner.stop();
+          const out = [stdout, stderr].filter(Boolean).join('\n').trim();
+          const result = out.length > 5000 ? out.slice(0, 5000) + '\n... (truncated)' : out;
+          return result || '(no output)';
+        } catch (err) {
+          spinner.stop();
+          const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number };
+          const out = [e.stdout, e.stderr].filter(Boolean).join('\n').trim();
+          return `Exit ${e.code ?? 1}:\n${out || e.message}`;
+        }
+      }
+
       case 'claim_task': {
         const issueNumber = input['issue_number'] as number;
 
@@ -331,6 +409,22 @@ async function executeTool(
         if (issue.assignee && issue.assignee !== me) {
           return `Issue #${issueNumber} is already claimed by @${issue.assignee}.`;
         }
+
+        // Ask user to confirm before assigning
+        let confirmed: boolean;
+        try {
+          confirmed = await select({
+            message: `Assign issue #${issueNumber} to @${me} and create branch?`,
+            choices: [
+              { name: 'Yes, assign it to me', value: true },
+              { name: 'No, just keep the guide', value: false },
+            ],
+          });
+        } catch {
+          return 'User cancelled assignment.';
+        }
+
+        if (!confirmed) return 'Assignment cancelled. The guide has been posted.';
 
         spinner = ora('Claiming task...').start();
         await claimTask(config, issueNumber, me);
@@ -395,19 +489,19 @@ async function executeTool(
         const issueNumber = input['issue_number'] as number;
         const body = input['body'] as string;
 
-        // Show guide outline for preview
+        // Show full guide
         const divider = chalk.dim('─'.repeat(70));
         console.log('\n' + divider);
         console.log(chalk.bold(`  Guide preview — issue #${issueNumber}`));
         console.log(divider);
-        const headers = body.split('\n').filter((l) => l.match(/^#{1,3} /));
-        if (headers.length > 0) {
-          for (const h of headers) console.log('  ' + chalk.dim(h));
-        } else {
-          const preview = body.slice(0, 300);
-          console.log(chalk.dim(preview + (body.length > 300 ? '\n  ...' : '')));
+        for (const line of body.split('\n')) {
+          if (line.match(/^#{1,3} /)) {
+            console.log('\n' + chalk.bold('  ' + line));
+          } else {
+            console.log('  ' + chalk.dim(line));
+          }
         }
-        console.log(divider + '\n');
+        console.log('\n' + divider + '\n');
 
         // Confirm before posting
         let decision: string;
@@ -487,6 +581,45 @@ async function executeTool(
         return `PR created: ${prUrl}`;
       }
 
+      case 'get_diff': {
+        const spinner = ora('Reading git diff...').start();
+        try {
+          const diff = await getDiff();
+          spinner.stop();
+          return diff;
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+      }
+
+      case 'stage_and_commit': {
+        const aiMessage = input['message'] as string;
+
+        // Let user edit the commit message before confirming
+        let commitMessage: string;
+        try {
+          commitMessage = await promptInput({
+            message: 'Commit message:',
+            default: aiMessage,
+          });
+        } catch {
+          return 'User cancelled commit.';
+        }
+
+        if (!commitMessage.trim()) return 'User cancelled commit.';
+
+        const spinner = ora('Staging, committing and pushing...').start();
+        try {
+          await stageAllAndCommit(commitMessage.trim());
+          spinner.stop();
+          return `Changes committed and pushed: "${commitMessage.trim()}"`;
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+      }
+
       case 'get_my_status': {
         const spinner = ora('Fetching your tasks...').start();
         const me = await getAuthenticatedUser(config);
@@ -534,12 +667,13 @@ export async function runAgentLoop(
       '## Claiming a task — required sequence',
       '1. Call scan_project with the issue title as focus.',
       '2. Call read_file on any files that need closer inspection.',
-      '3. If you have genuine uncertainty about scope or approach, call ask_user (max 3 times).',
-      '   Base each question on concrete findings from the codebase — never ask obvious things.',
+      '3. If the task description leaves requirements unclear, call ask_user (max 3 times).',
+      '   Ask about: missing scope, ambiguous expected behaviour, edge cases, or business decisions.',
+      '   Do NOT ask about technical choices (architecture, libraries, patterns) — decide those yourself.',
       '4. Write the task guide (see format below) and call post_comment to post it.',
-      '   post_comment will automatically show the user a preview and ask for confirmation.',
+      '   post_comment shows the user a full preview and asks for confirmation.',
       '   If the user requests changes, revise and call post_comment again.',
-      '5. Call claim_task to assign the issue and create the branch.',
+      '5. Call claim_task — it will ask the user to confirm assignment before proceeding.',
       '',
       '## Task guide format',
       'The guide is a complete technical document a developer can work from independently.',
@@ -569,19 +703,34 @@ export async function runAgentLoop(
       '### ⚠️ 注意事项 / Pitfalls & Considerations',
       'Known edge cases, potential breaking changes, performance concerns, or gotchas',
       'specific to this codebase.',
+      '',
+      '## Submitting changes',
+      'When the user asks to submit, sync, or commit changes:',
+      '1. Call get_diff to read all local changes.',
+      '2. Parse the issue number from the current branch name (task-N-...) and call get_task.',
+      '3. Review: does the diff satisfy each acceptance criterion? List what is complete and what is missing.',
+      '4. If all criteria are met: call stage_and_commit with a concise commit message.',
+      '5. If criteria are not met: clearly list the gaps. Do NOT call stage_and_commit.',
     ].join('\n'),
   };
 
-  let turn = 0;
-
   for (;;) {
-    turn++;
+    const isWindows = process.platform === 'win32';
+    const spinner = isWindows ? null : ora({ text: chalk.dim('Thinking…'), color: 'cyan' }).start();
+    if (isWindows) process.stdout.write(chalk.dim('  Thinking…'));
 
-    const response = await client.chat.completions.create({
-      model: 'zai-org/glm-5',
-      tools,
-      messages: [systemMessage, ...messages],
-    });
+    let response: Awaited<ReturnType<typeof client.chat.completions.create>>;
+    try {
+      response = await client.chat.completions.create({
+        model: 'zai-org/glm-5',
+        tools,
+        messages: [systemMessage, ...messages],
+      });
+    } catch (err) {
+      if (spinner) spinner.stop(); else process.stdout.write('\r' + ' '.repeat(14) + '\r');
+      throw err;
+    }
+    if (spinner) spinner.stop(); else process.stdout.write('\r' + ' '.repeat(14) + '\r');
 
     const choice = response.choices[0];
     const assistantMessage: OpenAI.ChatCompletionAssistantMessageParam = {
@@ -597,8 +746,6 @@ export async function runAgentLoop(
 
     if (choice.finish_reason === 'tool_calls') {
       const toolCalls = choice.message.tool_calls ?? [];
-
-      console.log(chalk.dim(`\n  ── Turn ${turn} ${'─'.repeat(50 - String(turn).length)}`));
 
       // Print what the agent is about to call
       for (const tc of toolCalls) {
