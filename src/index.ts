@@ -157,7 +157,7 @@ async function cmdPick(config: TechunterConfig): Promise<string | null> {
     actions.push({ name: 'Claim this task', value: `__claim__${chosen}` });
   }
   if (status === 'claimed') {
-    actions.push({ name: 'Submit changes (/submit)', value: '__submit__' });
+    actions.push({ name: 'Submit changes (/submit)', value: `__submit__${chosen}` });
     actions.push({ name: 'Create PR (deliver)', value: `__deliver__${chosen}` });
   }
   actions.push({ name: 'Close this task', value: `__close__${chosen}` });
@@ -190,6 +190,30 @@ async function cmdNew(config: TechunterConfig): Promise<void> {
     console.log(chalk.dim('  ' + issue.htmlUrl + '\n'));
   } catch (err) {
     console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+  }
+}
+
+async function printMyTasks(config: TechunterConfig): Promise<void> {
+  try {
+    const me = await getAuthenticatedUser(config);
+    const tasks = await listMyTasks(config, me);
+    if (tasks.length === 0) return;
+
+    const divider = chalk.dim('─'.repeat(70));
+    console.log('');
+    console.log(
+      chalk.dim(' ' + '#'.padEnd(5) + 'Status'.padEnd(14) + `My Tasks  @${me}`)
+    );
+    console.log(divider);
+    for (const t of tasks) {
+      const num = `#${t.number}`.padEnd(5);
+      const status = colorStatus(getStatus(t));
+      const title = t.title.length > 46 ? t.title.slice(0, 43) + '...' : t.title;
+      console.log(` ${num}${status}${title}`);
+    }
+    console.log(divider);
+  } catch {
+    // silently skip if GitHub is unreachable
   }
 }
 
@@ -323,6 +347,7 @@ async function main(): Promise<void> {
   console.log(chalk.dim('  Type /help for commands, or describe what you want.\n'));
 
   await printTaskList(config);
+  await printMyTasks(config);
 
   process.on('SIGINT', () => {
     console.log(chalk.gray('\nGoodbye!'));
@@ -374,9 +399,10 @@ async function main(): Promise<void> {
             } catch (err) {
               console.log(chalk.red(`  Failed: ${(err as Error).message}`));
             }
-          } else if (action === '__submit__') {
+          } else if (action.startsWith('__submit__')) {
             // reuse submit flow
-            const submitMsg = `Please review the current git changes against the acceptance criteria for task #${chosen}. If all criteria are met, commit and push. If not, clearly list what is missing.`;
+            const submitNum = parseInt(action.replace('__submit__', ''), 10);
+            const submitMsg = `Please review the current git changes against the acceptance criteria for task #${submitNum}. If all criteria are met, commit and push. If not, clearly list what is missing.`;
             const prevLen = messages.length;
             messages.push({ role: 'user', content: submitMsg });
             try {
@@ -513,7 +539,12 @@ async function main(): Promise<void> {
             process.stdout.write(chalk.dim('  Committing…'));
             await stageAllAndCommit(commitMsg.trim());
             process.stdout.write('\r' + ' '.repeat(20) + '\r');
-            console.log(chalk.green(`  Committed and pushed: "${commitMsg.trim()}"\n`));
+            console.log(chalk.green(`  Committed and pushed: "${commitMsg.trim()}"`));
+
+            process.stdout.write(chalk.dim('  Marking in-review…'));
+            await markInReview(config, submitIssue);
+            process.stdout.write('\r' + ' '.repeat(20) + '\r');
+            console.log(chalk.green(`  Task #${submitIssue} marked as in-review — awaiting creator approval.\n`));
           } catch (err) {
             process.stdout.write('\r' + ' '.repeat(20) + '\r');
             console.log(chalk.red(`  Failed: ${(err as Error).message}`));
