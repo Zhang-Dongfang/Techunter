@@ -5,6 +5,7 @@ export interface TechunterConfig {
   github: {
     owner: string;
     repo: string;
+    baseBranch?: string;
   };
 }
 

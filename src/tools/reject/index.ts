@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { select, input as promptInput } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, postComment, rejectTask } from '../../lib/github.js';
+import { postComment, rejectTask } from '../../lib/github.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateRejectionComment } from './comment-generator.js';
 
@@ -26,17 +26,10 @@ export const definition = {
 export async function run(config: TechunterConfig, opts: { issue_number: number }): Promise<string> {
   const { issue_number: issueNumber } = opts;
 
-  let issue;
-  try {
-    issue = await getTask(config, issueNumber);
-  } catch (err) {
-    return `Error loading task: ${(err as Error).message}`;
-  }
-
   let feedback: string;
   try {
     feedback = await promptInput({
-      message: `What's wrong with #${issueNumber} "${issue.title}"? (brief description)`,
+      message: `What's wrong with #${issueNumber}? (brief description for the reviewer agent)`,
     });
   } catch {
     return 'Cancelled.';
@@ -49,7 +42,7 @@ export async function run(config: TechunterConfig, opts: { issue_number: number 
     const spinner = ora('Generating rejection comment…').start();
     let comment: string;
     try {
-      comment = await generateRejectionComment(config, issue, feedback);
+      comment = await generateRejectionComment(config, issueNumber, feedback);
       spinner.stop();
     } catch (err) {
       spinner.stop();
@@ -112,3 +105,4 @@ export async function run(config: TechunterConfig, opts: { issue_number: number 
 
 export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
   run(config, { issue_number: input['issue_number'] as number });
+export const terminal = true;

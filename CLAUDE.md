@@ -15,64 +15,99 @@ There are no tests. To verify end-to-end, build and run `tch init` in a director
 
 ## Architecture
 
-**Techunter** is an AI-powered task-distribution CLI. Users interact via a conversational readline REPL (`src/index.ts`); all natural-language requests are handled by a Claude agent loop (`src/lib/agent.ts`).
+**Techunter** is an AI-powered task-distribution CLI. Users interact via a conversational readline REPL (`src/index.ts`); natural-language requests are handled by an agent loop (`src/lib/agent.ts`).
 
 ### Request flow
 
 ```
-tch                        → src/index.ts (REPL)
-  user message             → runAgentLoop()
-    Claude API (tool_use)  → executeTool()
-      list_tasks           → github.ts listTasks()
-      create_task          → github.ts createTask()
-      claim_task           → project.ts buildProjectContext()
-                              ai.ts generateGuide()    (second Claude call)
-                              github.ts postGuideComment / claimTask
-                              git.ts createAndSwitchBranch / pushBranch
-      deliver_task         → git.ts pushBranch()
-                              github.ts createPR / markInReview()
-      get_my_status        → github.ts getAuthenticatedUser / listMyTasks()
+tch
+  └─ src/index.ts          readline REPL + slash command dispatch
+       ├─ /pick, /new …    → tool run() functions directly
+       └─ natural language → runAgentLoop()
+            └─ LLM (tool_use) → toolModules[name].execute(input, config)
+                 ├─ command tools   hardcoded interactive flows (terminal=true → loop exits)
+                 └─ low-level tools reasoning helpers (get_task, scan_project, …)
 ```
+
+### Tool architecture
+
+All tools live in `src/tools/{name}/index.ts` and export:
+
+```typescript
+export const definition: OpenAI.ChatCompletionTool  // tool schema for the LLM
+export const execute: (input, config) => Promise<string>
+export const terminal?: boolean   // true = agent loop exits after this tool
+export function run(config, ...): Promise<string>  // called by slash commands
+```
+
+`src/tools/registry.ts` collects all modules into `toolModules[]`. The agent uses this to build its tools array and dispatch calls — no hardcoded switch statements.
+
+**Command tools** (`terminal = true`) — hardcoded interactive flows, mirrors slash commands:
+`pick`, `new_task`, `close`, `submit`, `my_status`, `review`, `refresh`, `open_code`, `reject`
+
+**Low-level tools** — reasoning helpers, chainable:
+`get_task`, `get_comments`, `get_diff`, `run_command`, `scan_project`, `read_file`, `ask_user`
+
+### Sub-agents
+
+Three sub-agent loops run inside command tools, each using `runSubAgentLoop()`:
+
+| Sub-agent | File | Tools |
+|---|---|---|
+| Guide generator | `new-task/guide-generator.ts` | `scan_project`, `read_file`, `run_command`, `ask_user` |
+| Rejection comment | `reject/comment-generator.ts` | `get_task`, `get_comments`, `get_diff`, `read_file` |
+| Submit reviewer | `submit/reviewer.ts` | `run_command`, `read_file`, `get_diff` |
+
+Sub-agents reuse tool `execute()` functions from the registry. Prompts live in co-located `prompts.ts` files.
 
 ### Key files
 
 | File | Purpose |
 |---|---|
-| `src/index.ts` | Entry point, readline REPL, persistent `messages[]` history |
-| `src/lib/agent.ts` | Claude tool_use loop, all 5 tool definitions + execution |
+| `src/index.ts` | Entry point, readline REPL, slash command dispatch |
+| `src/lib/agent.ts` | Main agent loop; uses registry for tools and dispatch |
+| `src/lib/sub-agent.ts` | `runSubAgentLoop()` — shared sub-agent loop helper |
+| `src/lib/agent-ui.ts` | `printToolCall()`, `printToolResult()` — shared display |
+| `src/lib/client.ts` | `createClient(config)`, `MODEL` — single LLM client config |
+| `src/lib/display.ts` | `printTaskList()`, `printMyTasks()`, `colorStatus()` etc. |
+| `src/lib/launch.ts` | `launchClaudeCode()` — spawns Claude Code for a task |
 | `src/lib/github.ts` | All Octokit calls; label management, issues, PRs |
-| `src/lib/ai.ts` | `generateGuide()` — second Claude call that produces `TaskGuide` JSON |
-| `src/lib/project.ts` | Builds project context (file tree + key files) sent to Claude |
-| `src/lib/git.ts` | Branch creation, push, remote URL parsing via simple-git |
+| `src/lib/project.ts` | `buildProjectContext()` — file tree + key files, capped at 80 KB |
+| `src/lib/git.ts` | Branch creation, push, diff via simple-git |
 | `src/lib/config.ts` | `conf`-based config store at `~/.config/techunter/` |
-| `src/commands/init.ts` | One-time setup wizard (only subcommand: `tch init`) |
-| `src/types.ts` | `TechunterConfig`, `TaskGuide`, `GitHubIssue`, `ProjectContext` |
+| `src/lib/markdown.ts` | `renderMarkdown()` — terminal markdown renderer |
+| `src/commands/init.ts` | One-time setup wizard (`tch init`) |
+| `src/tools/registry.ts` | Assembles all tool modules into `toolModules[]` |
+| `src/tools/types.ts` | `ToolModule` interface |
+| `src/types.ts` | `TechunterConfig`, `GitHubIssue`, `ProjectContext` |
 
 ### Build constraints
 
 - Output is ESM (`"type": "module"`). All source imports use `.js` extensions.
 - All `node_modules` are **external** in tsup — never bundled. This prevents CJS/ESM double-import issues.
-- The `#!/usr/bin/env node` shebang lives in `src/index.ts` line 1. Do not add a tsup `banner` for the shebang — it would duplicate.
-- AI provider: OpenAI-compatible client pointing at `https://api.ppio.com/openai`, model `zai-org/glm-5`. Config key: `aiApiKey`.
+- The `#!/usr/bin/env node` shebang lives in `src/index.ts` line 1. Do not add a tsup `banner` — it would duplicate.
+- AI: OpenAI-compatible client → `https://api.ppio.com/openai`, model `zai-org/glm-5`. Always use `createClient(config)` and `MODEL` from `src/lib/client.ts`.
 
 ### GitHub label lifecycle
 
 Issues carry exactly one `techunter:*` label at a time:
 
-`techunter:available` (green) → `techunter:claimed` (yellow) → `techunter:in-review` (blue)
+`techunter:available` → `techunter:claimed` → `techunter:in-review` → `techunter:changes-needed`
 
-Labels are auto-created on `tch init` and on `create_task` via `ensureLabels()`.
+Labels are auto-created on `tch init` via `ensureLabels()`.
 
 ### Branch naming
 
 `task-{issue_number}-{first-5-words-of-title-kebab-cased}`
 
-`deliver_task` derives the issue number from the current branch name via regex `^task-(\d+)-`.
+`submit` derives the issue number from the current branch via regex `^task-(\d+)-`.
+
+### Adding a new tool
+
+1. Create `src/tools/{name}/index.ts` exporting `definition`, `execute`, optionally `run` and `terminal`.
+2. Add it to `src/tools/registry.ts`.
+3. If it has a slash command alias, add the case to `src/index.ts`.
 
 ### inquirer usage
 
-`inquirer` v12 — import named exports from `@inquirer/prompts` (`input`, `password`, `select`), not from `inquirer` directly.
-
-### Project context for guide generation
-
-`buildProjectContext()` caps at **80 KB** total. It always reads `README.md`, `package.json`, config files first, then ranks remaining files by keyword overlap with the issue title/body (top 10, max 15 KB each).
+`inquirer` v12 — import named exports from `@inquirer/prompts` (`input`, `password`, `select`).

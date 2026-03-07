@@ -9,6 +9,7 @@ const configSchema = z.object({
   github: z.object({
     owner: z.string().min(1),
     repo: z.string().min(1),
+    baseBranch: z.string().optional(),
   }),
 });
 
@@ -22,9 +23,7 @@ export function getConfig(): TechunterConfig {
 
   const result = configSchema.safeParse(raw);
   if (!result.success) {
-    throw new Error(
-      'Configuration is missing or invalid. Run `tch init` first.'
-    );
+    throw new Error('Configuration is missing or invalid.');
   }
 
   return result.data;

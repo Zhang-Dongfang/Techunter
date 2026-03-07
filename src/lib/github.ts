@@ -416,3 +416,34 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
   const { data } = await octokit.repos.get({ owner, repo });
   return data.default_branch;
 }
+
+export function getBaseBranch(config: TechunterConfig): Promise<string> {
+  if (config.github.baseBranch) return Promise.resolve(config.github.baseBranch);
+  return getDefaultBranch(config);
+}
+
+export async function acceptTask(
+  config: TechunterConfig,
+  issueNumber: number
+): Promise<{ prNumber: number; prUrl: string; sha: string }> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+
+  // Find open PR whose head branch matches task-{number}-*
+  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+  const pr = prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`));
+  if (!pr) throw new Error(`No open PR found for task #${issueNumber} (expected branch starting with task-${issueNumber}-)`);
+
+  // Merge PR
+  const { data: merge } = await octokit.pulls.merge({
+    owner,
+    repo,
+    pull_number: pr.number,
+    merge_method: 'merge',
+  });
+
+  // Close issue
+  await closeTask(config, issueNumber);
+
+  return { prNumber: pr.number, prUrl: pr.html_url, sha: merge.sha ?? '' };
+}
