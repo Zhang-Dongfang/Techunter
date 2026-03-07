@@ -1,0 +1,42 @@
+import type { ToolModule } from './types.js';
+
+// Command tools
+import * as pick from './pick/index.js';
+import * as newTask from './new-task/index.js';
+import * as close from './close/index.js';
+import * as submit from './submit/index.js';
+import * as myStatus from './my-status/index.js';
+import * as review from './review/index.js';
+import * as refresh from './refresh/index.js';
+import * as openCode from './open-code/index.js';
+import * as reject from './reject/index.js';
+
+// Low-level tools
+import * as getTask from './get-task/index.js';
+import * as getComments from './get-comments/index.js';
+import * as getDiff from './get-diff/index.js';
+import * as runCommand from './run-command/index.js';
+import * as scanProject from './scan-project/index.js';
+import * as readFile from './read-file/index.js';
+import * as askUser from './ask-user/index.js';
+
+export const toolModules: ToolModule[] = [
+  // Command tools
+  pick,
+  newTask,
+  close,
+  submit,
+  myStatus,
+  review,
+  refresh,
+  openCode,
+  reject,
+  // Low-level tools
+  getTask,
+  getComments,
+  getDiff,
+  runCommand,
+  scanProject,
+  readFile,
+  askUser,
+];

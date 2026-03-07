@@ -10,18 +10,15 @@ import { initCommand } from './commands/init.js';
 import { getConfig } from './lib/config.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
-import {
-  printTaskList,
-  printMyTasks,
-  runRefresh,
-  runNew,
-  runClose,
-  runStatus,
-  runReview,
-  runSubmit,
-  runCode,
-  runPick,
-} from './lib/commands.js';
+import { printTaskList, printMyTasks } from './lib/display.js';
+import { run as runPick } from './tools/pick/index.js';
+import { run as runNew } from './tools/new-task/index.js';
+import { run as runClose } from './tools/close/index.js';
+import { run as runSubmit } from './tools/submit/index.js';
+import { run as runStatus } from './tools/my-status/index.js';
+import { run as runReview } from './tools/review/index.js';
+import { run as runRefresh } from './tools/refresh/index.js';
+import { run as runCode } from './tools/open-code/index.js';
 import type { TechunterConfig } from './types.js';
 
 // ─── Slash commands ───────────────────────────────────────────────────────────
