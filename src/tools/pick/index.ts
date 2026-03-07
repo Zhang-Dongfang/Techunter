@@ -108,8 +108,22 @@ export async function run(config: TechunterConfig, preselected?: number): Promis
 
   if (action === 'claim') {
     try {
-      const { getAuthenticatedUser } = await import('../../lib/github.js');
+      const { getAuthenticatedUser, listMyTasks } = await import('../../lib/github.js');
       const me = await getAuthenticatedUser(config);
+
+      // WIP limit: block if user already has an active task
+      const myTasks = await listMyTasks(config, me);
+      const activeTask = myTasks.find((t) => {
+        const labels = t.labels;
+        return labels.includes('techunter:claimed') || labels.includes('techunter:changes-needed');
+      });
+      if (activeTask) {
+        return (
+          `You already have an active task: #${activeTask.number} "${activeTask.title}"\n` +
+          `Finish or submit it before claiming a new one.`
+        );
+      }
+
       let spinner = ora(`Claiming #${issue.number}…`).start();
       await claimTask(config, issue.number, me);
       spinner.stop();

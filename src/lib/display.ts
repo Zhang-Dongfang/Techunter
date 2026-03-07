@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import type { TechunterConfig, GitHubIssue } from '../types.js';
 import { listTasks, getAuthenticatedUser, listMyTasks } from './github.js';
 import { renderMarkdown } from './markdown.js';
+import { getCurrentBranch, makeBranchName } from './git.js';
 
 const LABEL_AVAILABLE = 'techunter:available';
 const LABEL_CLAIMED = 'techunter:claimed';
@@ -86,6 +87,30 @@ export async function printMyTasks(config: TechunterConfig): Promise<void> {
       console.log(` ${num}${status}${title}`);
     }
     console.log(divider);
+
+    // Warn if any task was rejected while user may be on a different branch
+    const rejectedTasks = tasks.filter((t) => t.labels.includes(LABEL_CHANGES_NEEDED));
+    if (rejectedTasks.length > 0) {
+      let currentBranch = '';
+      try { currentBranch = await getCurrentBranch(); } catch { /* ignore */ }
+
+      console.log('');
+      for (const t of rejectedTasks) {
+        const expectedBranch = makeBranchName(t.number, t.title);
+        const onCorrectBranch = currentBranch === expectedBranch;
+        console.log(
+          chalk.red.bold('  ⚠ Changes requested') +
+          chalk.red(` on #${t.number} "${t.title}"`)
+        );
+        if (!onCorrectBranch) {
+          console.log(
+            chalk.dim('    Switch branch: ') +
+            chalk.cyan(`git checkout ${expectedBranch}`)
+          );
+        }
+      }
+      console.log('');
+    }
   } catch {
     // silently skip if GitHub is unreachable
   }
