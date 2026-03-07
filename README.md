@@ -55,7 +55,15 @@
 ## 安装
 
 ```bash
-git clone <this-repo>
+npm install -g techunter
+```
+
+需要 Node.js ≥ 18。
+
+**从源码安装（开发用）：**
+
+```bash
+git clone https://github.com/your-username/techunter
 cd techunter
 npm install
 npm run build
@@ -71,6 +79,13 @@ npm link          # 全局安装，注册 tch / techunter 命令
 ```bash
 tch init
 ```
+
+向导会依次询问：
+
+1. **GitHub 认证方式** — 推荐使用 Personal Access Token
+   - 在 https://github.com/settings/tokens/new 创建，勾选 `repo` 和 `read:user` 权限
+2. **PPIO API Key** — 在 https://ppio.com 控制台 → API Keys 获取
+3. **GitHub 仓库** — 自动从 git remote 检测，也可手动填写
 
 配置文件存储于 `~/.config/techunter/`。
 
@@ -92,7 +107,9 @@ tch
 | `/new` | `/n` | 创建新任务 |
 | `/close` | `/d` | 关闭（删除）任务 |
 | `/submit` | `/s` | 选择任务后审核变更并提交推送 |
+| `/review` | `/rv` | 审核团队提交的任务（通过或打回） |
 | `/status` | `/me` | 显示分配给自己的任务 |
+| `/code` | `/c` | 为当前任务分支启动 Claude Code |
 
 其他输入均发送给 AI Agent，例如：
 
@@ -112,9 +129,12 @@ tch
 ```
 techunter:available  →  techunter:claimed  →  techunter:in-review
      （绿色）                （黄色）                （蓝色）
+                                                       ↓ 打回
+                                            techunter:changes-needed
+                                                      （红色）
 ```
 
-标签在 `tch init` 和创建任务时自动创建。
+标签在 `tch init` 和创建任务时自动创建于仓库中。
 
 ---
 
@@ -150,6 +170,8 @@ Agent 可调用以下工具：
 | `stage_and_commit` | 暂存全部变更、提交并推送 |
 | `ask_user` | 向用户提问（每个任务最多 3 次） |
 | `get_my_status` | 显示当前用户被分配的任务 |
+| `get_comments` | 读取 Issue 上的最新评论（用于查看打回反馈） |
+| `reject_task` | 打回 in-review 任务：发布反馈评论并标记为 changes-needed |
 
 ---
 

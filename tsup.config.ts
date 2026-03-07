@@ -9,6 +9,7 @@ export default defineConfig({
   external: [
     'openai',
     '@octokit/rest',
+    '@octokit/auth-oauth-device',
     'chalk',
     'commander',
     'conf',
@@ -16,6 +17,9 @@ export default defineConfig({
     'ignore',
     'inquirer',
     '@inquirer/prompts',
+    'marked',
+    'marked-terminal',
+    'open',
     'ora',
     'simple-git',
     'zod',

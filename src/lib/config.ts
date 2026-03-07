@@ -45,6 +45,9 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
   if (partial.githubToken !== undefined) {
     current['githubToken'] = partial.githubToken;
   }
+  if (partial.githubClientId !== undefined) {
+    current['githubClientId'] = partial.githubClientId;
+  }
 
   store.store = current as unknown as TechunterConfig;
 }

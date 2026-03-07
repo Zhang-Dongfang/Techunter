@@ -20,37 +20,24 @@ function printGuide(guide: TaskGuide, issueNumber: number): void {
   console.log(chalk.bold('\nSummary:'));
   console.log('  ' + guide.summary);
 
-  console.log(chalk.bold('\nContext:'));
-  console.log('  ' + guide.context);
-
-  if (guide.prerequisites.length > 0) {
-    console.log(chalk.bold('\nPrerequisites:'));
-    for (const item of guide.prerequisites) console.log(`  • ${item}`);
-  }
-
-  if (guide.inputs.length > 0) {
-    console.log(chalk.bold('\nInputs:'));
-    for (const item of guide.inputs) console.log(`  • ${item}`);
-  }
-
-  if (guide.outputs.length > 0) {
-    console.log(chalk.bold('\nOutputs:'));
-    for (const item of guide.outputs) console.log(`  • ${item}`);
-  }
-
   if (guide.acceptanceCriteria.length > 0) {
-    console.log(chalk.bold('\nAcceptance Criteria:'));
+    console.log(chalk.bold('\nMust Deliver:'));
     for (const item of guide.acceptanceCriteria) console.log(`  ☐ ${item}`);
   }
 
+  if (guide.filesToModify.length > 0) {
+    console.log(chalk.bold('\nFiles:'));
+    for (const f of guide.filesToModify) console.log('  ' + chalk.yellow(f));
+  }
+
   if (guide.suggestedSteps.length > 0) {
-    console.log(chalk.bold('\nSuggested Steps:'));
+    console.log(chalk.bold('\nSteps:'));
     guide.suggestedSteps.forEach((step, i) => console.log(`  ${i + 1}. ${step}`));
   }
 
-  if (guide.filesToModify.length > 0) {
-    console.log(chalk.bold('\nFiles to Modify:'));
-    for (const f of guide.filesToModify) console.log('  ' + chalk.yellow(f));
+  if (guide.optionalImprovements.length > 0) {
+    console.log(chalk.bold('\nOptional:'));
+    for (const item of guide.optionalImprovements) console.log(`  • ${item}`);
   }
 
   console.log(chalk.dim('\n' + '─'.repeat(60)));

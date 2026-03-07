@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { renderMarkdown } from './markdown.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -18,6 +19,8 @@ import {
   postComment,
   createPR,
   markInReview,
+  rejectTask,
+  listComments,
   getAuthenticatedUser,
   listMyTasks,
   getDefaultBranch,
@@ -264,6 +267,38 @@ const tools: OpenAI.ChatCompletionTool[] = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_comments',
+      description: 'Get the latest comments on a GitHub issue. Useful for reading rejection feedback or discussion.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number' },
+          limit: { type: 'number', description: 'Max number of latest comments to return (default 5)' },
+        },
+        required: ['issue_number'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reject_task',
+      description:
+        'Reject an in-review task: post a structured rejection comment on the issue, ' +
+        'then change the label from in-review to changes-needed (assignee unchanged).',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number to reject' },
+          comment: { type: 'string', description: 'Structured rejection comment (markdown)' },
+        },
+        required: ['issue_number', 'comment'],
+      },
+    },
+  },
 ];
 
 async function executeTool(
@@ -494,14 +529,8 @@ async function executeTool(
         console.log('\n' + divider);
         console.log(chalk.bold(`  Guide preview — issue #${issueNumber}`));
         console.log(divider);
-        for (const line of body.split('\n')) {
-          if (line.match(/^#{1,3} /)) {
-            console.log('\n' + chalk.bold('  ' + line));
-          } else {
-            console.log('  ' + chalk.dim(line));
-          }
-        }
-        console.log('\n' + divider + '\n');
+        console.log(renderMarkdown(body));
+        console.log(divider + '\n');
 
         // Confirm before posting
         let decision: string;
@@ -636,6 +665,84 @@ async function executeTool(
         return `Tasks assigned to @${me}:\n${lines.join('\n')}`;
       }
 
+      case 'get_comments': {
+        const issueNumber = input['issue_number'] as number;
+        const limit = (input['limit'] as number | undefined) ?? 5;
+        const spinner = ora(`Loading comments for #${issueNumber}...`).start();
+        try {
+          const comments = await listComments(config, issueNumber, limit);
+          spinner.stop();
+          if (comments.length === 0) return `No comments on issue #${issueNumber}.`;
+          const lines = comments.map((c) =>
+            `--- @${c.author} (${c.createdAt.slice(0, 10)}) ---\n${c.body}`
+          );
+          return `Latest ${comments.length} comment(s) on #${issueNumber}:\n\n${lines.join('\n\n')}`;
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+      }
+
+      case 'reject_task': {
+        const issueNumber = input['issue_number'] as number;
+        const comment = input['comment'] as string;
+
+        // Show full rejection comment preview
+        const divider = chalk.dim('─'.repeat(70));
+        console.log('\n' + divider);
+        console.log(chalk.bold(`  Rejection preview — issue #${issueNumber}`));
+        console.log(divider);
+        console.log(renderMarkdown(comment));
+        console.log(divider + '\n');
+
+        // Confirm before posting
+        let decision: string;
+        try {
+          decision = await select({
+            message: `Post rejection comment and mark #${issueNumber} as changes-needed?`,
+            choices: [
+              { name: 'Post & Reject', value: 'yes' },
+              { name: 'Revise comment — describe what to change', value: 'revise' },
+              { name: 'Cancel', value: 'cancel' },
+            ],
+          });
+        } catch {
+          return 'User cancelled rejection.';
+        }
+
+        if (decision === 'cancel') return 'User cancelled rejection.';
+
+        if (decision === 'revise') {
+          let feedback: string;
+          try {
+            feedback = await promptInput({ message: 'What should be changed in the rejection comment?' });
+          } catch {
+            return 'User cancelled.';
+          }
+          return `User requested revision. Feedback: "${feedback}". Revise the rejection comment and call reject_task again.`;
+        }
+
+        const spinner = ora(`Posting rejection comment on #${issueNumber}...`).start();
+        try {
+          await postComment(config, issueNumber, comment);
+          spinner.stop();
+        } catch (err) {
+          spinner.stop();
+          throw err;
+        }
+
+        const spinner2 = ora(`Marking #${issueNumber} as changes-needed...`).start();
+        try {
+          await rejectTask(config, issueNumber);
+          spinner2.stop();
+        } catch (err) {
+          spinner2.stop();
+          throw err;
+        }
+
+        return `Task #${issueNumber} rejected. Comment posted and label changed to changes-needed.`;
+      }
+
       default:
         return `Unknown tool: ${name}`;
     }
@@ -703,6 +810,26 @@ export async function runAgentLoop(
       '### ⚠️ 注意事项 / Pitfalls & Considerations',
       'Known edge cases, potential breaking changes, performance concerns, or gotchas',
       'specific to this codebase.',
+      '',
+      '## Reviewing and rejecting a task',
+      'When asked to reject a task:',
+      '1. Call get_task to read full issue details.',
+      '2. Write a structured rejection comment (markdown) in the conversation language:',
+      '',
+      '### ❌ 打回原因 / Rejection Reason',
+      'One paragraph: what was reviewed and what the main problem is.',
+      '',
+      '### 🔧 需要修改的内容 / Required Changes',
+      'Numbered, specific, actionable items. Reference file names,',
+      'function names, or acceptance criteria that were not met.',
+      '',
+      '### ✅ 未通过的验收标准 / Failed Acceptance Criteria',
+      'Re-list each criterion that was NOT met, prefixed with ❌.',
+      '',
+      '### 📋 下一步 / Next Steps',
+      'Clear instruction on what to fix and how to re-submit (via /submit or deliver_task).',
+      '',
+      '3. Call reject_task with issue_number and the full rejection comment.',
       '',
       '## Submitting changes',
       'When the user asks to submit, sync, or commit changes:',

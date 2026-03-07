@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import chalk from 'chalk';
 import { select, input } from '@inquirer/prompts';
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import type OpenAI from 'openai';
+
+const _require = createRequire(import.meta.url);
+const { version } = _require('../package.json') as { version: string };
 import { initCommand } from './commands/init.js';
 import { getConfig } from './lib/config.js';
 import {
@@ -15,16 +20,21 @@ import {
   getDefaultBranch,
   getAuthenticatedUser,
   listMyTasks,
+  listTasksForReview,
+  listComments,
 } from './lib/github.js';
 import { getCurrentBranch, pushBranch, makeBranchName, createAndSwitchBranch, stageAllAndCommit, hasUncommittedChanges } from './lib/git.js';
 import { runAgentLoop } from './lib/agent.js';
+import { renderMarkdown } from './lib/markdown.js';
 import type { TechunterConfig, GitHubIssue } from './types.js';
 
 const LABEL_AVAILABLE = 'techunter:available';
 const LABEL_CLAIMED = 'techunter:claimed';
 const LABEL_IN_REVIEW = 'techunter:in-review';
+const LABEL_CHANGES_NEEDED = 'techunter:changes-needed';
 
 function getStatus(issue: GitHubIssue): string {
+  if (issue.labels.includes(LABEL_CHANGES_NEEDED)) return 'changes-needed';
   if (issue.labels.includes(LABEL_IN_REVIEW)) return 'in-review';
   if (issue.labels.includes(LABEL_CLAIMED)) return 'claimed';
   if (issue.labels.includes(LABEL_AVAILABLE)) return 'available';
@@ -32,12 +42,13 @@ function getStatus(issue: GitHubIssue): string {
 }
 
 function colorStatus(status: string): string {
-  const padded = status.padEnd(12);
+  const padded = status.padEnd(14);
   switch (status) {
-    case 'available': return chalk.green(padded);
-    case 'claimed':   return chalk.yellow(padded);
-    case 'in-review': return chalk.blue(padded);
-    default:          return padded;
+    case 'available':      return chalk.green(padded);
+    case 'claimed':        return chalk.yellow(padded);
+    case 'in-review':      return chalk.blue(padded);
+    case 'changes-needed': return chalk.red(padded);
+    default:               return padded;
   }
 }
 
@@ -52,9 +63,7 @@ function printTaskDetail(issue: GitHubIssue): void {
   console.log(chalk.bold('\n ' + issue.title));
   if (issue.body) {
     console.log('');
-    for (const line of issue.body.split('\n')) {
-      console.log(' ' + chalk.dim(line));
-    }
+    console.log(renderMarkdown(issue.body));
   }
   console.log('\n ' + chalk.dim(issue.htmlUrl));
   console.log(divider + '\n');
@@ -98,7 +107,9 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/new',     alias: '/n',  desc: 'Create a new task interactively' },
   { cmd: '/close',   alias: '/d',  desc: 'Close (delete) a task' },
   { cmd: '/submit',  alias: '/s',  desc: 'Review changes and sync to remote' },
+  { cmd: '/review',  alias: '/rv', desc: 'Review your published tasks' },
   { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
+  { cmd: '/code',    alias: '/c',  desc: 'Open Claude Code for the current task branch' },
 ];
 
 function cmdHelp(): void {
@@ -151,6 +162,23 @@ async function cmdPick(config: TechunterConfig): Promise<string | null> {
   printTaskDetail(issue);
 
   const status = getStatus(issue);
+
+  if (status === 'changes-needed') {
+    try {
+      const comments = await listComments(config, issue.number, 1);
+      if (comments.length > 0) {
+        const c = comments[0];
+        const divider = chalk.dim('─'.repeat(70));
+        console.log(chalk.red.bold('  Latest rejection feedback') + chalk.dim(` — @${c.author} · ${c.createdAt.slice(0, 10)}`));
+        console.log(divider);
+        console.log(renderMarkdown(c.body));
+        console.log(divider + '\n');
+      }
+    } catch {
+      // silently skip if comments can't be fetched
+    }
+  }
+
   const actions: { name: string; value: string | null }[] = [];
 
   if (status === 'available') {
@@ -293,6 +321,122 @@ async function cmdClose(config: TechunterConfig): Promise<void> {
   }
 }
 
+async function cmdReview(config: TechunterConfig): Promise<string | null> {
+  let me: string;
+  try {
+    me = await getAuthenticatedUser(config);
+  } catch (err) {
+    console.log(chalk.red(`  Could not authenticate: ${(err as Error).message}`));
+    return null;
+  }
+
+  let tasks: GitHubIssue[];
+  try {
+    tasks = await listTasksForReview(config, me);
+  } catch (err) {
+    console.log(chalk.red(`  Could not load tasks: ${(err as Error).message}`));
+    return null;
+  }
+
+  if (tasks.length === 0) {
+    console.log(chalk.dim('\n  (no tasks pending review)\n'));
+    return null;
+  }
+
+  let chosen: number;
+  try {
+    chosen = await select({
+      message: 'Select a task to review:',
+      choices: tasks.map((t) => ({
+        name: `#${String(t.number).padEnd(4)} ${colorStatus(getStatus(t))} ${t.title}`,
+        value: t.number,
+      })),
+    });
+  } catch {
+    return null;
+  }
+
+  let issue: GitHubIssue;
+  try {
+    issue = await getTask(config, chosen);
+  } catch (err) {
+    console.log(chalk.red(`  Could not load task: ${(err as Error).message}`));
+    return null;
+  }
+
+  printTaskDetail(issue);
+
+  let action: string;
+  try {
+    action = await select({
+      message: 'Action:',
+      choices: [
+        { name: 'Approve — close issue', value: 'approve' },
+        { name: 'Reject — send back with changes', value: 'reject' },
+        { name: 'Cancel', value: 'cancel' },
+      ],
+    });
+  } catch {
+    return null;
+  }
+
+  if (action === 'cancel') return null;
+
+  if (action === 'approve') {
+    try {
+      await closeTask(config, chosen);
+      console.log(chalk.green(`\n  Task #${chosen} approved and closed.\n`));
+    } catch (err) {
+      console.log(chalk.red(`  Failed: ${(err as Error).message}`));
+    }
+    return null;
+  }
+
+  // reject
+  let feedback: string;
+  try {
+    feedback = await input({ message: 'Feedback for the developer:' });
+  } catch {
+    return null;
+  }
+
+  if (!feedback.trim()) return null;
+
+  return `Review task #${chosen} "${issue.title}". Reject with feedback: ${feedback}. Follow rejection flow.`;
+}
+
+// ─── Claude Code integration ──────────────────────────────────────────────────
+
+function buildClaudePrompt(issue: GitHubIssue, branch: string): string {
+  const lines = [
+    `You are working on task #${issue.number}: ${issue.title}`,
+    `Branch: ${branch}`,
+    '',
+  ];
+  if (issue.body) lines.push(issue.body.trim(), '');
+  lines.push(
+    'Implement the task. A detailed guide has been posted as a comment on the GitHub issue.',
+    'When done, return to tch and run /submit to review and deliver.'
+  );
+  return lines.join('\n');
+}
+
+async function launchClaudeCode(issue: GitHubIssue, branch: string): Promise<void> {
+  const prompt = buildClaudePrompt(issue, branch);
+  console.log(chalk.dim('\n  Launching Claude Code…\n'));
+  await new Promise<void>((resolve) => {
+    const child = spawn('claude', [prompt], { stdio: 'inherit', shell: true });
+    child.on('close', () => resolve());
+    child.on('error', () => {
+      console.log(chalk.yellow(
+        '  Could not launch claude. Make sure Claude Code is installed:\n' +
+        '  npm install -g @anthropic-ai/claude-code'
+      ));
+      resolve();
+    });
+  });
+}
+
 // ─── Banner ───────────────────────────────────────────────────────────────────
 
 function printBanner(config: TechunterConfig): void {
@@ -307,7 +451,7 @@ function printBanner(config: TechunterConfig): void {
   ];
 
   const info = [
-    chalk.bold('Techunter') + chalk.dim(' v0.1.0'),
+    chalk.bold('Techunter') + chalk.dim(` v${version}`),
     chalk.cyan('GLM-5') + chalk.dim(' · zai-org'),
     chalk.dim(`${owner}/${repo}`),
   ];
@@ -396,6 +540,20 @@ async function main(): Promise<void> {
               await createAndSwitchBranch(branch);
               await pushBranch(branch);
               console.log(chalk.green(`\n  Claimed! Branch: ${branch}\n`));
+
+              let openClaude: boolean;
+              try {
+                openClaude = await select({
+                  message: 'Open Claude Code for this task?',
+                  choices: [
+                    { name: 'Yes, start coding now', value: true },
+                    { name: 'No, return to tch',     value: false },
+                  ],
+                });
+              } catch {
+                openClaude = false;
+              }
+              if (openClaude) await launchClaudeCode(issue, branch);
             } catch (err) {
               console.log(chalk.red(`  Failed: ${(err as Error).message}`));
             }
@@ -407,7 +565,7 @@ async function main(): Promise<void> {
             messages.push({ role: 'user', content: submitMsg });
             try {
               const r = await runAgentLoop(config, messages);
-              console.log('\n' + chalk.green('Techunter:') + ' ' + r + '\n');
+              console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(r));
             } catch (err) {
               messages.splice(prevLen);
               console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
@@ -450,7 +608,7 @@ async function main(): Promise<void> {
             messages.push({ role: 'user', content: action });
             try {
               const r = await runAgentLoop(config, messages);
-              console.log('\n' + chalk.green('Techunter:') + ' ' + r + '\n');
+              console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(r));
             } catch (err) {
               messages.splice(prevLen);
               console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
@@ -498,7 +656,7 @@ async function main(): Promise<void> {
           let reviewPassed = false;
           try {
             const response = await runAgentLoop(config, messages);
-            console.log('\n' + chalk.green('Techunter:') + ' ' + response + '\n');
+            console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(response));
             reviewPassed = true;
           } catch (err) {
             messages.splice(prevLen);
@@ -555,9 +713,49 @@ async function main(): Promise<void> {
           await cmdClose(config);
           await printTaskList(config);
           break;
+        case '/review': case '/rv': {
+          const agentPrompt = await cmdReview(config);
+          if (agentPrompt) {
+            messages.push({ role: 'user', content: agentPrompt });
+            const prevLen = messages.length - 1;
+            try {
+              const r = await runAgentLoop(config, messages);
+              console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(r));
+            } catch (err) {
+              messages.splice(prevLen);
+              console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
+            }
+          }
+          await printTaskList(config);
+          break;
+        }
         case '/status': case '/me':
           await cmdStatus(config);
           break;
+        case '/code': case '/c': {
+          let branch: string;
+          try {
+            branch = await getCurrentBranch();
+          } catch (err) {
+            console.log(chalk.red(`  Could not get current branch: ${(err as Error).message}`));
+            break;
+          }
+          const match = branch.match(/^task-(\d+)-/);
+          if (!match) {
+            console.log(chalk.yellow(`  Not on a task branch (current: ${branch})`));
+            break;
+          }
+          const issueNum = parseInt(match[1], 10);
+          let codeIssue: GitHubIssue;
+          try {
+            codeIssue = await getTask(config, issueNum);
+          } catch (err) {
+            console.log(chalk.red(`  Could not load task: ${(err as Error).message}`));
+            break;
+          }
+          await launchClaudeCode(codeIssue, branch);
+          break;
+        }
         default:
           console.log(chalk.yellow(`  Unknown command: ${cmd}  (try /help)`));
       }
@@ -570,7 +768,7 @@ async function main(): Promise<void> {
 
     try {
       const response = await runAgentLoop(config, messages);
-      console.log('\n' + chalk.green('Techunter:') + ' ' + response + '\n');
+      console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(response));
     } catch (err) {
       messages.splice(prevLength);
       console.error(chalk.red(`\nError: ${(err as Error).message}\n`));

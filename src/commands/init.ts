@@ -9,35 +9,24 @@ import { getRemoteUrl, parseOwnerRepo } from '../lib/git.js';
 import type { TechunterConfig } from '../types.js';
 
 async function getGitHubTokenViaPAT(): Promise<{ token: string; clientId?: undefined }> {
+  console.log(chalk.dim('\n  Create a token at: https://github.com/settings/tokens/new'));
+  console.log(chalk.dim('  Required scopes: repo, read:user\n'));
   const token = await password({
-    message: 'GitHub Personal Access Token (needs repo + issues scope):',
+    message: 'GitHub Personal Access Token:',
     mask: '*',
   });
   return { token: token.trim() };
 }
 
+const OAUTH_CLIENT_ID = 'Ov23liW4zJ4r2RdZOsCJ';
+
 async function getGitHubTokenViaDeviceFlow(): Promise<{ token: string; clientId: string }> {
-  console.log(chalk.dim('\nYou need a GitHub OAuth App Client ID.'));
-  console.log(
-    chalk.dim(
-      'Create one at: GitHub → Settings → Developer settings → OAuth Apps → New OAuth App'
-    )
-  );
-  console.log(chalk.dim('Enable "Device Flow" on the OAuth App. No callback URL needed.\n')
-  );
-
-  const clientId = await input({
-    message: 'GitHub OAuth App Client ID:',
-    required: true,
-    validate: (v) => v.trim().length > 0 || 'Required',
-  });
-
   let verificationUri = '';
   let userCode = '';
 
   const auth = createOAuthDeviceAuth({
     clientType: 'oauth-app',
-    clientId: clientId.trim(),
+    clientId: OAUTH_CLIENT_ID,
     scopes: ['repo'],
     onVerification(verification) {
       verificationUri = verification.verification_uri;
@@ -70,7 +59,7 @@ async function getGitHubTokenViaDeviceFlow(): Promise<{ token: string; clientId:
     throw err;
   }
 
-  return { token, clientId: clientId.trim() };
+  return { token, clientId: OAUTH_CLIENT_ID };
 }
 
 export async function initCommand(): Promise<void> {
@@ -95,11 +84,11 @@ export async function initCommand(): Promise<void> {
     message: 'How would you like to authenticate with GitHub?',
     choices: [
       {
-        name: 'Browser login (OAuth Device Flow) — open a URL, click Authorize',
+        name: 'Browser login (OAuth) — open a URL and click Authorize',
         value: 'device',
       },
       {
-        name: 'Personal Access Token (PAT) — paste a token manually',
+        name: 'Personal Access Token (PAT) — paste a token from github.com/settings/tokens',
         value: 'pat',
       },
     ],
@@ -117,22 +106,25 @@ export async function initCommand(): Promise<void> {
     githubToken = result.token;
   }
 
+  console.log(chalk.dim('\n  Get a PPIO API key at: https://ppio.com → Console → API Keys\n'));
   const aiApiKey = await password({
-    message: 'PPIO API Key (https://api.ppio.com):',
+    message: 'PPIO API Key:',
     mask: '*',
   });
 
-  const owner = await input({
-    message: 'GitHub repo owner (user or org):',
-    default: detectedOwner,
-    required: true,
-  });
+  let owner = detectedOwner;
+  let repo = detectedRepo;
 
-  const repo = await input({
-    message: 'GitHub repo name:',
-    default: detectedRepo,
-    required: true,
-  });
+  if (!owner || !repo) {
+    owner = await input({
+      message: 'GitHub repo owner (user or org):',
+      required: true,
+    });
+    repo = await input({
+      message: 'GitHub repo name:',
+      required: true,
+    });
+  }
 
   const config: TechunterConfig = {
     githubToken,

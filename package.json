@@ -2,7 +2,20 @@
   "name": "techunter",
   "version": "0.1.0",
   "description": "AI-powered task distribution CLI for development teams",
+  "author": "Techunter Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/techunter.git"
+  },
+  "homepage": "https://github.com/your-username/techunter#readme",
+  "bugs": {
+    "url": "https://github.com/your-username/techunter/issues"
+  },
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "techunter": "./dist/index.js",
     "tch": "./dist/index.js"
@@ -21,6 +34,8 @@
     "globby": "^14.0.2",
     "ignore": "^6.0.2",
     "inquirer": "^12.3.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "open": "^11.0.0",
     "openai": "^4.104.0",
     "ora": "^8.1.1",
@@ -28,6 +43,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@types/marked-terminal": "^6.1.1",
     "@types/node": "^22.10.7",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
@@ -42,6 +58,5 @@
     "github",
     "tasks",
     "developer-tools"
-  ],
-  "license": "MIT"
+  ]
 }

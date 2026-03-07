@@ -4,11 +4,8 @@ import type { ProjectContext, TaskGuide } from '../types.js';
 
 const taskGuideSchema = z.object({
   summary: z.string(),
-  context: z.string(),
-  prerequisites: z.array(z.string()),
-  inputs: z.array(z.string()),
-  outputs: z.array(z.string()),
   acceptanceCriteria: z.array(z.string()),
+  optionalImprovements: z.array(z.string()),
   suggestedSteps: z.array(z.string()),
   filesToModify: z.array(z.string()),
 });
@@ -52,13 +49,10 @@ ${issueBody || '(No description provided)'}
 
 ---
 
-Generate a deliverable guide in JSON format with these exact fields:
+Generate a concise deliverable guide in JSON format with these exact fields:
 - summary (string): one-line task summary
-- context (string): how this task fits in the project architecture
-- prerequisites (string[]): what must be done or understood before starting
-- inputs (string[]): data, APIs, files, or services the developer will work with
-- outputs (string[]): concrete artifacts to produce (files, endpoints, functions, etc.)
-- acceptanceCriteria (string[]): specific, testable conditions to verify completion
+- acceptanceCriteria (string[]): ONLY the critical, verifiable conditions that MUST be met to consider this task done. Each item must be specific and testable. Maximum 5 items.
+- optionalImprovements (string[]): nice-to-have enhancements that are not required for delivery. Keep to 3 items max.
 - suggestedSteps (string[]): ordered, concrete implementation steps
 - filesToModify (string[]): file paths in the project likely to be created or changed
 
