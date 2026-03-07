@@ -1,5 +1,5 @@
 export interface TechunterConfig {
-  anthropicApiKey: string;
+  aiApiKey: string;
   githubToken: string;
   githubClientId?: string; // set when authenticated via Device Flow
   github: {
@@ -10,11 +10,8 @@ export interface TechunterConfig {
 
 export interface TaskGuide {
   summary: string;
-  context: string;
-  prerequisites: string[];
-  inputs: string[];
-  outputs: string[];
   acceptanceCriteria: string[];
+  optionalImprovements: string[];
   suggestedSteps: string[];
   filesToModify: string[];
 }

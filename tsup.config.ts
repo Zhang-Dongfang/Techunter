@@ -3,12 +3,13 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm'],
-  dts: true,
+  dts: false,
   // Keep all node_modules external — don't inline them
   noExternal: [],
   external: [
-    '@anthropic-ai/sdk',
+    'openai',
     '@octokit/rest',
+    '@octokit/auth-oauth-device',
     'chalk',
     'commander',
     'conf',
@@ -16,6 +17,9 @@ export default defineConfig({
     'ignore',
     'inquirer',
     '@inquirer/prompts',
+    'marked',
+    'marked-terminal',
+    'open',
     'ora',
     'simple-git',
     'zod',

@@ -1,67 +1,98 @@
 #!/usr/bin/env node
 import chalk from 'chalk';
-import { createInterface } from 'node:readline/promises';
-import type Anthropic from '@anthropic-ai/sdk';
+import { input } from '@inquirer/prompts';
+import { createRequire } from 'node:module';
+import type OpenAI from 'openai';
+
+const _require = createRequire(import.meta.url);
+const { version } = _require('../package.json') as { version: string };
 import { initCommand } from './commands/init.js';
 import { getConfig } from './lib/config.js';
-import { listTasks } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
-import type { TechunterConfig, GitHubIssue } from './types.js';
+import { renderMarkdown } from './lib/markdown.js';
+import { printTaskList, printMyTasks } from './lib/display.js';
+import { run as runPick } from './tools/pick/index.js';
+import { run as runNew } from './tools/new-task/index.js';
+import { run as runClose } from './tools/close/index.js';
+import { run as runSubmit } from './tools/submit/index.js';
+import { run as runStatus } from './tools/my-status/index.js';
+import { run as runReview } from './tools/review/index.js';
+import { run as runRefresh } from './tools/refresh/index.js';
+import { run as runCode } from './tools/open-code/index.js';
+import type { TechunterConfig } from './types.js';
 
-const LABEL_AVAILABLE = 'techunter:available';
-const LABEL_CLAIMED = 'techunter:claimed';
-const LABEL_IN_REVIEW = 'techunter:in-review';
+// ─── Slash commands ───────────────────────────────────────────────────────────
 
-function getStatus(issue: GitHubIssue): string {
-  if (issue.labels.includes(LABEL_IN_REVIEW)) return 'in-review';
-  if (issue.labels.includes(LABEL_CLAIMED)) return 'claimed';
-  if (issue.labels.includes(LABEL_AVAILABLE)) return 'available';
-  return 'unknown';
-}
+const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
+  { cmd: '/help',    alias: '/h',  desc: 'Show available commands' },
+  { cmd: '/refresh', alias: '/r',  desc: 'Reload the task list' },
+  { cmd: '/pick',    alias: '/p',  desc: 'Browse tasks and view details' },
+  { cmd: '/new',     alias: '/n',  desc: 'Create a new task interactively' },
+  { cmd: '/close',   alias: '/d',  desc: 'Close (delete) a task' },
+  { cmd: '/submit',  alias: '/s',  desc: 'Commit, create PR, and mark in-review' },
+  { cmd: '/review',  alias: '/rv', desc: 'List tasks waiting for your approval' },
+  { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
+  { cmd: '/code',    alias: '/c',  desc: 'Open Claude Code for the current task branch' },
+];
 
-function colorStatus(status: string): string {
-  const padded = status.padEnd(12);
-  switch (status) {
-    case 'available': return chalk.green(padded);
-    case 'claimed':   return chalk.yellow(padded);
-    case 'in-review': return chalk.blue(padded);
-    default:          return padded;
+function cmdHelp(): void {
+  console.log('');
+  console.log(chalk.bold('  Commands'));
+  console.log(chalk.dim('  ─'.repeat(35)));
+  for (const { cmd, alias, desc } of COMMANDS) {
+    const left = (cmd + (alias ? `  ${chalk.dim(alias)}` : '')).padEnd(22);
+    console.log(`  ${chalk.cyan(cmd)}${alias ? '  ' + chalk.dim(alias) : ''}`.padEnd(30) + chalk.dim(desc));
   }
+  console.log(chalk.dim('\n  Anything else is sent to the AI agent.\n'));
 }
 
-async function printTaskList(config: TechunterConfig): Promise<void> {
+async function runAgent(
+  config: TechunterConfig,
+  messages: OpenAI.ChatCompletionMessageParam[],
+  prompt: string
+): Promise<void> {
+  const prevLen = messages.length;
+  messages.push({ role: 'user', content: prompt });
   try {
-    const tasks = await listTasks(config);
-    const divider = chalk.dim('─'.repeat(70));
-
-    console.log('');
-    console.log(
-      chalk.dim(' ' + '#'.padEnd(5) + 'Status'.padEnd(14) + 'Assignee'.padEnd(16) + 'Title')
-    );
-    console.log(divider);
-
-    if (tasks.length === 0) {
-      console.log(chalk.dim('  (no tasks)'));
-    } else {
-      for (const t of tasks) {
-        const num = `#${t.number}`.padEnd(5);
-        const status = colorStatus(getStatus(t));
-        const assignee = (t.assignee ? `@${t.assignee}` : '—').padEnd(16);
-        const title = t.title.length > 36 ? t.title.slice(0, 33) + '...' : t.title;
-        console.log(` ${num}${status}${assignee}${title}`);
-      }
-    }
-
-    console.log(divider);
+    const r = await runAgentLoop(config, messages);
+    console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(r));
   } catch (err) {
-    console.log(chalk.yellow(`(Could not load tasks: ${(err as Error).message})`));
+    messages.splice(prevLen);
+    console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
   }
 }
+
+// ─── Banner ───────────────────────────────────────────────────────────────────
+
+function printBanner(config: TechunterConfig): void {
+  const { owner, repo } = config.github;
+  const s = chalk.bold.white;
+
+  // Horizontal sword: ◆ pommel · grip · crossguard · blade · tip ▶
+  const sword = [
+    s('   ▗▄▄▄▄▖   '),
+    s('◆──▐████▌══▶'),
+    s('   ▝▀▀▀▀▘   '),
+  ];
+
+  const info = [
+    chalk.bold('Techunter') + chalk.dim(` v${version}`),
+    chalk.cyan('GLM-5') + chalk.dim(' · zai-org'),
+    chalk.dim(`${owner}/${repo}`),
+  ];
+
+  console.log('');
+  for (let i = 0; i < 3; i++) {
+    console.log(sword[i] + '  ' + info[i]);
+  }
+  console.log('');
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // `tch init` — run setup wizard and exit
   if (args[0] === 'init') {
     try {
       await initCommand();
@@ -72,72 +103,112 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Load config — all other modes require it
   let config: TechunterConfig;
   try {
     config = getConfig();
   } catch (err) {
     console.error(chalk.red(`\n${(err as Error).message}`));
     process.exit(1);
-    return; // satisfy TypeScript's definite assignment
+    return;
   }
 
-  const { owner, repo } = config.github;
-  console.log(chalk.bold(`\nTechunter — ${owner}/${repo}`));
-  console.log(
-    chalk.dim('Describe what you want in natural language. "refresh" reloads tasks. Ctrl+C exits.\n')
-  );
+  printBanner(config);
+  console.log(chalk.dim('  Type /help for commands, or describe what you want.\n'));
 
   await printTaskList(config);
+  await printMyTasks(config);
 
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  rl.on('close', () => {
+  process.on('SIGINT', () => {
     console.log(chalk.gray('\nGoodbye!'));
     process.exit(0);
   });
 
-  // Persistent conversation history — grows across turns
-  const messages: Anthropic.MessageParam[] = [];
+  const messages: OpenAI.ChatCompletionMessageParam[] = [];
 
   for (;;) {
     let userInput: string;
     try {
-      userInput = await rl.question(chalk.cyan('\nYou: '));
+      userInput = await input({ message: chalk.cyan('You') });
     } catch {
-      // readline closed (Ctrl+D or similar)
-      break;
+      // Ctrl+C / Ctrl+D inside the prompt
+      console.log(chalk.gray('\nGoodbye!'));
+      process.exit(0);
     }
 
     userInput = userInput.trim();
     if (!userInput) continue;
 
-    if (userInput === 'refresh') {
-      await printTaskList(config);
+    // Slash commands — hardcoded flows, no AI call
+    const cmd = userInput.split(/\s+/)[0].toLowerCase();
+    if (cmd.startsWith('/')) {
+      switch (cmd) {
+        case '/help': case '/h':
+          cmdHelp();
+          break;
+        case '/refresh': case '/r':
+          await runRefresh(config);
+          break;
+        case '/pick': case '/p': {
+          const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
+          const preselected = arg ? parseInt(arg, 10) : undefined;
+          const result = await runPick(config, Number.isNaN(preselected) ? undefined : preselected);
+          if (result && result !== 'Cancelled.') {
+            console.log(chalk.green(`\n  ${result}\n`));
+          }
+          await printTaskList(config);
+          break;
+        }
+        case '/new': case '/n': {
+          const result = await runNew(config);
+          console.log(chalk.green(`\n  ${result}\n`));
+          await printTaskList(config);
+          break;
+        }
+        case '/submit': case '/s': {
+          const result = await runSubmit(config);
+          console.log('\n' + renderMarkdown(result));
+          await printTaskList(config);
+          break;
+        }
+        case '/close': case '/d': {
+          const result = await runClose(config);
+          console.log(chalk.green(`\n  ${result}\n`));
+          await printTaskList(config);
+          break;
+        }
+        case '/review': case '/rv': {
+          const result = await runReview(config);
+          console.log('\n' + renderMarkdown(result));
+          break;
+        }
+        case '/status': case '/me': {
+          const result = await runStatus(config);
+          console.log('\n' + renderMarkdown(result));
+          break;
+        }
+        case '/code': case '/c':
+          await runCode(config);
+          break;
+        default:
+          console.log(chalk.yellow(`  Unknown command: ${cmd}  (try /help)`));
+      }
       continue;
     }
 
-    // Track array length so we can roll back on error
+    // Natural language → agent
     const prevLength = messages.length;
     messages.push({ role: 'user', content: userInput });
 
     try {
       const response = await runAgentLoop(config, messages);
-      console.log('\n' + chalk.green('Techunter:') + ' ' + response + '\n');
+      console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(response));
     } catch (err) {
-      // Roll back the user message so the conversation stays consistent
       messages.splice(prevLength);
       console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
     }
 
-    // Refresh task list after every AI response
     await printTaskList(config);
   }
-
-  rl.close();
 }
 
 main().catch((err: Error) => {

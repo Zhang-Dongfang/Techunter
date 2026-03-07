@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { TechunterConfig } from '../types.js';
 
 const configSchema = z.object({
-  anthropicApiKey: z.string().min(1),
+  aiApiKey: z.string().min(1),
   githubToken: z.string().min(1),
   githubClientId: z.string().optional(),
   github: z.object({
@@ -39,11 +39,14 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
       ...partial.github,
     };
   }
-  if (partial.anthropicApiKey !== undefined) {
-    current['anthropicApiKey'] = partial.anthropicApiKey;
+  if (partial.aiApiKey !== undefined) {
+    current['aiApiKey'] = partial.aiApiKey;
   }
   if (partial.githubToken !== undefined) {
     current['githubToken'] = partial.githubToken;
+  }
+  if (partial.githubClientId !== undefined) {
+    current['githubClientId'] = partial.githubClientId;
   }
 
   store.store = current as unknown as TechunterConfig;
