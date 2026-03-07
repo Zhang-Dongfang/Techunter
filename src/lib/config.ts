@@ -23,9 +23,7 @@ export function getConfig(): TechunterConfig {
 
   const result = configSchema.safeParse(raw);
   if (!result.success) {
-    throw new Error(
-      'Configuration is missing or invalid. Run `tch init` first.'
-    );
+    throw new Error('Configuration is missing or invalid.');
   }
 
   return result.data;

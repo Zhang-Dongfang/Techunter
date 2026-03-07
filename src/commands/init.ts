@@ -155,6 +155,5 @@ export async function initCommand(): Promise<void> {
   }
 
   console.log(chalk.green('\nSetup complete!'));
-  console.log(chalk.dim(`Config saved to: ${getConfigPath()}`));
-  console.log('\nRun ' + chalk.cyan('tch') + ' to start.\n');
+  console.log(chalk.dim(`Config saved to: ${getConfigPath()}\n`));
 }

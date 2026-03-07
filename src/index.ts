@@ -94,25 +94,26 @@ async function runAgent(
 
 function printBanner(config: TechunterConfig): void {
   const { owner, repo } = config.github;
-  const s = chalk.bold.white;
+  const g = chalk.cyan;          // guard / box
+  const b = chalk.bold.white;    // blade
+  const p = chalk.yellow.bold;   // pommel
 
-  // Horizontal sword: ◆ pommel · grip · crossguard · blade · tip ▶
-  const sword = [
-    s('   ▗▄▄▄▄▖   '),
-    s('◆──▐████▌══▶'),
-    s('   ▝▀▀▀▀▘   '),
-  ];
-
-  const info = [
-    chalk.bold('Techunter') + chalk.dim(` v${version}`),
-    chalk.cyan('GLM-5') + chalk.dim(' · zai-org'),
-    chalk.dim(`${owner}/${repo}`),
-  ];
-
+  //      ╔═══════════════╗
+  //  ◆═══╬   TECHUNTER   ╬═══▶
+  //      ╚═══════════════╝
   console.log('');
-  for (let i = 0; i < 3; i++) {
-    console.log(sword[i] + '  ' + info[i]);
-  }
+  console.log('    ' + g('╔═══════════════╗'));
+  console.log(p('◆') + b('═══') + g('╬') + b('   TECHUNTER   ') + g('╬') + b('═══▶'));
+  console.log('    ' + g('╚═══════════════╝'));
+  console.log('');
+  console.log(
+    '    ' +
+    chalk.bold('Techunter') + chalk.dim(` v${version}`) +
+    chalk.dim('  ·  ') +
+    chalk.cyan('GLM-5') + chalk.dim(' · zai-org') +
+    chalk.dim('  ·  ') +
+    chalk.dim(`${owner}/${repo}`)
+  );
   console.log('');
 }
 
@@ -120,16 +121,6 @@ function printBanner(config: TechunterConfig): void {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-
-  if (args[0] === 'init') {
-    try {
-      await initCommand();
-    } catch (err) {
-      console.error(chalk.red(`\nError: ${(err as Error).message}`));
-      process.exit(1);
-    }
-    return;
-  }
 
   if (args[0] === 'config') {
     try {
@@ -144,10 +135,16 @@ async function main(): Promise<void> {
   let config: TechunterConfig;
   try {
     config = getConfig();
-  } catch (err) {
-    console.error(chalk.red(`\n${(err as Error).message}`));
-    process.exit(1);
-    return;
+  } catch {
+    // First run — no config yet, run setup wizard
+    try {
+      await initCommand();
+      config = getConfig();
+    } catch (err) {
+      console.error(chalk.red(`\nSetup failed: ${(err as Error).message}`));
+      process.exit(1);
+      return;
+    }
   }
 
   printBanner(config);
