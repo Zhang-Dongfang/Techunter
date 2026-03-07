@@ -53,11 +53,23 @@ export function makeBranchName(issueNumber: number, title: string): string {
   return `task-${issueNumber}-${words}`;
 }
 
+async function findMergeBase(): Promise<string | null> {
+  for (const base of ['origin/main', 'origin/master']) {
+    try {
+      const result = await git.raw(['merge-base', 'HEAD', base]);
+      return result.trim();
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 export async function getDiff(): Promise<string> {
   const status = await git.status();
   const parts: string[] = [];
 
-  // File summary
+  // Uncommitted changes
   const fileLines = [
     ...status.modified.map((f) => `  M  ${f}`),
     ...status.created.map((f) => `  A  ${f}`),
@@ -66,34 +78,27 @@ export async function getDiff(): Promise<string> {
     ...status.not_added.map((f) => `  ?  ${f}`),
   ];
   if (fileLines.length > 0) {
-    parts.push('## Changed files\n' + fileLines.join('\n'));
+    parts.push('## Uncommitted changes\n' + fileLines.join('\n'));
+    const uncommitted = await git.diff(['HEAD']);
+    if (uncommitted) {
+      const capped = uncommitted.length > 8_000 ? uncommitted.slice(0, 8_000) + '\n... (truncated)' : uncommitted;
+      parts.push('## Uncommitted diff\n```diff\n' + capped + '\n```');
+    }
   }
 
-  // Uncommitted diff
-  const diff = await git.diff(['HEAD']);
-  if (diff) {
-    const capped = diff.length > 10_000 ? diff.slice(0, 10_000) + '\n... (truncated)' : diff;
-    parts.push('## Diff vs HEAD\n```diff\n' + capped + '\n```');
-  }
+  // All commits and changes on this branch since it diverged from main/master
+  const mergeBase = await findMergeBase();
+  if (mergeBase) {
+    const log = await git.log({ from: mergeBase, to: 'HEAD' });
+    if (log.total > 0) {
+      const logLines = log.all.map((c) => `  ${c.hash.slice(0, 7)}  ${c.message}`);
+      parts.push(`## Branch commits (${log.total} total)\n` + logLines.join('\n'));
 
-  // Unpushed commits (if working tree is clean)
-  if (fileLines.length === 0) {
-    try {
-      const log = await git.log({ from: '@{u}', to: 'HEAD' });
-      if (log.total > 0) {
-        const logLines = log.all.map((c) => `  ${c.hash.slice(0, 7)}  ${c.message}`);
-        parts.push('## Unpushed commits\n' + logLines.join('\n'));
-        const unpushedDiff = await git.diff(['@{u}', 'HEAD']);
-        if (unpushedDiff) {
-          const capped =
-            unpushedDiff.length > 10_000
-              ? unpushedDiff.slice(0, 10_000) + '\n... (truncated)'
-              : unpushedDiff;
-          parts.push('## Diff (unpushed)\n```diff\n' + capped + '\n```');
-        }
+      const branchDiff = await git.diff([mergeBase, 'HEAD']);
+      if (branchDiff) {
+        const capped = branchDiff.length > 12_000 ? branchDiff.slice(0, 12_000) + '\n... (truncated)' : branchDiff;
+        parts.push('## Full branch diff vs main\n```diff\n' + capped + '\n```');
       }
-    } catch {
-      // No upstream configured yet
     }
   }
 

@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
-import { renderMarkdown } from './markdown.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { renderMarkdown } from './markdown.js';
 
 const execAsync = promisify(exec);
 import OpenAI from 'openai';
@@ -11,29 +11,22 @@ import chalk from 'chalk';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../types.js';
 import {
-  listTasks,
   getTask,
-  createTask,
-  claimTask,
-  closeTask,
-  postComment,
-  createPR,
-  markInReview,
-  rejectTask,
   listComments,
-  getAuthenticatedUser,
-  listMyTasks,
-  getDefaultBranch,
 } from './github.js';
-import {
-  getCurrentBranch,
-  createAndSwitchBranch,
-  pushBranch,
-  makeBranchName,
-  getDiff,
-  stageAllAndCommit,
-} from './git.js';
+import { getDiff } from './git.js';
 import { buildProjectContext } from './project.js';
+import {
+  runRefresh,
+  runNew,
+  runClose,
+  runStatus,
+  runReview,
+  runSubmit,
+  runCode,
+  runPick,
+  runReject,
+} from './commands.js';
 
 function formatInput(input: Record<string, unknown>): string {
   return Object.entries(input)
@@ -54,12 +47,193 @@ function summarize(result: string): string {
 }
 
 const tools: OpenAI.ChatCompletionTool[] = [
+  // ─── Command tools (hardcoded flows, same as /commands) ───────────────────
   {
     type: 'function',
     function: {
-      name: 'list_tasks',
-      description: 'List all available and claimed tasks from GitHub Issues',
+      name: 'pick',
+      description:
+        'Browse the task list and act on a specific task (claim, submit, close, or view). ' +
+        'Equivalent to /pick. Use when the user wants to explore or take action on a task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: {
+            type: 'number',
+            description: 'Pre-select a specific issue to jump directly to it (optional).',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'new_task',
+      description:
+        'Create a new task (GitHub Issue) interactively. ' +
+        'Equivalent to /new. Prompts the user for a title if not provided.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Task title (optional — user will be prompted if omitted)' },
+          body: { type: 'string', description: 'Task description (optional)' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'close',
+      description:
+        'Close a task (GitHub Issue). ' +
+        'Equivalent to /close. Shows a task picker if issue_number is not provided.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: {
+            type: 'number',
+            description: 'Issue number to close (optional — user will be prompted if omitted)',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'submit',
+      description:
+        'Submit the current task: commit all changes, create a pull request, and mark the issue as in-review. ' +
+        'Equivalent to /submit. Must be on a task branch (task-N-title).',
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'my_status',
+      description: 'Show all tasks currently assigned to the authenticated GitHub user. Equivalent to /status.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'review',
+      description:
+        'List tasks waiting for your review (submitted by others, created by you). Equivalent to /review.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'refresh',
+      description: 'Reload and display the full task list. Equivalent to /refresh.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_code',
+      description: 'Launch Claude Code for the current task branch. Equivalent to /code.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reject',
+      description:
+        'Reject an in-review task: shows a preview of the rejection comment, asks user to confirm, ' +
+        'then posts the comment and changes the label to changes-needed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          issue_number: { type: 'number', description: 'GitHub issue number to reject' },
+          comment: { type: 'string', description: 'Structured rejection comment (markdown)' },
+        },
+        required: ['issue_number', 'comment'],
+      },
+    },
+  },
+
+  // ─── Low-level tools ─────────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'scan_project',
+      description:
+        'Scan the current project directory: returns the file tree and contents of the most relevant files. ' +
+        'Call this when creating a new task to understand the codebase before writing the task body and guide.',
+      parameters: {
+        type: 'object',
+        properties: {
+          focus: {
+            type: 'string',
+            description: 'Keywords describing the task. Used to prioritise which files to read.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read the full contents of a specific file in the project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to the project root' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        'Ask the user to clarify something ambiguous — scope, expected behaviour, edge cases, or business decisions. ' +
+        'Do NOT ask about technical implementation choices. Use at most 3 times per task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'The question to ask the user' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '2–4 concrete answer choices',
+          },
+        },
+        required: ['question', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description:
+        'Run a shell command in the project root directory. ' +
+        'Use for building, testing, linting, or git status checks. ' +
+        'stdout and stderr are both returned. Commands time out after 60 seconds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The shell command to run' },
+        },
+        required: ['command'],
+      },
     },
   },
   {
@@ -79,199 +253,8 @@ const tools: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'create_task',
-      description: 'Create a new task (GitHub Issue) marked as available',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Task title' },
-          body: { type: 'string', description: 'Optional task description' },
-        },
-        required: ['title'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'scan_project',
-      description:
-        'Scan the current project directory: returns the file tree and contents of the most relevant files. Call this before claiming a task so you have enough context to write a useful guide.',
-      parameters: {
-        type: 'object',
-        properties: {
-          focus: {
-            type: 'string',
-            description:
-              'Keywords describing the task (e.g. issue title). Used to prioritise which files to read.',
-          },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Read the full contents of a specific file in the project.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: {
-            type: 'string',
-            description: 'File path relative to the project root',
-          },
-        },
-        required: ['path'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'run_command',
-      description:
-        'Run a shell command in the project root directory. ' +
-        'Use for building, testing, linting, git status checks, or any other project operations. ' +
-        'stdout and stderr are both returned. Commands time out after 60 seconds.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: {
-            type: 'string',
-            description: 'The shell command to run (executed in the project root)',
-          },
-        },
-        required: ['command'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'claim_task',
-      description:
-        'Assign a GitHub issue to yourself and create a local git branch. Call scan_project first, write a guide, post it with post_comment, then call this.',
-      parameters: {
-        type: 'object',
-        properties: {
-          issue_number: {
-            type: 'number',
-            description: 'The GitHub issue number to claim',
-          },
-        },
-        required: ['issue_number'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'post_comment',
-      description: 'Post a markdown comment on a GitHub issue.',
-      parameters: {
-        type: 'object',
-        properties: {
-          issue_number: { type: 'number', description: 'GitHub issue number' },
-          body: { type: 'string', description: 'Comment body (markdown)' },
-        },
-        required: ['issue_number', 'body'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'close_task',
-      description: 'Close a GitHub issue and remove all techunter labels (equivalent to deleting a task).',
-      parameters: {
-        type: 'object',
-        properties: {
-          issue_number: { type: 'number', description: 'GitHub issue number to close' },
-        },
-        required: ['issue_number'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'ask_user',
-      description:
-        'Ask the user to clarify something that is ambiguous or missing in the task description — ' +
-        'scope boundaries, expected behaviour, edge cases, or decisions that affect what needs to be built. ' +
-        'Do NOT ask about technical implementation choices (those are your job). ' +
-        'Use this at most 3 times per task. Do NOT use it for yes/no confirmation — ' +
-        'post_comment handles confirmation automatically.',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: {
-            type: 'string',
-            description: 'The question to ask the user',
-          },
-          options: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '2–4 concrete answer choices based on codebase context',
-          },
-        },
-        required: ['question', 'options'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_diff',
-      description:
-        'Get the current git diff: changed files, diff vs HEAD, and any unpushed commits. ' +
-        'Call this before reviewing or submitting changes.',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'stage_and_commit',
-      description:
-        'Stage all changes, commit with the given message, and push to origin. ' +
-        'Only call this after reviewing the diff and confirming it meets the acceptance criteria.',
-      parameters: {
-        type: 'object',
-        properties: {
-          message: {
-            type: 'string',
-            description: 'Commit message summarising what was done',
-          },
-        },
-        required: ['message'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'deliver_task',
-      description:
-        'Deliver the current task: push the branch, create a pull request, and mark the issue as in-review',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_my_status',
-      description: 'Show tasks currently assigned to the authenticated GitHub user',
-      parameters: { type: 'object', properties: {}, required: [] },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'get_comments',
-      description: 'Get the latest comments on a GitHub issue. Useful for reading rejection feedback or discussion.',
+      description: 'Get the latest comments on a GitHub issue. Useful for reading rejection feedback.',
       parameters: {
         type: 'object',
         properties: {
@@ -285,18 +268,9 @@ const tools: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'reject_task',
-      description:
-        'Reject an in-review task: post a structured rejection comment on the issue, ' +
-        'then change the label from in-review to changes-needed (assignee unchanged).',
-      parameters: {
-        type: 'object',
-        properties: {
-          issue_number: { type: 'number', description: 'GitHub issue number to reject' },
-          comment: { type: 'string', description: 'Structured rejection comment (markdown)' },
-        },
-        required: ['issue_number', 'comment'],
-      },
+      name: 'get_diff',
+      description: 'Get the current git diff: changed files, diff vs HEAD, and any unpushed commits.',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
 ];
@@ -308,26 +282,33 @@ async function executeTool(
 ): Promise<string> {
   try {
     switch (name) {
-      case 'list_tasks': {
-        const spinner = ora('Loading tasks...').start();
-        try {
-          const tasks = await listTasks(config);
-          spinner.stop();
-          if (tasks.length === 0) return 'No tasks found.';
-          const lines = tasks.map((t) => {
-            const status =
-              t.labels.find((l) => l.startsWith('techunter:'))?.replace('techunter:', '') ??
-              'unknown';
-            const assignee = t.assignee ? `@${t.assignee}` : '—';
-            return `  #${t.number}  [${status}]  ${assignee}  ${t.title}`;
-          });
-          return `Tasks (${tasks.length}):\n${lines.join('\n')}`;
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
+      // ─── Command tools ───────────────────────────────────────────────────────
+      case 'pick':
+        return await runPick(config, input['issue_number'] as number | undefined);
+      case 'new_task':
+        return await runNew(config, {
+          title: input['title'] as string | undefined,
+          body: input['body'] as string | undefined,
+        });
+      case 'close':
+        return await runClose(config, { issue_number: input['issue_number'] as number | undefined });
+      case 'submit':
+        return await runSubmit(config);
+      case 'my_status':
+        return await runStatus(config);
+      case 'review':
+        return await runReview(config);
+      case 'refresh':
+        return await runRefresh(config);
+      case 'open_code':
+        return await runCode(config);
+      case 'reject':
+        return await runReject(config, {
+          issue_number: input['issue_number'] as number,
+          comment: input['comment'] as string,
+        });
 
+      // ─── Low-level tools ─────────────────────────────────────────────────────
       case 'get_task': {
         const issueNumber = input['issue_number'] as number;
         const issue = await getTask(config, issueNumber);
@@ -342,71 +323,6 @@ async function executeTool(
         ];
         if (issue.body) lines.push(`\n${issue.body}`);
         return lines.join('\n');
-      }
-
-      case 'create_task': {
-        const title = input['title'] as string;
-        const body = input['body'] as string | undefined;
-        const spinner = ora(`Creating task "${title}"...`).start();
-        try {
-          const issue = await createTask(config, title, body);
-          spinner.stop();
-          return `Task created: #${issue.number} "${issue.title}" — ${issue.htmlUrl}`;
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
-
-      case 'close_task': {
-        const issueNumber = input['issue_number'] as number;
-        const spinner = ora(`Closing task #${issueNumber}...`).start();
-        try {
-          await closeTask(config, issueNumber);
-          spinner.stop();
-          return `Task #${issueNumber} closed.`;
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
-
-      case 'scan_project': {
-        const focus = (input['focus'] as string | undefined) ?? '';
-        const spinner = ora('Scanning project...').start();
-        try {
-          const cwd = process.cwd();
-          const context = await buildProjectContext(cwd, focus, '');
-          spinner.stop();
-
-          const fileCount = context.fileTree.split('\n').filter(Boolean).length;
-          const readCount = Object.keys(context.keyFiles).length;
-          const totalBytes = Object.values(context.keyFiles).reduce((s, c) => s + c.length, 0);
-          const summary = `Scanned ${fileCount} files · ${readCount} read · ${(totalBytes / 1024).toFixed(1)} KB`;
-
-          const parts: string[] = [summary, `## File tree\n\`\`\`\n${context.fileTree}\n\`\`\``];
-          for (const [filePath, content] of Object.entries(context.keyFiles)) {
-            parts.push(`## ${filePath}\n\`\`\`\n${content}\n\`\`\``);
-          }
-          return parts.join('\n\n');
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
-
-      case 'read_file': {
-        const filePath = input['path'] as string;
-        try {
-          const cwd = process.cwd();
-          const fullPath = path.join(cwd, filePath);
-          const content = await readFile(fullPath, 'utf-8');
-          return content.length > 15_000
-            ? content.slice(0, 15_000) + `\n\n... (truncated)`
-            : content;
-        } catch (err) {
-          return `Error reading file: ${(err as Error).message}`;
-        }
       }
 
       case 'run_command': {
@@ -431,65 +347,44 @@ async function executeTool(
         }
       }
 
-      case 'claim_task': {
-        const issueNumber = input['issue_number'] as number;
-
-        let spinner = ora(`Fetching issue #${issueNumber}...`).start();
-        const [issue, me] = await Promise.all([
-          getTask(config, issueNumber),
-          getAuthenticatedUser(config),
-        ]);
-        spinner.stop();
-
-        if (issue.assignee && issue.assignee !== me) {
-          return `Issue #${issueNumber} is already claimed by @${issue.assignee}.`;
-        }
-
-        // Ask user to confirm before assigning
-        let confirmed: boolean;
+      case 'scan_project': {
+        const focus = (input['focus'] as string | undefined) ?? '';
+        const spinner = ora('Scanning project...').start();
         try {
-          confirmed = await select({
-            message: `Assign issue #${issueNumber} to @${me} and create branch?`,
-            choices: [
-              { name: 'Yes, assign it to me', value: true },
-              { name: 'No, just keep the guide', value: false },
-            ],
-          });
-        } catch {
-          return 'User cancelled assignment.';
-        }
-
-        if (!confirmed) return 'Assignment cancelled. The guide has been posted.';
-
-        spinner = ora('Claiming task...').start();
-        await claimTask(config, issueNumber, me);
-        spinner.stop();
-
-        const branchName = makeBranchName(issueNumber, issue.title);
-        spinner = ora(`Creating branch ${branchName}...`).start();
-        try {
-          await createAndSwitchBranch(branchName);
+          const cwd = process.cwd();
+          const context = await buildProjectContext(cwd, focus, '');
           spinner.stop();
-        } catch {
-          spinner.warn(`Could not create branch ${branchName}`);
-        }
-
-        spinner = ora(`Pushing branch ${branchName}...`).start();
-        try {
-          await pushBranch(branchName);
+          const fileCount = context.fileTree.split('\n').filter(Boolean).length;
+          const readCount = Object.keys(context.keyFiles).length;
+          const totalBytes = Object.values(context.keyFiles).reduce((s, c) => s + c.length, 0);
+          const summary = `Scanned ${fileCount} files · ${readCount} read · ${(totalBytes / 1024).toFixed(1)} KB`;
+          const parts: string[] = [summary, `## File tree\n\`\`\`\n${context.fileTree}\n\`\`\``];
+          for (const [filePath, content] of Object.entries(context.keyFiles)) {
+            parts.push(`## ${filePath}\n\`\`\`\n${content}\n\`\`\``);
+          }
+          return parts.join('\n\n');
+        } catch (err) {
           spinner.stop();
-        } catch {
-          spinner.warn(`Could not push branch ${branchName}`);
+          throw err;
         }
+      }
 
-        return `Task #${issueNumber} claimed by @${me}. Branch: ${branchName}`;
+      case 'read_file': {
+        const filePath = input['path'] as string;
+        try {
+          const cwd = process.cwd();
+          const fullPath = path.join(cwd, filePath);
+          const content = await readFile(fullPath, 'utf-8');
+          return content.length > 15_000 ? content.slice(0, 15_000) + '\n\n... (truncated)' : content;
+        } catch (err) {
+          return `Error reading file: ${(err as Error).message}`;
+        }
       }
 
       case 'ask_user': {
         const question = input['question'] as string;
         const options = input['options'] as string[];
         const OTHER = '__other__';
-
         console.log('');
         console.log(chalk.dim('  ┌─ Agent question ' + '─'.repeat(51)));
         console.log(chalk.dim('  │'));
@@ -497,7 +392,6 @@ async function executeTool(
           console.log(chalk.dim('  │ ') + line);
         }
         console.log(chalk.dim('  └' + '─'.repeat(67)));
-
         let answer: string;
         try {
           const chosen = await select({
@@ -507,107 +401,12 @@ async function executeTool(
               { name: chalk.dim('Other (describe below)'), value: OTHER },
             ],
           });
-          if (chosen === OTHER) {
-            answer = await promptInput({ message: 'Your answer:' });
-          } else {
-            answer = chosen;
-          }
+          answer = chosen === OTHER ? await promptInput({ message: 'Your answer:' }) : chosen;
         } catch {
           answer = 'User skipped this question — use your best judgement.';
         }
-
         console.log('');
         return answer;
-      }
-
-      case 'post_comment': {
-        const issueNumber = input['issue_number'] as number;
-        const body = input['body'] as string;
-
-        // Show full guide
-        const divider = chalk.dim('─'.repeat(70));
-        console.log('\n' + divider);
-        console.log(chalk.bold(`  Guide preview — issue #${issueNumber}`));
-        console.log(divider);
-        console.log(renderMarkdown(body));
-        console.log(divider + '\n');
-
-        // Confirm before posting
-        let decision: string;
-        try {
-          decision = await select({
-            message: `Post this guide to issue #${issueNumber}?`,
-            choices: [
-              { name: 'Yes, post it', value: 'yes' },
-              { name: 'No — describe what to change', value: 'revise' },
-              { name: 'Cancel', value: 'cancel' },
-            ],
-          });
-        } catch {
-          return 'User cancelled posting.';
-        }
-
-        if (decision === 'cancel') return 'User cancelled posting.';
-
-        if (decision === 'revise') {
-          let feedback: string;
-          try {
-            feedback = await promptInput({ message: 'What should be changed?' });
-          } catch {
-            return 'User cancelled.';
-          }
-          return `User declined. Feedback: "${feedback}". Revise the guide and call post_comment again.`;
-        }
-
-        const spinner = ora(`Posting comment on #${issueNumber}...`).start();
-        try {
-          await postComment(config, issueNumber, body);
-          spinner.stop();
-          return `Comment posted on issue #${issueNumber}.`;
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
-
-      case 'deliver_task': {
-        const branch = await getCurrentBranch();
-        const match = branch.match(/^task-(\d+)-/);
-        if (!match) {
-          return `Current branch "${branch}" doesn't look like a task branch (expected task-N-...).`;
-        }
-        const issueNumber = parseInt(match[1], 10);
-
-        let spinner = ora('Fetching issue details...').start();
-        const [issue, defaultBranch] = await Promise.all([
-          getTask(config, issueNumber),
-          getDefaultBranch(config),
-        ]);
-        spinner.stop();
-
-        spinner = ora(`Pushing branch ${branch}...`).start();
-        try {
-          await pushBranch(branch);
-          spinner.stop();
-        } catch {
-          spinner.warn('Push failed, continuing...');
-        }
-
-        spinner = ora('Creating pull request...').start();
-        const prUrl = await createPR(
-          config,
-          issue.title,
-          `Closes #${issueNumber}\n\n${issue.body ?? ''}`.trim(),
-          branch,
-          defaultBranch
-        );
-        spinner.stop();
-
-        spinner = ora('Marking issue as in-review...').start();
-        await markInReview(config, issueNumber);
-        spinner.stop();
-
-        return `PR created: ${prUrl}`;
       }
 
       case 'get_diff': {
@@ -620,49 +419,6 @@ async function executeTool(
           spinner.stop();
           throw err;
         }
-      }
-
-      case 'stage_and_commit': {
-        const aiMessage = input['message'] as string;
-
-        // Let user edit the commit message before confirming
-        let commitMessage: string;
-        try {
-          commitMessage = await promptInput({
-            message: 'Commit message:',
-            default: aiMessage,
-          });
-        } catch {
-          return 'User cancelled commit.';
-        }
-
-        if (!commitMessage.trim()) return 'User cancelled commit.';
-
-        const spinner = ora('Staging, committing and pushing...').start();
-        try {
-          await stageAllAndCommit(commitMessage.trim());
-          spinner.stop();
-          return `Changes committed and pushed: "${commitMessage.trim()}"`;
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-      }
-
-      case 'get_my_status': {
-        const spinner = ora('Fetching your tasks...').start();
-        const me = await getAuthenticatedUser(config);
-        const tasks = await listMyTasks(config, me);
-        spinner.stop();
-
-        if (tasks.length === 0) return `No tasks currently assigned to @${me}.`;
-        const lines = tasks.map((t) => {
-          const status =
-            t.labels.find((l) => l.startsWith('techunter:'))?.replace('techunter:', '') ??
-            'unknown';
-          return `  #${t.number}  [${status}]  ${t.title}`;
-        });
-        return `Tasks assigned to @${me}:\n${lines.join('\n')}`;
       }
 
       case 'get_comments': {
@@ -681,66 +437,6 @@ async function executeTool(
           spinner.stop();
           throw err;
         }
-      }
-
-      case 'reject_task': {
-        const issueNumber = input['issue_number'] as number;
-        const comment = input['comment'] as string;
-
-        // Show full rejection comment preview
-        const divider = chalk.dim('─'.repeat(70));
-        console.log('\n' + divider);
-        console.log(chalk.bold(`  Rejection preview — issue #${issueNumber}`));
-        console.log(divider);
-        console.log(renderMarkdown(comment));
-        console.log(divider + '\n');
-
-        // Confirm before posting
-        let decision: string;
-        try {
-          decision = await select({
-            message: `Post rejection comment and mark #${issueNumber} as changes-needed?`,
-            choices: [
-              { name: 'Post & Reject', value: 'yes' },
-              { name: 'Revise comment — describe what to change', value: 'revise' },
-              { name: 'Cancel', value: 'cancel' },
-            ],
-          });
-        } catch {
-          return 'User cancelled rejection.';
-        }
-
-        if (decision === 'cancel') return 'User cancelled rejection.';
-
-        if (decision === 'revise') {
-          let feedback: string;
-          try {
-            feedback = await promptInput({ message: 'What should be changed in the rejection comment?' });
-          } catch {
-            return 'User cancelled.';
-          }
-          return `User requested revision. Feedback: "${feedback}". Revise the rejection comment and call reject_task again.`;
-        }
-
-        const spinner = ora(`Posting rejection comment on #${issueNumber}...`).start();
-        try {
-          await postComment(config, issueNumber, comment);
-          spinner.stop();
-        } catch (err) {
-          spinner.stop();
-          throw err;
-        }
-
-        const spinner2 = ora(`Marking #${issueNumber} as changes-needed...`).start();
-        try {
-          await rejectTask(config, issueNumber);
-          spinner2.stop();
-        } catch (err) {
-          spinner2.stop();
-          throw err;
-        }
-
-        return `Task #${issueNumber} rejected. Comment posted and label changed to changes-needed.`;
       }
 
       default:
@@ -771,45 +467,47 @@ export async function runAgentLoop(
       'For conversational replies be concise. For task guides be thorough and detailed.',
       'Always use tools when the user requests an action.',
       '',
-      '## Claiming a task — required sequence',
-      '1. Call scan_project with the issue title as focus.',
-      '2. Call read_file on any files that need closer inspection.',
-      '3. If the task description leaves requirements unclear, call ask_user (max 3 times).',
-      '   Ask about: missing scope, ambiguous expected behaviour, edge cases, or business decisions.',
-      '   Do NOT ask about technical choices (architecture, libraries, patterns) — decide those yourself.',
-      '4. Write the task guide (see format below) and call post_comment to post it.',
-      '   post_comment shows the user a full preview and asks for confirmation.',
-      '   If the user requests changes, revise and call post_comment again.',
-      '5. Call claim_task — it will ask the user to confirm assignment before proceeding.',
+      '## Tool philosophy',
+      'Command tools (pick, new_task, close, submit, my_status, review, refresh, open_code) run',
+      'hardcoded interactive flows — always use these for user-facing actions.',
+      'Low-level tools are for reasoning: run_command, scan_project, read_file, ask_user,',
+      'get_task, get_comments, get_diff.',
       '',
-      '## Task guide format',
-      'The guide is a complete technical document a developer can work from independently.',
-      'Write it in the same language as the conversation. Use markdown. Include ALL sections:',
+      '## Creating a task — required sequence',
+      '1. If the task description is vague, call ask_user to clarify scope (max 3 times).',
+      '2. Call scan_project with the task title as focus.',
+      '3. Call read_file on any files that need closer inspection.',
+      '4. Call new_task with a well-written title AND a full implementation guide as the body.',
+      '   The body IS the guide — write it directly, do not call any comment tool after.',
+      '',
+      '## Claiming a task',
+      'When the user wants to claim an existing task, call pick with the issue_number.',
+      'The pick flow handles everything: shows details, confirms, creates branch, pushes.',
+      'Do NOT scan or generate a guide for claiming — the guide was written at creation time.',
+      '',
+      '## Guide format',
+      'Write the guide in the same language as the conversation. Use markdown. Include ALL sections:',
       '',
       '### 📋 任务概述 / Task Overview',
-      'One paragraph explaining what this task is, why it matters, and what done looks like.',
+      'One paragraph: what this task is, why it matters, what done looks like.',
       '',
       '### 🏗 架构背景 / Architecture Context',
-      'Explain where this task fits in the codebase. Reference specific files and modules.',
-      'Describe how the affected code is currently structured and what will change.',
+      'Where this task fits in the codebase. Reference specific files and modules.',
       '',
       '### ⚙️ 技术要求 / Technical Requirements',
-      'Bullet list of specific technical constraints, patterns to follow, APIs to use,',
-      'coding conventions found in the codebase that must be respected.',
+      'Bullet list of constraints, patterns, APIs, and coding conventions to follow.',
       '',
       '### 📁 涉及文件 / Files Involved',
-      'Table or list: each file path, whether to CREATE/MODIFY/DELETE, and what change is needed.',
+      'Each file path, whether to CREATE/MODIFY/DELETE, and what change is needed.',
       '',
       '### 🪜 实现步骤 / Implementation Steps',
-      'Numbered, ordered, concrete steps. Each step should reference specific functions,',
-      'classes, or file locations. Include code snippets where helpful.',
+      'Numbered, concrete steps referencing specific functions and file locations.',
       '',
       '### ✅ 验收标准 / Acceptance Criteria',
       'Checkbox list of testable conditions that must all be true before the task is done.',
       '',
       '### ⚠️ 注意事项 / Pitfalls & Considerations',
-      'Known edge cases, potential breaking changes, performance concerns, or gotchas',
-      'specific to this codebase.',
+      'Edge cases, breaking changes, performance concerns specific to this codebase.',
       '',
       '## Reviewing and rejecting a task',
       'When asked to reject a task:',
@@ -829,15 +527,19 @@ export async function runAgentLoop(
       '### 📋 下一步 / Next Steps',
       'Clear instruction on what to fix and how to re-submit (via /submit or deliver_task).',
       '',
-      '3. Call reject_task with issue_number and the full rejection comment.',
+      '3. Call reject with issue_number and the full rejection comment.',
       '',
       '## Submitting changes',
-      'When the user asks to submit, sync, or commit changes:',
-      '1. Call get_diff to read all local changes.',
-      '2. Parse the issue number from the current branch name (task-N-...) and call get_task.',
-      '3. Review: does the diff satisfy each acceptance criterion? List what is complete and what is missing.',
-      '4. If all criteria are met: call stage_and_commit with a concise commit message.',
-      '5. If criteria are not met: clearly list the gaps. Do NOT call stage_and_commit.',
+      'When the user asks to submit, deliver, push, or finish their work:',
+      'Call submit directly — it shows the task details and diff to the user and handles confirmation.',
+      '',
+      '## Reviewing submitted tasks',
+      'When the user asks to review tasks or check what needs approval:',
+      '1. Call review to list tasks pending your approval.',
+      '2. Call get_task to read full details of the task to review.',
+      '3. Call get_comments to read the implementation guide and any discussion.',
+      '4. To approve: call close with the issue_number.',
+      '5. To reject: write a structured rejection comment and call reject.',
     ].join('\n'),
   };
 
