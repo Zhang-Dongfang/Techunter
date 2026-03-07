@@ -10,6 +10,7 @@ import * as review from './review/index.js';
 import * as refresh from './refresh/index.js';
 import * as openCode from './open-code/index.js';
 import * as reject from './reject/index.js';
+import * as accept from './accept/index.js';
 
 // Low-level tools
 import * as getTask from './get-task/index.js';
@@ -31,6 +32,7 @@ export const toolModules: ToolModule[] = [
   refresh,
   openCode,
   reject,
+  accept,
   // Low-level tools
   getTask,
   getComments,

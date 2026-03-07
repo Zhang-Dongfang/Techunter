@@ -27,3 +27,4 @@ export async function run(config: TechunterConfig): Promise<string> {
 }
 
 export const execute = (_input: Record<string, unknown>, config: TechunterConfig) => run(config);
+export const terminal = true;

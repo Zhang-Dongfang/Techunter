@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import chalk from 'chalk';
-import { input } from '@inquirer/prompts';
+import readline from 'node:readline';
 import { createRequire } from 'node:module';
 import type OpenAI from 'openai';
 
 const _require = createRequire(import.meta.url);
 const { version } = _require('../package.json') as { version: string };
 import { initCommand } from './commands/init.js';
+import { configCommand } from './commands/config.js';
 import { getConfig } from './lib/config.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
@@ -19,7 +20,32 @@ import { run as runStatus } from './tools/my-status/index.js';
 import { run as runReview } from './tools/review/index.js';
 import { run as runRefresh } from './tools/refresh/index.js';
 import { run as runCode } from './tools/open-code/index.js';
+import { run as runAccept } from './tools/accept/index.js';
 import type { TechunterConfig } from './types.js';
+
+// ─── Tab completion ───────────────────────────────────────────────────────────
+
+const SLASH_NAMES = [
+  '/help', '/h', '/refresh', '/r', '/pick', '/p', '/new', '/n',
+  '/submit', '/s', '/close', '/d', '/review', '/rv', '/accept', '/ac',
+  '/status', '/me', '/code', '/c', '/config', '/cfg',
+];
+
+function completer(line: string): [string[], string] {
+  if (line.startsWith('/')) {
+    const hits = SLASH_NAMES.filter((c) => c.startsWith(line));
+    return [hits.length ? hits : SLASH_NAMES, line];
+  }
+  return [[], line];
+}
+
+let _rl: readline.Interface | null = null;
+
+function promptUser(): Promise<string> {
+  return new Promise((resolve) => {
+    _rl!.question(chalk.cyan('You') + chalk.dim(' › '), resolve);
+  });
+}
 
 // ─── Slash commands ───────────────────────────────────────────────────────────
 
@@ -31,6 +57,8 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/close',   alias: '/d',  desc: 'Close (delete) a task' },
   { cmd: '/submit',  alias: '/s',  desc: 'Commit, create PR, and mark in-review' },
   { cmd: '/review',  alias: '/rv', desc: 'List tasks waiting for your approval' },
+  { cmd: '/accept',  alias: '/ac', desc: 'Accept a reviewed task: merge PR and close issue' },
+  { cmd: '/config',  alias: '/cfg', desc: 'Change settings (branch, repo, API keys)' },
   { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
   { cmd: '/code',    alias: '/c',  desc: 'Open Claude Code for the current task branch' },
 ];
@@ -103,6 +131,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args[0] === 'config') {
+    try {
+      await configCommand();
+    } catch (err) {
+      console.error(chalk.red(`\nError: ${(err as Error).message}`));
+      process.exit(1);
+    }
+    return;
+  }
+
   let config: TechunterConfig;
   try {
     config = getConfig();
@@ -118,7 +156,17 @@ async function main(): Promise<void> {
   await printTaskList(config);
   await printMyTasks(config);
 
-  process.on('SIGINT', () => {
+  _rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    completer,
+    terminal: true,
+  });
+  _rl.on('close', () => {
+    console.log(chalk.gray('\nGoodbye!'));
+    process.exit(0);
+  });
+  _rl.on('SIGINT', () => {
     console.log(chalk.gray('\nGoodbye!'));
     process.exit(0);
   });
@@ -126,16 +174,10 @@ async function main(): Promise<void> {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
 
   for (;;) {
-    let userInput: string;
-    try {
-      userInput = await input({ message: chalk.cyan('You') });
-    } catch {
-      // Ctrl+C / Ctrl+D inside the prompt
-      console.log(chalk.gray('\nGoodbye!'));
-      process.exit(0);
-    }
+    const userInput = (await promptUser()).trim();
+    // pause so inquirer tools don't share the same stdin listener
+    _rl.pause();
 
-    userInput = userInput.trim();
     if (!userInput) continue;
 
     // Slash commands — hardcoded flows, no AI call
@@ -186,6 +228,17 @@ async function main(): Promise<void> {
           console.log('\n' + renderMarkdown(result));
           break;
         }
+        case '/accept': case '/ac': {
+          const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
+          const preselected = arg ? parseInt(arg, 10) : undefined;
+          const result = await runAccept(config, Number.isNaN(preselected) ? undefined : { issue_number: preselected });
+          console.log(chalk.green(`\n  ${result}\n`));
+          await printTaskList(config);
+          break;
+        }
+        case '/config': case '/cfg':
+          await configCommand();
+          break;
         case '/code': case '/c':
           await runCode(config);
           break;

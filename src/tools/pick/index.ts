@@ -146,3 +146,4 @@ export async function run(config: TechunterConfig, preselected?: number): Promis
 
 export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
   run(config, input['issue_number'] as number | undefined);
+export const terminal = true;

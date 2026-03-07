@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, getDefaultBranch } from '../../lib/github.js';
+import { getTask, createPR, markInReview, getBaseBranch } from '../../lib/github.js';
 import { getCurrentBranch, getDiff, stageAllAndCommit } from '../../lib/git.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { reviewChanges } from './reviewer.js';
@@ -29,7 +29,7 @@ export async function run(config: TechunterConfig): Promise<string> {
   let spinner = ora('Loading task and diff…').start();
   const [issue, defaultBranch, diff] = await Promise.all([
     getTask(config, issueNumber),
-    getDefaultBranch(config),
+    getBaseBranch(config),
     getDiff(),
   ]);
   spinner.stop();
@@ -114,3 +114,4 @@ export async function run(config: TechunterConfig): Promise<string> {
 }
 
 export const execute = (_input: Record<string, unknown>, config: TechunterConfig) => run(config);
+export const terminal = true;

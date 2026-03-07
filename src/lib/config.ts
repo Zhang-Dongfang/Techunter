@@ -9,6 +9,7 @@ const configSchema = z.object({
   github: z.object({
     owner: z.string().min(1),
     repo: z.string().min(1),
+    baseBranch: z.string().optional(),
   }),
 });
 

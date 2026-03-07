@@ -117,16 +117,19 @@ export async function runAgentLoop(
         )
       );
 
+      let terminal = false;
       for (let i = 0; i < toolCalls.length; i++) {
         printToolResult(results[i]);
-
-        const toolMessage: OpenAI.ChatCompletionToolMessageParam = {
+        messages.push({
           role: 'tool',
           tool_call_id: toolCalls[i].id,
           content: results[i],
-        };
-        messages.push(toolMessage);
+        });
+        if (toolModules.find((m) => m.definition.function.name === toolCalls[i].function.name)?.terminal) {
+          terminal = true;
+        }
       }
+      if (terminal) return results[results.length - 1];
     } else {
       return choice.message.content ?? '';
     }

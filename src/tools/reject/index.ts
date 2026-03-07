@@ -105,3 +105,4 @@ export async function run(config: TechunterConfig, opts: { issue_number: number 
 
 export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
   run(config, { issue_number: input['issue_number'] as number });
+export const terminal = true;
