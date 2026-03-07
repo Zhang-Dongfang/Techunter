@@ -1,31 +1,18 @@
-import type { TechunterConfig, GitHubIssue } from '../../types.js';
-import { createClient, MODEL } from '../../lib/client.js';
+import type { TechunterConfig } from '../../types.js';
+import { runSubAgentLoop } from '../../lib/sub-agent.js';
 import { REJECTION_FORMAT } from './prompts.js';
 
 export async function generateRejectionComment(
   config: TechunterConfig,
-  issue: GitHubIssue,
+  issueNumber: number,
   userFeedback: string
 ): Promise<string> {
-  const client = createClient(config);
-
-  const res = await client.chat.completions.create({
-    model: MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a senior engineer writing a structured code review rejection comment.\n\n${REJECTION_FORMAT}`,
-      },
-      {
-        role: 'user',
-        content:
-          `Task #${issue.number}: ${issue.title}\n\n` +
-          `Acceptance Criteria:\n${issue.body ?? '(none)'}\n\n` +
-          `Reviewer feedback: ${userFeedback}\n\n` +
-          `Write the complete rejection comment.`,
-      },
-    ],
-  });
-
-  return res.choices[0].message.content ?? '';
+  return runSubAgentLoop(
+    config,
+    'You are a senior engineer writing a structured code review rejection comment. ' +
+      'Use get_task to read the acceptance criteria, get_diff or read_file to inspect the implementation, ' +
+      'and get_comments to see prior discussion. Then write the rejection comment.\n\n' + REJECTION_FORMAT,
+    `Write a rejection comment for issue #${issueNumber}.\nReviewer feedback: ${userFeedback}`,
+    ['get_task', 'get_comments', 'get_diff', 'read_file']
+  );
 }

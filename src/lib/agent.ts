@@ -4,24 +4,7 @@ import chalk from 'chalk';
 import type { TechunterConfig } from '../types.js';
 import { toolModules } from '../tools/registry.js';
 import { createClient, MODEL } from './client.js';
-
-function formatInput(input: Record<string, unknown>): string {
-  return Object.entries(input)
-    .map(([k, v]) => {
-      if (typeof v === 'number') return `${k}=${v}`;
-      if (typeof v === 'string') {
-        if (k === 'body' || v.length > 50) return `${k}=[${v.length} chars]`;
-        return `${k}="${v}"`;
-      }
-      return `${k}=${JSON.stringify(v)}`;
-    })
-    .join('  ');
-}
-
-function summarize(result: string): string {
-  const first = result.split('\n').find((l) => l.trim()) ?? result;
-  return first.length > 100 ? first.slice(0, 97) + '...' : first;
-}
+import { printToolCall, printToolResult } from './agent-ui.js';
 
 const tools = toolModules.map((m) => m.definition as OpenAI.ChatCompletionTool);
 
@@ -121,8 +104,7 @@ export async function runAgentLoop(
       const toolCalls = choice.message.tool_calls ?? [];
 
       for (const tc of toolCalls) {
-        const params = formatInput(JSON.parse(tc.function.arguments) as Record<string, unknown>);
-        console.log(`  ${chalk.cyan('→')} ${chalk.bold(tc.function.name)}${params ? '  ' + chalk.dim(params) : ''}`);
+        printToolCall(tc.function.name, JSON.parse(tc.function.arguments) as Record<string, unknown>);
       }
 
       const results = await Promise.all(
@@ -136,9 +118,7 @@ export async function runAgentLoop(
       );
 
       for (let i = 0; i < toolCalls.length; i++) {
-        const ok = !results[i].startsWith('Error:');
-        const icon = ok ? chalk.green('✓') : chalk.red('✗');
-        console.log(`  ${icon} ${chalk.dim(summarize(results[i]))}`);
+        printToolResult(results[i]);
 
         const toolMessage: OpenAI.ChatCompletionToolMessageParam = {
           role: 'tool',
