@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/mcp.ts'],
   format: ['esm'],
   dts: false,
   // Keep all node_modules external — don't inline them
@@ -23,6 +23,7 @@ export default defineConfig({
     'ora',
     'simple-git',
     'zod',
+    '@modelcontextprotocol/sdk',
   ],
   splitting: false,
   clean: true,

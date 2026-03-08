@@ -79,6 +79,17 @@ export async function run(config: TechunterConfig, opts?: { issue_number?: numbe
   }
 }
 
-export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
-  run(config, { issue_number: input['issue_number'] as number | undefined });
+export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const issueNumber = input['issue_number'] as number;
+  const spinner = ora(`Merging PR for #${issueNumber}…`).start();
+  try {
+    const result = await acceptTask(config, issueNumber);
+    spinner.stop();
+    const baseBranch = config.github.baseBranch ?? 'main';
+    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${baseBranch}\nIssue closed.`;
+  } catch (err) {
+    spinner.stop();
+    return `Error: ${(err as Error).message}`;
+  }
+}
 export const terminal = true;

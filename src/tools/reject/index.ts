@@ -16,9 +16,10 @@ export const definition = {
     parameters: {
       type: 'object',
       properties: {
-        issue_number: { type: 'number', description: 'GitHub issue number to reject' },
+        issue_number: { type: 'number', description: 'GitHub issue number to reject.' },
+        feedback: { type: 'string', description: 'Description of what is wrong with the submission.' },
       },
-      required: ['issue_number'],
+      required: ['issue_number', 'feedback'],
     },
   },
 } as const;
@@ -103,6 +104,29 @@ export async function run(config: TechunterConfig, opts: { issue_number: number 
   }
 }
 
-export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
-  run(config, { issue_number: input['issue_number'] as number });
+export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const issueNumber = input['issue_number'] as number;
+  const feedback = input['feedback'] as string;
+
+  let comment: string;
+  try {
+    comment = await generateRejectionComment(config, issueNumber, feedback);
+  } catch (err) {
+    return `Error generating comment: ${(err as Error).message}`;
+  }
+
+  try {
+    await postComment(config, issueNumber, comment);
+  } catch (err) {
+    return `Error posting comment: ${(err as Error).message}`;
+  }
+
+  try {
+    await rejectTask(config, issueNumber);
+  } catch (err) {
+    return `Comment posted but failed to update label: ${(err as Error).message}`;
+  }
+
+  return `Task #${issueNumber} rejected.\n\nComment posted:\n${comment}`;
+}
 export const terminal = true;

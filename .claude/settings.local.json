@@ -9,5 +9,8 @@
       "Bash(test:*)",
       "Bash(ls:*)"
     ]
-  }
+  },
+  "disabledMcpjsonServers": [
+    "techunter"
+  ]
 }

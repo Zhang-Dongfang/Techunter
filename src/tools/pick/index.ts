@@ -25,12 +25,14 @@ export const definition = {
     parameters: {
       type: 'object',
       properties: {
-        issue_number: {
-          type: 'number',
-          description: 'Pre-select a specific issue to jump directly to it (optional).',
+        issue_number: { type: 'number', description: 'Issue number to act on.' },
+        action: {
+          type: 'string',
+          enum: ['claim', 'view'],
+          description: '"claim" to assign yourself and create a branch; "view" to return task details.',
         },
       },
-      required: [],
+      required: ['issue_number', 'action'],
     },
   },
 } as const;
@@ -158,6 +160,48 @@ export async function run(config: TechunterConfig, preselected?: number): Promis
   return 'Cancelled.';
 }
 
-export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
-  run(config, input['issue_number'] as number | undefined);
+export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const issueNumber = input['issue_number'] as number;
+  const action = input['action'] as string;
+
+  let issue;
+  try {
+    issue = await getTask(config, issueNumber);
+  } catch (err) {
+    return `Error loading task: ${(err as Error).message}`;
+  }
+
+  if (action === 'view') {
+    const status = getStatus(issue);
+    const assignee = issue.assignee ? `@${issue.assignee}` : '—';
+    return [`#${issue.number}  [${status}]  ${assignee}  ${issue.title}`, issue.body ?? ''].join('\n\n');
+  }
+
+  if (action === 'claim') {
+    const { getAuthenticatedUser, listMyTasks } = await import('../../lib/github.js');
+    const me = await getAuthenticatedUser(config);
+
+    const myTasks = await listMyTasks(config, me);
+    const activeTask = myTasks.find((t) => {
+      return t.labels.includes('techunter:claimed') || t.labels.includes('techunter:changes-needed');
+    });
+    if (activeTask) {
+      return `You already have an active task: #${activeTask.number} "${activeTask.title}". Finish it before claiming a new one.`;
+    }
+
+    try {
+      await claimTask(config, issueNumber, me);
+    } catch (err) {
+      return `Error claiming task: ${(err as Error).message}`;
+    }
+
+    const branch = makeBranchName(issueNumber, issue.title);
+    try { await createAndSwitchBranch(branch); } catch { /* ignore branch errors */ }
+    try { await pushBranch(branch); } catch { /* ignore push errors */ }
+
+    return `Task #${issueNumber} claimed. Branch: ${branch}`;
+  }
+
+  return `Unknown action: ${action}`;
+}
 export const terminal = true;

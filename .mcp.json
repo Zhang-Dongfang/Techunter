@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "techunter": {
+      "command": "node",
+      "args": ["E:/Excalibur/dist/mcp.js"]
+    }
+  }
+}

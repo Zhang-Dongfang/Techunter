@@ -8,13 +8,13 @@ export const definition = {
   type: 'function',
   function: {
     name: 'close',
-    description: 'Close a task (GitHub Issue). Equivalent to /close. Shows a task picker if issue_number is not provided.',
+    description: 'Close a task (GitHub Issue). Equivalent to /close.',
     parameters: {
       type: 'object',
       properties: {
-        issue_number: { type: 'number', description: 'Issue number to close (optional — user will be prompted if omitted)' },
+        issue_number: { type: 'number', description: 'Issue number to close.' },
       },
-      required: [],
+      required: ['issue_number'],
     },
   },
 } as const;
@@ -62,6 +62,16 @@ export async function run(config: TechunterConfig, opts: { issue_number?: number
   }
 }
 
-export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
-  run(config, { issue_number: input['issue_number'] as number | undefined });
+export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const issueNumber = input['issue_number'] as number;
+  const spinner = ora(`Closing #${issueNumber}…`).start();
+  try {
+    await closeTask(config, issueNumber);
+    spinner.stop();
+    return `Task #${issueNumber} closed.`;
+  } catch (err) {
+    spinner.stop();
+    return `Error: ${(err as Error).message}`;
+  }
+}
 export const terminal = true;

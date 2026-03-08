@@ -41,9 +41,10 @@ export const definition = {
     parameters: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Task title (optional — user will be prompted if omitted)' },
+        title: { type: 'string', description: 'Task title.' },
+        feedback: { type: 'string', description: 'Optional feedback to revise the generated guide before creating the issue.' },
       },
-      required: [],
+      required: ['title'],
     },
   },
 } as const;
@@ -155,6 +156,21 @@ export async function run(config: TechunterConfig, opts: { title?: string } = {}
   return `Created #${issueNumber} "${issueTitle}" — ${htmlUrl}`;
 }
 
-export const execute = (input: Record<string, unknown>, config: TechunterConfig) =>
-  run(config, { title: input['title'] as string | undefined });
+export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const title = (input['title'] as string).trim();
+  const feedback = input['feedback'] as string | undefined;
+
+  let guide = await generateGuide(config, title);
+
+  if (feedback) {
+    guide = await generateGuide(config, title, { feedback, previousGuide: guide });
+  }
+
+  try {
+    const issue = await createTask(config, title, guide);
+    return `Created #${issue.number} "${issue.title}" — ${issue.htmlUrl}\n\nGuide:\n${guide}`;
+  } catch (err) {
+    return `Error: ${(err as Error).message}`;
+  }
+}
 export const terminal = true;
