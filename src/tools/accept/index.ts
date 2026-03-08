@@ -20,8 +20,8 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig, opts?: { issue_number?: number }): Promise<string> {
-  let issueNumber = opts?.issue_number;
+export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  let issueNumber = input['issue_number'] as number | undefined;
 
   if (!issueNumber) {
     const spinner = ora('Loading tasks for review…').start();

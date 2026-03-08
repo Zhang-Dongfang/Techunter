@@ -6,9 +6,10 @@ import type OpenAI from 'openai';
 
 const _require = createRequire(import.meta.url);
 const { version } = _require('../package.json') as { version: string };
+import { input } from '@inquirer/prompts';
 import { initCommand } from './commands/init.js';
 import { configCommand } from './commands/config.js';
-import { getConfig } from './lib/config.js';
+import { getConfig, setConfig } from './lib/config.js';
 import { getRemoteUrl, parseOwnerRepo } from './lib/git.js';
 import { ensureLabels } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
@@ -30,7 +31,7 @@ import type { TechunterConfig } from './types.js';
 const SLASH_NAMES = [
   '/help', '/h', '/refresh', '/r', '/pick', '/p', '/new', '/n',
   '/submit', '/s', '/close', '/d', '/review', '/rv', '/accept', '/ac',
-  '/status', '/me', '/code', '/c', '/config', '/cfg',
+  '/status', '/me', '/code', '/c', '/config', '/cfg', '/init',
 ];
 
 function completer(line: string): [string[], string] {
@@ -61,6 +62,7 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/review',  alias: '/rv', desc: 'List tasks waiting for your approval' },
   { cmd: '/accept',  alias: '/ac', desc: 'Accept a reviewed task: merge PR and close issue' },
   { cmd: '/config',  alias: '/cfg', desc: 'Change settings (branch, repo, API keys)' },
+  { cmd: '/init',                  desc: 'Re-run setup wizard for this repo' },
   { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
   { cmd: '/code',    alias: '/c',  desc: 'Open Claude Code for the current task branch' },
 ];
@@ -103,6 +105,38 @@ function printBanner(config: TechunterConfig): void {
   console.log('');
 }
 
+// ─── New-repo init ────────────────────────────────────────────────────────────
+
+async function initNewRepo(config: TechunterConfig, owner: string, repo: string): Promise<TechunterConfig> {
+  console.log('');
+  console.log(chalk.bold.cyan(`  New repo detected: ${owner}/${repo}`));
+  console.log(chalk.dim('  Setting up Techunter for this repository...\n'));
+
+  const baseBranch = await input({
+    message: 'Main branch to merge PRs into:',
+    default: 'main',
+  });
+
+  const newConfig: TechunterConfig = {
+    ...config,
+    github: { owner, repo, baseBranch: baseBranch.trim() || 'main' },
+  };
+
+  setConfig({ github: newConfig.github });
+
+  const ora = (await import('ora')).default;
+  const spinner = ora('Creating Techunter labels...').start();
+  try {
+    await ensureLabels(newConfig);
+    spinner.succeed('Labels ready');
+  } catch (err) {
+    spinner.fail(`Could not create labels: ${(err as Error).message}`);
+  }
+
+  console.log('');
+  return newConfig;
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -139,11 +173,10 @@ async function main(): Promise<void> {
     const detected = parseOwnerRepo(remoteUrl);
     if (detected) {
       const isNewRepo = detected.owner !== config.github.owner || detected.repo !== config.github.repo;
-      config = { ...config, github: { ...config.github, owner: detected.owner, repo: detected.repo, baseBranch: undefined } };
       if (isNewRepo) {
-        console.log(chalk.dim(`  Repo: ${detected.owner}/${detected.repo}`));
-        // Set up labels for this repo silently (non-blocking)
-        ensureLabels(config).catch(() => {});
+        config = await initNewRepo(config, detected.owner, detected.repo);
+      } else {
+        config = { ...config, github: { ...config.github, owner: detected.owner, repo: detected.repo } };
       }
     }
   } else if (!config.github.owner) {
@@ -189,12 +222,12 @@ async function main(): Promise<void> {
           cmdHelp();
           break;
         case '/refresh': case '/r':
-          await runRefresh(config);
+          await runRefresh({}, config);
           break;
         case '/pick': case '/p': {
           const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
           const preselected = arg ? parseInt(arg, 10) : undefined;
-          const result = await runPick(config, Number.isNaN(preselected) ? undefined : preselected);
+          const result = await runPick({ issue_number: Number.isNaN(preselected) ? undefined : preselected }, config);
           if (result && result !== 'Cancelled.') {
             console.log(chalk.green(`\n  ${result}\n`));
           }
@@ -202,37 +235,37 @@ async function main(): Promise<void> {
           break;
         }
         case '/new': case '/n': {
-          const result = await runNew(config);
+          const result = await runNew({}, config);
           console.log(chalk.green(`\n  ${result}\n`));
           await printTaskList(config);
           break;
         }
         case '/submit': case '/s': {
-          const result = await runSubmit(config);
+          const result = await runSubmit({}, config);
           console.log('\n' + renderMarkdown(result));
           await printTaskList(config);
           break;
         }
         case '/close': case '/d': {
-          const result = await runClose(config);
+          const result = await runClose({}, config);
           console.log(chalk.green(`\n  ${result}\n`));
           await printTaskList(config);
           break;
         }
         case '/review': case '/rv': {
-          const result = await runReview(config);
+          const result = await runReview({}, config);
           console.log('\n' + renderMarkdown(result));
           break;
         }
         case '/status': case '/me': {
-          const result = await runStatus(config);
+          const result = await runStatus({}, config);
           console.log('\n' + renderMarkdown(result));
           break;
         }
         case '/accept': case '/ac': {
           const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
           const preselected = arg ? parseInt(arg, 10) : undefined;
-          const result = await runAccept(config, Number.isNaN(preselected) ? undefined : { issue_number: preselected });
+          const result = await runAccept({ issue_number: Number.isNaN(preselected) ? undefined : preselected }, config);
           console.log(chalk.green(`\n  ${result}\n`));
           await printTaskList(config);
           break;
@@ -240,8 +273,17 @@ async function main(): Promise<void> {
         case '/config': case '/cfg':
           await configCommand();
           break;
+        case '/init':
+          try {
+            await initCommand();
+            config = getConfig();
+            await printTaskList(config);
+          } catch (err) {
+            console.error(chalk.red(`\nInit failed: ${(err as Error).message}\n`));
+          }
+          break;
         case '/code': case '/c':
-          await runCode(config);
+          await runCode({}, config);
           break;
         default:
           console.log(chalk.yellow(`  Unknown command: ${cmd}  (try /help)`));

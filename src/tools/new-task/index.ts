@@ -49,8 +49,8 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig, opts: { title?: string } = {}): Promise<string> {
-  let title = opts.title?.trim();
+export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  let title = (input['title'] as string | undefined)?.trim();
   if (!title) {
     try {
       title = (await promptInput({ message: 'Task title:' })).trim();

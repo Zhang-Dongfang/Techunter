@@ -37,7 +37,8 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig, preselected?: number): Promise<string> {
+export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const preselected = input['issue_number'] as number | undefined;
   let chosenNumber: number;
 
   if (preselected !== undefined) {
@@ -154,8 +155,8 @@ export async function run(config: TechunterConfig, preselected?: number): Promis
     }
   }
 
-  if (action === 'submit') return runSubmit(config);
-  if (action === 'close') return runClose(config, { issue_number: issue.number });
+  if (action === 'submit') return runSubmit({}, config);
+  if (action === 'close') return runClose({ issue_number: issue.number }, config);
 
   return 'Cancelled.';
 }

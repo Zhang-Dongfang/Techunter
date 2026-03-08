@@ -24,7 +24,7 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig): Promise<string> {
+export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const branch = await getCurrentBranch();
   const match = branch.match(/^task-(\d+)-/);
   if (!match) {

@@ -16,7 +16,8 @@ async function executeTool(
   const mod = toolModules.find((m) => m.definition.function.name === name);
   if (!mod) return `Unknown tool: ${name}`;
   try {
-    return await mod.execute(input, config);
+    const fn = mod.run ?? mod.execute;
+    return await fn(input, config);
   } catch (err) {
     return `Error: ${(err as Error).message}`;
   }
@@ -77,9 +78,7 @@ export async function runAgentLoop(
     if (++iterations > MAX_ITERATIONS) {
       throw new Error(`Agent exceeded ${MAX_ITERATIONS} iterations without finishing.`);
     }
-    const isWindows = process.platform === 'win32';
-    const spinner = isWindows ? null : ora({ text: chalk.dim('Thinking…'), color: 'cyan' }).start();
-    if (isWindows) process.stdout.write(chalk.dim('  Thinking…'));
+    const spinner = ora({ text: chalk.dim('Thinking…'), color: 'cyan' }).start();
 
     let response: Awaited<ReturnType<typeof client.chat.completions.create>>;
     try {
@@ -89,10 +88,10 @@ export async function runAgentLoop(
         messages: [systemMessage, ...messages],
       });
     } catch (err) {
-      if (spinner) spinner.stop(); else process.stdout.write('\r' + ' '.repeat(14) + '\r');
+      spinner.stop();
       throw err;
     }
-    if (spinner) spinner.stop(); else process.stdout.write('\r' + ' '.repeat(14) + '\r');
+    spinner.stop();
 
     const choice = response.choices[0];
     const assistantMessage: OpenAI.ChatCompletionAssistantMessageParam = {

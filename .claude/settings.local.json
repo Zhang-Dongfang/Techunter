@@ -9,7 +9,13 @@
       "Bash(test:*)",
       "Bash(ls:*)",
       "Bash(git remote:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(grep:*)",
+      "Bash(for f in E:/Excalibur/src/tools/*/index.ts)",
+      "Bash(do)",
+      "Bash(echo \"=== $f ===\")",
+      "Read(//e/Excalibur/**)",
+      "Bash(done)"
     ]
   },
   "disabledMcpjsonServers": [

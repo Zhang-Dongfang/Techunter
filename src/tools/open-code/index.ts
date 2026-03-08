@@ -12,7 +12,7 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig): Promise<string> {
+export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   let branch: string;
   try {
     branch = await getCurrentBranch();
@@ -32,5 +32,5 @@ export async function run(config: TechunterConfig): Promise<string> {
   return 'Claude Code session ended.';
 }
 
-export const execute = (_input: Record<string, unknown>, config: TechunterConfig) => run(config);
+export const execute = run;
 export const terminal = true;

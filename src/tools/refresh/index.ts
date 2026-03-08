@@ -10,7 +10,7 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig): Promise<string> {
+export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const tasks = await printTaskList(config);
   if (tasks.length === 0) return 'No tasks found.';
   const lines = tasks.map((t) => {
@@ -21,5 +21,5 @@ export async function run(config: TechunterConfig): Promise<string> {
   return `Tasks (${tasks.length}):\n${lines.join('\n')}`;
 }
 
-export const execute = (_input: Record<string, unknown>, config: TechunterConfig) => run(config);
+export const execute = run;
 export const terminal = true;

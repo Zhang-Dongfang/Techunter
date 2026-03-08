@@ -406,6 +406,17 @@ export async function ensureLabels(config: TechunterConfig): Promise<void> {
   );
 }
 
+export async function editTask(
+  config: TechunterConfig,
+  number: number,
+  title: string,
+  body: string
+): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  await octokit.issues.update({ owner, repo, issue_number: number, title, body });
+}
+
 export async function getDefaultBranch(config: TechunterConfig): Promise<string> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;

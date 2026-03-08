@@ -24,8 +24,8 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig, opts: { issue_number: number }): Promise<string> {
-  const { issue_number: issueNumber } = opts;
+export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const issueNumber = input['issue_number'] as number;
 
   let feedback: string;
   try {

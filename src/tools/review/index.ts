@@ -11,7 +11,7 @@ export const definition = {
   },
 } as const;
 
-export async function run(config: TechunterConfig): Promise<string> {
+export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const spinner = ora('Loading tasks for review…').start();
   try {
     const me = await getAuthenticatedUser(config);
@@ -26,5 +26,5 @@ export async function run(config: TechunterConfig): Promise<string> {
   }
 }
 
-export const execute = (_input: Record<string, unknown>, config: TechunterConfig) => run(config);
+export const execute = run;
 export const terminal = true;
