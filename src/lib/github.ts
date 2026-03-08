@@ -42,53 +42,26 @@ function parseIssue(issue: {
   };
 }
 
+const TECHUNTER_LABELS = new Set([LABEL_AVAILABLE, LABEL_CLAIMED, LABEL_IN_REVIEW, LABEL_CHANGES_NEEDED]);
+
 export async function listTasks(config: TechunterConfig): Promise<GitHubIssue[]> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  const [available, claimed, inReview, changesNeeded] = await Promise.all([
-    octokit.issues.listForRepo({
-      owner,
-      repo,
-      labels: LABEL_AVAILABLE,
-      state: 'open',
-      per_page: 50,
-    }),
-    octokit.issues.listForRepo({
-      owner,
-      repo,
-      labels: LABEL_CLAIMED,
-      state: 'open',
-      per_page: 50,
-    }),
-    octokit.issues.listForRepo({
-      owner,
-      repo,
-      labels: LABEL_IN_REVIEW,
-      state: 'open',
-      per_page: 50,
-    }),
-    octokit.issues.listForRepo({
-      owner,
-      repo,
-      labels: LABEL_CHANGES_NEEDED,
-      state: 'open',
-      per_page: 50,
-    }),
-  ]);
+  const { data } = await octokit.issues.listForRepo({
+    owner,
+    repo,
+    state: 'open',
+    per_page: 100,
+  });
 
-  const allIssues = [...available.data, ...claimed.data, ...inReview.data, ...changesNeeded.data];
-  // Deduplicate by number
-  const seen = new Set<number>();
-  const unique: GitHubIssue[] = [];
-  for (const issue of allIssues) {
-    if (!seen.has(issue.number)) {
-      seen.add(issue.number);
-      unique.push(parseIssue(issue));
-    }
-  }
-
-  return unique.sort((a, b) => a.number - b.number);
+  return data
+    .filter((issue) =>
+      !issue.pull_request &&
+      (issue.labels as Array<{ name?: string }>).some((l) => TECHUNTER_LABELS.has(l.name ?? ''))
+    )
+    .map(parseIssue)
+    .sort((a, b) => a.number - b.number);
 }
 
 export async function getTask(config: TechunterConfig, number: number): Promise<GitHubIssue> {
