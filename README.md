@@ -1,11 +1,6 @@
 # Techunter
 
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](https://nodejs.org)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange)](package.json)
-[![AI](https://img.shields.io/badge/AI-GLM--5%20%C2%B7%20zai--org-purple)](https://ppio.com)
-
-> 面向开发团队的 AI 任务分发 CLI。通过对话式终端界面管理 GitHub Issues 任务。
+> An AI-powered task distribution CLI for development teams. Manage GitHub Issues through a conversational terminal interface.
 
 ```
    ▗▄▄▄▄▖     Techunter v0.1.0
@@ -15,190 +10,188 @@
 
 ---
 
-## 目录
+## Table of Contents
 
-- [功能特性](#功能特性)
-- [环境要求](#环境要求)
-- [安装](#安装)
-- [初始化配置](#初始化配置)
-- [使用方法](#使用方法)
-- [任务生命周期](#任务生命周期)
-- [分支命名规则](#分支命名规则)
-- [AI Agent 工具](#ai-agent-工具)
-- [开发](#开发)
-- [项目架构](#项目架构)
-- [许可证](#许可证)
-
----
-
-## 功能特性
-
-- **对话式 REPL** — 用自然语言描述需求，Agent 自动调用工具完成操作
-- **GitHub Issues 集成** — 创建、领取、提交、关闭任务，全程同步 Issue 标签与指派人
-- **自动分支管理** — 领取任务时自动创建并推送对应 Git 分支
-- **智能任务指南** — 领取任务前 Agent 扫描项目代码，自动生成详细实现指南并评论到 Issue
-- **一键交付** — `/submit` 选择任务后 Agent 对比验收标准，确认后提交并推送；`/deliver` 自动创建 PR 并标记为 in-review
-- **斜杠命令** — 常用操作无需描述，直接 `/pick`、`/new`、`/submit` 即可
-- **持久对话历史** — 同一 REPL 会话内保留完整上下文，Agent 可跨轮次推理
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Task Lifecycle](#task-lifecycle)
+- [Branch Naming](#branch-naming)
+- [AI Agent Tools](#ai-agent-tools)
+- [Development](#development)
+- [Architecture](#architecture)
+- [License](#license)
 
 ---
 
-## 环境要求
+## Features
+
+- **Conversational REPL** — Describe what you need in plain English; the Agent calls the right tools automatically
+- **GitHub Issues integration** — Create, claim, submit, and close tasks; labels and assignees stay in sync
+- **Automatic branch management** — Claiming a task creates and pushes the corresponding Git branch
+- **Smart task guides** — Before you start, the Agent scans your codebase and posts a detailed implementation guide as an Issue comment
+- **One-command delivery** — `/submit` lets the Agent review your changes against acceptance criteria, then commits and pushes; `/deliver` opens a PR and marks it as in-review
+- **Slash commands** — Common actions don't need a description: just `/pick`, `/new`, `/submit`
+- **Persistent conversation history** — Full context is retained across turns in the same REPL session
+
+---
+
+## Requirements
 
 - Node.js ≥ 18
-- GitHub 仓库（需有 Issues 功能）
-- GitHub Personal Access Token 或通过 OAuth Device Flow 授权
-- [ppio.com](https://ppio.com) API Key（使用 GLM-5 模型）
+- A GitHub repository with Issues enabled
+- GitHub Personal Access Token or OAuth Device Flow authorization
+- [ppio.com](https://ppio.com) API Key (uses the GLM-5 model)
 
 ---
 
-## 安装
+## Installation
 
 ```bash
 npm install -g techunter
 ```
 
-需要 Node.js ≥ 18。
-
-**从源码安装（开发用）：**
+**Install from source (for development):**
 
 ```bash
-git clone https://github.com/your-username/techunter
-cd techunter
+git clone https://github.com/Zhang-Dongfang/Techunter.git
+cd Techunter
 npm install
 npm run build
-npm link          # 全局安装，注册 tch / techunter 命令
+npm link          # registers the tch / techunter commands globally
 ```
 
 ---
 
-## 初始化配置
+## Setup
 
-在任意含 GitHub remote 的目录下执行一次性向导：
+Run the one-time setup wizard inside any directory that has a GitHub remote:
 
 ```bash
 tch init
 ```
 
-向导会依次询问：
+The wizard will ask for:
 
-1. **GitHub 认证方式** — 推荐使用 Personal Access Token
-   - 在 https://github.com/settings/tokens/new 创建，勾选 `repo` 和 `read:user` 权限
-2. **PPIO API Key** — 在 https://ppio.com 控制台 → API Keys 获取
-3. **GitHub 仓库** — 自动从 git remote 检测，也可手动填写
+1. **GitHub authentication** — A Personal Access Token is recommended
+   - Create one at https://github.com/settings/tokens/new with `repo` and `read:user` scopes
+2. **PPIO API Key** — Get yours from the [ppio.com](https://ppio.com) console → API Keys
+3. **GitHub repository** — Auto-detected from your git remote, or enter manually
 
-配置文件存储于 `~/.config/techunter/`。
+Config is stored at `~/.config/techunter/`.
 
 ---
 
-## 使用方法
+## Usage
 
 ```bash
 tch
 ```
 
-启动对话式 REPL，输入自然语言或斜杠命令：
+Starts the conversational REPL. Type natural language or slash commands:
 
-| 命令 | 别名 | 说明 |
+| Command | Alias | Description |
 |---|---|---|
-| `/help` | `/h` | 显示所有命令 |
-| `/refresh` | `/r` | 刷新任务列表 |
-| `/pick` | `/p` | 交互式浏览并操作任务 |
-| `/new` | `/n` | 创建新任务 |
-| `/close` | `/d` | 关闭（删除）任务 |
-| `/submit` | `/s` | 选择任务后审核变更并提交推送 |
-| `/review` | `/rv` | 审核团队提交的任务（通过或打回） |
-| `/status` | `/me` | 显示分配给自己的任务 |
-| `/code` | `/c` | 为当前任务分支启动 Claude Code |
+| `/help` | `/h` | Show all commands |
+| `/refresh` | `/r` | Refresh the task list |
+| `/pick` | `/p` | Browse and act on tasks interactively |
+| `/new` | `/n` | Create a new task |
+| `/close` | `/d` | Close (delete) a task |
+| `/submit` | `/s` | Review changes for a task and commit + push |
+| `/review` | `/rv` | Review team submissions — approve or request changes |
+| `/status` | `/me` | Show tasks assigned to you |
+| `/code` | `/c` | Launch Claude Code for the current task branch |
 
-其他输入均发送给 AI Agent，例如：
+Any other input is sent to the AI Agent, for example:
 
 ```
-> 领取任务 #12
-> 创建一个给用户列表加分页的任务
-> 现在有哪些可用任务？
-> 交付当前任务
+> claim task #12
+> create a task to add pagination to the user list
+> what tasks are available right now?
+> deliver the current task
 ```
 
 ---
 
-## 任务生命周期
+## Task Lifecycle
 
-每个 GitHub Issue 同一时间只携带一个 `techunter:*` 标签：
+Each GitHub Issue carries exactly one `techunter:*` label at a time:
 
 ```
 techunter:available  →  techunter:claimed  →  techunter:in-review
-     （绿色）                （黄色）                （蓝色）
-                                                       ↓ 打回
-                                            techunter:changes-needed
-                                                      （红色）
+     (green)                (yellow)               (blue)
+                                                      ↓ rejected
+                                           techunter:changes-needed
+                                                     (red)
 ```
 
-标签在 `tch init` 和创建任务时自动创建于仓库中。
+Labels are created automatically in your repository during `tch init` and when tasks are created.
 
 ---
 
-## 分支命名规则
+## Branch Naming
 
-领取任务时自动创建分支：
+A branch is created automatically when you claim a task:
 
 ```
-task-{issue_number}-{标题前5个单词-kebab格式}
+task-{issue_number}-{your-github-username}
 ```
 
-示例：Issue #7「Add README with project overview」→ `task-7-add-readme-with-project`
+Example: Issue #7 claimed by `johndoe` → `task-7-johndoe`
 
 ---
 
-## AI Agent 工具
+## AI Agent Tools
 
-Agent 可调用以下工具：
+The Agent can call the following tools:
 
-| 工具 | 说明 |
+| Tool | Description |
 |---|---|
-| `list_tasks` | 列出所有开放任务 |
-| `get_task` | 获取指定 Issue 的完整详情 |
-| `create_task` | 创建新 GitHub Issue |
-| `claim_task` | 指派 Issue 并创建本地分支 |
-| `deliver_task` | 推送分支、创建 PR、标记 in-review |
-| `close_task` | 关闭 GitHub Issue |
-| `post_comment` | 在 Issue 上发布 Markdown 评论 |
-| `scan_project` | 扫描项目文件树并读取关键文件 |
-| `read_file` | 读取指定文件内容 |
-| `run_command` | 在项目根目录执行 Shell 命令 |
-| `get_diff` | 获取当前 Git diff |
-| `stage_and_commit` | 暂存全部变更、提交并推送 |
-| `ask_user` | 向用户提问（每个任务最多 3 次） |
-| `get_my_status` | 显示当前用户被分配的任务 |
-| `get_comments` | 读取 Issue 上的最新评论（用于查看打回反馈） |
-| `reject_task` | 打回 in-review 任务：发布反馈评论并标记为 changes-needed |
+| `list_tasks` | List all open tasks |
+| `get_task` | Get full details of a specific Issue |
+| `create_task` | Create a new GitHub Issue |
+| `claim_task` | Assign an Issue and create a local branch |
+| `deliver_task` | Push the branch, open a PR, mark as in-review |
+| `close_task` | Close a GitHub Issue |
+| `post_comment` | Post a Markdown comment on an Issue |
+| `scan_project` | Scan the project file tree and read key files |
+| `read_file` | Read the contents of a specific file |
+| `run_command` | Execute a shell command in the project root |
+| `get_diff` | Get the current Git diff |
+| `stage_and_commit` | Stage all changes, commit, and push |
+| `ask_user` | Ask the user a question (max 3 times per task) |
+| `get_my_status` | Show tasks assigned to the current user |
+| `get_comments` | Read the latest comments on an Issue (e.g. rejection feedback) |
+| `reject_task` | Reject an in-review task: post feedback and mark as changes-needed |
 
 ---
 
-## 开发
+## Development
 
 ```bash
-npm run dev        # 使用 tsx 直接运行（无需构建）
-npm run build      # 编译到 dist/index.js
-npm run typecheck  # 仅做类型检查，不输出文件
+npm run dev        # Run directly with tsx (no build step)
+npm run build      # Compile to dist/index.js
+npm run typecheck  # Type-check without emitting files
 ```
 
 ---
 
-## 项目架构
+## Architecture
 
 ```
 tch
-  └─ src/index.ts           入口、REPL、斜杠命令
-       └─ src/lib/agent.ts   AI 工具调用循环
-            ├─ src/lib/github.ts    Octokit — Issue、PR、标签管理
-            ├─ src/lib/git.ts       simple-git — 分支、推送、diff
-            ├─ src/lib/project.ts   文件树 + 关键文件扫描（上限 80 KB）
-            └─ src/lib/config.ts    conf 配置存储（~/.config/techunter/）
+  └─ src/index.ts           Entry point, REPL, slash command dispatch
+       └─ src/lib/agent.ts   AI tool-call loop
+            ├─ src/lib/github.ts    Octokit — Issues, PRs, label management
+            ├─ src/lib/git.ts       simple-git — branches, push, diff
+            ├─ src/lib/project.ts   File tree + key file scanning (80 KB cap)
+            └─ src/lib/config.ts    conf-based config store (~/.config/techunter/)
 ```
 
 ---
 
-## 许可证
+## License
 
 [MIT](LICENSE)
