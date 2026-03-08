@@ -3,7 +3,7 @@
 > An AI-powered task distribution CLI for development teams. Manage GitHub Issues through a conversational terminal interface.
 
 ```
-   ▗▄▄▄▄▖     Techunter v0.1.0
+   ▗▄▄▄▄▖     Techunter v0.1.1
 ◆──▐████▌══▶  GLM-5 · zai-org
    ▝▀▀▀▀▘     owner/repo
 ```

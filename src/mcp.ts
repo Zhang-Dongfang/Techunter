@@ -9,7 +9,7 @@ import { getConfig } from './lib/config.js';
 const tools = toolModules.filter((m) => m.definition.function.name !== 'ask_user');
 
 const server = new Server(
-  { name: 'techunter', version: '0.1.0' },
+  { name: 'techunter', version: '1' },
   { capabilities: { tools: {} } },
 );
 
