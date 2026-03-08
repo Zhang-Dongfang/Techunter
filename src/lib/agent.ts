@@ -70,7 +70,13 @@ export async function runAgentLoop(
     ].join('\n'),
   };
 
+  const MAX_ITERATIONS = 30;
+  let iterations = 0;
+
   for (;;) {
+    if (++iterations > MAX_ITERATIONS) {
+      throw new Error(`Agent exceeded ${MAX_ITERATIONS} iterations without finishing.`);
+    }
     const isWindows = process.platform === 'win32';
     const spinner = isWindows ? null : ora({ text: chalk.dim('Thinking…'), color: 'cyan' }).start();
     if (isWindows) process.stdout.write(chalk.dim('  Thinking…'));
@@ -104,17 +110,25 @@ export async function runAgentLoop(
       const toolCalls = choice.message.tool_calls ?? [];
 
       for (const tc of toolCalls) {
-        printToolCall(tc.function.name, JSON.parse(tc.function.arguments) as Record<string, unknown>);
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+        } catch {
+          parsed = {};
+        }
+        printToolCall(tc.function.name, parsed);
       }
 
       const results = await Promise.all(
-        toolCalls.map((tc) =>
-          executeTool(
-            tc.function.name,
-            JSON.parse(tc.function.arguments) as Record<string, unknown>,
-            config
-          )
-        )
+        toolCalls.map((tc) => {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+          } catch {
+            parsed = {};
+          }
+          return executeTool(tc.function.name, parsed, config);
+        })
       );
 
       let terminal = false;

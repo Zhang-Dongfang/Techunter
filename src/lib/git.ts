@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { simpleGit } from 'simple-git';
 
 const git = simpleGit();
@@ -41,20 +42,17 @@ export function parseOwnerRepo(remoteUrl: string): { owner: string; repo: string
   return null;
 }
 
-export function makeBranchName(issueNumber: number, title: string): string {
-  const words = title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 5)
-    .join('-');
-
-  return `task-${issueNumber}-${words}`;
+export function makeBranchName(issueNumber: number, username: string): string {
+  const slug = username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'user';
+  return `task-${issueNumber}-${slug}`;
 }
 
-async function findMergeBase(): Promise<string | null> {
-  for (const base of ['origin/main', 'origin/master']) {
+async function findMergeBase(configuredBase?: string): Promise<string | null> {
+  const candidates = configuredBase
+    ? [`origin/${configuredBase}`, 'origin/main', 'origin/master']
+    : ['origin/main', 'origin/master'];
+  const unique = [...new Set(candidates)];
+  for (const base of unique) {
     try {
       const result = await git.raw(['merge-base', 'HEAD', base]);
       return result.trim();
@@ -65,7 +63,7 @@ async function findMergeBase(): Promise<string | null> {
   return null;
 }
 
-export async function getDiff(): Promise<string> {
+export async function getDiff(baseBranch?: string): Promise<string> {
   const status = await git.status();
   const parts: string[] = [];
 
@@ -86,8 +84,8 @@ export async function getDiff(): Promise<string> {
     }
   }
 
-  // All commits and changes on this branch since it diverged from main/master
-  const mergeBase = await findMergeBase();
+  // All commits and changes on this branch since it diverged from base branch
+  const mergeBase = await findMergeBase(baseBranch);
   if (mergeBase) {
     const log = await git.log({ from: mergeBase, to: 'HEAD' });
     if (log.total > 0) {
@@ -110,6 +108,8 @@ export async function stageAllAndCommit(message: string): Promise<void> {
   if (!status.isClean()) {
     await git.add('.');
     await git.commit(message);
+  } else {
+    console.log(chalk.dim('  Working tree clean — no new commit created, pushing existing commits.'));
   }
   const branch = (await git.branch()).current;
   await git.push('origin', branch, ['--set-upstream']);

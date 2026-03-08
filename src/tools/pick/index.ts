@@ -129,7 +129,7 @@ export async function run(config: TechunterConfig, preselected?: number): Promis
       let spinner = ora(`Claiming #${issue.number}…`).start();
       await claimTask(config, issue.number, me);
       spinner.stop();
-      const branch = makeBranchName(issue.number, issue.title);
+      const branch = makeBranchName(issue.number, me);
       spinner = ora(`Creating branch ${branch}…`).start();
       try { await createAndSwitchBranch(branch); spinner.stop(); }
       catch { spinner.warn(`Could not create branch ${branch}`); }
@@ -195,7 +195,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
       return `Error claiming task: ${(err as Error).message}`;
     }
 
-    const branch = makeBranchName(issueNumber, issue.title);
+    const branch = makeBranchName(issueNumber, me);
     try { await createAndSwitchBranch(branch); } catch { /* ignore branch errors */ }
     try { await pushBranch(branch); } catch { /* ignore push errors */ }
 

@@ -76,22 +76,6 @@ function cmdHelp(): void {
   console.log(chalk.dim('\n  Anything else is sent to the AI agent.\n'));
 }
 
-async function runAgent(
-  config: TechunterConfig,
-  messages: OpenAI.ChatCompletionMessageParam[],
-  prompt: string
-): Promise<void> {
-  const prevLen = messages.length;
-  messages.push({ role: 'user', content: prompt });
-  try {
-    const r = await runAgentLoop(config, messages);
-    console.log('\n' + chalk.green('Techunter:') + '\n' + renderMarkdown(r));
-  } catch (err) {
-    messages.splice(prevLen);
-    console.error(chalk.red(`\nError: ${(err as Error).message}\n`));
-  }
-}
-
 // ─── Banner ───────────────────────────────────────────────────────────────────
 
 function printBanner(config: TechunterConfig): void {

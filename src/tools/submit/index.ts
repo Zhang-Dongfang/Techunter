@@ -36,7 +36,7 @@ export async function run(config: TechunterConfig): Promise<string> {
   const [issue, defaultBranch, diff] = await Promise.all([
     getTask(config, issueNumber),
     getBaseBranch(config),
-    getDiff(),
+    getDiff(config.github.baseBranch),
   ]);
   spinner.stop();
 
@@ -128,7 +128,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
   const [issue, defaultBranch, diff] = await Promise.all([
     getTask(config, issueNumber),
     getBaseBranch(config),
-    getDiff(),
+    getDiff(config.github.baseBranch),
   ]);
 
   let review = '';

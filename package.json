@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/techunter.git"
+    "url": "https://github.com/Zhang-Dongfang/Techunter.git"
   },
-  "homepage": "https://github.com/your-username/techunter#readme",
+  "homepage": "https://github.com/Zhang-Dongfang/Techunter#readme",
   "bugs": {
-    "url": "https://github.com/your-username/techunter/issues"
+    "url": "https://github.com/Zhang-Dongfang/Techunter/issues"
   },
   "type": "module",
   "files": [
@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run typecheck"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

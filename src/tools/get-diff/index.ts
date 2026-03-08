@@ -14,7 +14,7 @@ export const definition = {
 export async function execute(_input: Record<string, unknown>, _config: TechunterConfig): Promise<string> {
   const spinner = ora('Reading git diff...').start();
   try {
-    const diff = await getDiff();
+    const diff = await getDiff(_config.github.baseBranch);
     spinner.stop();
     return diff;
   } catch (err) {
