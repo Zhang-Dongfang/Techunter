@@ -9,6 +9,8 @@ const { version } = _require('../package.json') as { version: string };
 import { initCommand } from './commands/init.js';
 import { configCommand } from './commands/config.js';
 import { getConfig } from './lib/config.js';
+import { getRemoteUrl, parseOwnerRepo } from './lib/git.js';
+import { ensureLabels } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { printTaskList, printMyTasks } from './lib/display.js';
@@ -145,6 +147,24 @@ async function main(): Promise<void> {
       process.exit(1);
       return;
     }
+  }
+
+  // Auto-detect repo from current directory's git remote
+  const remoteUrl = await getRemoteUrl();
+  if (remoteUrl) {
+    const detected = parseOwnerRepo(remoteUrl);
+    if (detected) {
+      const isNewRepo = detected.owner !== config.github.owner || detected.repo !== config.github.repo;
+      config = { ...config, github: { ...config.github, owner: detected.owner, repo: detected.repo, baseBranch: undefined } };
+      if (isNewRepo) {
+        console.log(chalk.dim(`  Repo: ${detected.owner}/${detected.repo}`));
+        // Set up labels for this repo silently (non-blocking)
+        ensureLabels(config).catch(() => {});
+      }
+    }
+  } else if (!config.github.owner) {
+    console.error(chalk.red('\nNo git remote found and no repo configured. Run tch init.'));
+    process.exit(1);
   }
 
   printBanner(config);

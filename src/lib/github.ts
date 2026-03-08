@@ -14,7 +14,10 @@ const LABELS = [
 ];
 
 function createOctokit(token: string): Octokit {
-  return new Octokit({ auth: token });
+  return new Octokit({
+    auth: token,
+    log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  });
 }
 
 function parseIssue(issue: {
@@ -390,24 +393,17 @@ export async function ensureLabels(config: TechunterConfig): Promise<void> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  for (const label of LABELS) {
-    try {
-      await octokit.issues.getLabel({ owner, repo, name: label.name });
-    } catch {
-      // Label doesn't exist, create it
-      try {
-        await octokit.issues.createLabel({
-          owner,
-          repo,
-          name: label.name,
-          color: label.color,
-          description: label.description,
-        });
-      } catch {
-        // May already exist due to race condition, ignore
-      }
-    }
-  }
+  const { data: existing } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
+  const existingNames = new Set(existing.map((l) => l.name));
+
+  await Promise.all(
+    LABELS
+      .filter((label) => !existingNames.has(label.name))
+      .map((label) =>
+        octokit.issues.createLabel({ owner, repo, name: label.name, color: label.color, description: label.description })
+          .catch(() => {}),
+      ),
+  );
 }
 
 export async function getDefaultBranch(config: TechunterConfig): Promise<string> {

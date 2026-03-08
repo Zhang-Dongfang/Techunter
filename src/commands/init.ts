@@ -6,6 +6,7 @@ import { createOAuthDeviceAuth } from '@octokit/auth-oauth-device';
 import { setConfig, getConfigPath } from '../lib/config.js';
 import { ensureLabels } from '../lib/github.js';
 import { getRemoteUrl, parseOwnerRepo } from '../lib/git.js';
+import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../lib/client.js';
 import type { TechunterConfig } from '../types.js';
 
 async function getGitHubTokenViaPAT(): Promise<{ token: string; clientId?: undefined }> {
@@ -106,9 +107,29 @@ export async function initCommand(): Promise<void> {
     githubToken = result.token;
   }
 
-  console.log(chalk.dim('\n  Get a PPIO API key at: https://ppio.com → Console → API Keys\n'));
+  // AI provider selection
+  const providerChoice = await select({
+    message: 'AI provider:',
+    choices: [
+      { name: `OpenRouter (recommended)  ${chalk.dim(`${DEFAULT_BASE_URL}  ·  ${DEFAULT_MODEL}`)}`, value: 'openrouter' },
+      { name: 'Custom (specify base URL and model)', value: 'custom' },
+    ],
+  });
+
+  let aiBaseUrl: string | undefined;
+  let aiModel: string | undefined;
+
+  if (providerChoice === 'custom') {
+    aiBaseUrl = (await input({ message: 'API base URL:', default: DEFAULT_BASE_URL })).trim();
+    aiModel = (await input({ message: 'Model name:', default: DEFAULT_MODEL })).trim();
+  }
+
+  const apiKeyHint = providerChoice === 'openrouter'
+    ? chalk.dim('  Get a key at: https://openrouter.ai/settings/keys\n')
+    : chalk.dim('  API key for your provider\n');
+  console.log(apiKeyHint);
   const aiApiKey = await password({
-    message: 'PPIO API Key:',
+    message: 'API Key:',
     mask: '*',
   });
 
@@ -136,6 +157,8 @@ export async function initCommand(): Promise<void> {
     githubToken,
     githubClientId,
     aiApiKey: aiApiKey.trim(),
+    ...(aiBaseUrl ? { aiBaseUrl } : {}),
+    ...(aiModel ? { aiModel } : {}),
     github: {
       owner: owner.trim(),
       repo: repo.trim(),

@@ -3,7 +3,7 @@ import ora from 'ora';
 import chalk from 'chalk';
 import type { TechunterConfig } from '../types.js';
 import { toolModules } from '../tools/registry.js';
-import { createClient, MODEL } from './client.js';
+import { createClient, getModel } from './client.js';
 import { printToolCall, printToolResult } from './agent-ui.js';
 
 const tools = toolModules.map((m) => m.definition as OpenAI.ChatCompletionTool);
@@ -78,7 +78,7 @@ export async function runAgentLoop(
     let response: Awaited<ReturnType<typeof client.chat.completions.create>>;
     try {
       response = await client.chat.completions.create({
-        model: MODEL,
+        model: getModel(config),
         tools,
         messages: [systemMessage, ...messages],
       });

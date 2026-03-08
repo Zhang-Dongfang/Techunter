@@ -4,6 +4,8 @@ import type { TechunterConfig } from '../types.js';
 
 const configSchema = z.object({
   aiApiKey: z.string().min(1),
+  aiBaseUrl: z.string().optional(),
+  aiModel: z.string().optional(),
   githubToken: z.string().min(1),
   githubClientId: z.string().optional(),
   github: z.object({
@@ -40,6 +42,12 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
   }
   if (partial.aiApiKey !== undefined) {
     current['aiApiKey'] = partial.aiApiKey;
+  }
+  if (partial.aiBaseUrl !== undefined) {
+    current['aiBaseUrl'] = partial.aiBaseUrl;
+  }
+  if (partial.aiModel !== undefined) {
+    current['aiModel'] = partial.aiModel;
   }
   if (partial.githubToken !== undefined) {
     current['githubToken'] = partial.githubToken;

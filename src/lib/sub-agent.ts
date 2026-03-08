@@ -1,7 +1,7 @@
 import type OpenAI from 'openai';
 import type { TechunterConfig } from '../types.js';
 import { toolModules } from '../tools/registry.js';
-import { createClient, MODEL } from './client.js';
+import { createClient, getModel } from './client.js';
 import { printToolCall, printToolResult } from './agent-ui.js';
 
 export async function runSubAgentLoop(
@@ -20,7 +20,7 @@ export async function runSubAgentLoop(
   ];
 
   for (;;) {
-    const res = await client.chat.completions.create({ model: MODEL, tools, messages });
+    const res = await client.chat.completions.create({ model: getModel(config), tools, messages });
     const choice = res.choices[0];
     messages.push({
       role: 'assistant',

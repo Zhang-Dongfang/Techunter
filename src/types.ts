@@ -1,5 +1,7 @@
 export interface TechunterConfig {
   aiApiKey: string;
+  aiBaseUrl?: string;
+  aiModel?: string;
   githubToken: string;
   githubClientId?: string; // set when authenticated via Device Flow
   github: {

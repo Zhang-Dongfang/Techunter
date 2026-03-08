@@ -1,6 +1,7 @@
 import { input, password, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { getConfig, setConfig, getConfigPath } from '../lib/config.js';
+import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../lib/client.js';
 
 export async function configCommand(): Promise<void> {
   let config;
@@ -14,11 +15,16 @@ export async function configCommand(): Promise<void> {
   console.log(chalk.bold.cyan('\nTechunter — Settings\n'));
   console.log(chalk.dim(`Config file: ${getConfigPath()}\n`));
 
+  const currentBaseUrl = config.aiBaseUrl ?? DEFAULT_BASE_URL;
+  const currentModel = config.aiModel ?? DEFAULT_MODEL;
+
   const field = await select({
     message: 'Which setting to change?',
     choices: [
       { name: `Base branch          ${chalk.dim(config.github.baseBranch ?? '(not set, uses repo default)')}`, value: 'baseBranch' },
       { name: `GitHub repo          ${chalk.dim(`${config.github.owner}/${config.github.repo}`)}`, value: 'repo' },
+      { name: `AI base URL          ${chalk.dim(currentBaseUrl)}`, value: 'aiBaseUrl' },
+      { name: `AI model             ${chalk.dim(currentModel)}`, value: 'aiModel' },
       { name: `AI API Key           ${chalk.dim('(hidden)')}`, value: 'aiApiKey' },
       { name: `GitHub Token         ${chalk.dim('(hidden)')}`, value: 'githubToken' },
       { name: 'Cancel', value: 'cancel' },
@@ -39,8 +45,20 @@ export async function configCommand(): Promise<void> {
     const repo = await input({ message: 'GitHub repo name:', default: config.github.repo });
     setConfig({ github: { ...config.github, owner: owner.trim(), repo: repo.trim() } });
     console.log(chalk.green(`\nRepo set to: ${owner.trim()}/${repo.trim()}\n`));
+  } else if (field === 'aiBaseUrl') {
+    const val = await input({ message: 'AI base URL:', default: currentBaseUrl });
+    if (val.trim()) {
+      setConfig({ aiBaseUrl: val.trim() });
+      console.log(chalk.green(`\nAI base URL set to: ${val.trim()}\n`));
+    }
+  } else if (field === 'aiModel') {
+    const val = await input({ message: 'AI model name:', default: currentModel });
+    if (val.trim()) {
+      setConfig({ aiModel: val.trim() });
+      console.log(chalk.green(`\nAI model set to: ${val.trim()}\n`));
+    }
   } else if (field === 'aiApiKey') {
-    const val = await password({ message: 'New PPIO API Key:', mask: '*' });
+    const val = await password({ message: 'New AI API Key:', mask: '*' });
     if (val.trim()) {
       setConfig({ aiApiKey: val.trim() });
       console.log(chalk.green('\nAI API Key updated.\n'));
