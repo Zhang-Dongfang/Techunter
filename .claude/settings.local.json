@@ -8,7 +8,8 @@
       "Bash(npm:*)",
       "Bash(test:*)",
       "Bash(ls:*)",
-      "Bash(git remote:*)"
+      "Bash(git remote:*)",
+      "Bash(cp:*)"
     ]
   },
   "disabledMcpjsonServers": [

@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Zhang-Dongfang/Techunter.git"
+    "url": "git+https://github.com/Zhang-Dongfang/Techunter.git"
   },
   "homepage": "https://github.com/Zhang-Dongfang/Techunter#readme",
   "bugs": {
@@ -17,9 +17,9 @@
     "dist"
   ],
   "bin": {
-    "techunter": "./dist/index.js",
-    "tch": "./dist/index.js",
-    "tch-mcp": "./dist/mcp.js"
+    "techunter": "dist/index.js",
+    "tch": "dist/index.js",
+    "tch-mcp": "dist/mcp.js"
   },
   "scripts": {
     "build": "tsup",
