@@ -8,7 +8,7 @@ import {
   claimTask,
   listComments,
 } from '../../lib/github.js';
-import { makeWorkerBranchName, switchToBranchOrCreate, pushBranch, getCurrentCommit } from '../../lib/git.js';
+import { makeBranchName, makeWorkerBranchName, switchToBranchOrCreate, pushBranch, getCurrentCommit } from '../../lib/git.js';
 import { setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { getStatus, colorStatus, printTaskDetail } from '../../lib/display.js';
@@ -131,16 +131,31 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       let spinner = ora(`Claiming #${issue.number}…`).start();
       await claimTask(config, issue.number, me);
       spinner.stop();
-      const branch = makeWorkerBranchName(me);
-      spinner = ora(`Switching to branch ${branch}…`).start();
-      let isNew = false;
-      try { isNew = await switchToBranchOrCreate(branch); spinner.stop(); }
-      catch { spinner.warn(`Could not switch to branch ${branch}`); }
-      if (isNew) {
-        spinner = ora('Pushing branch…').start();
+
+      // Ensure personal worker branch exists
+      const workerBranch = makeWorkerBranchName(me);
+      spinner = ora(`Switching to ${workerBranch}…`).start();
+      try {
+        const isNewWorker = await switchToBranchOrCreate(workerBranch);
+        spinner.stop();
+        if (isNewWorker) {
+          spinner = ora('Pushing worker branch…').start();
+          try { await pushBranch(workerBranch); spinner.stop(); }
+          catch { spinner.warn('Could not push worker branch'); }
+        }
+      } catch { spinner.warn(`Could not switch to ${workerBranch}`); }
+
+      // Create task-specific branch from worker branch
+      const branch = makeBranchName(issue.number, me);
+      spinner = ora(`Creating task branch ${branch}…`).start();
+      try {
+        await switchToBranchOrCreate(branch);
+        spinner.stop();
+        spinner = ora('Pushing task branch…').start();
         try { await pushBranch(branch); spinner.stop(); }
-        catch { spinner.warn('Could not push branch'); }
-      }
+        catch { spinner.warn('Could not push task branch'); }
+      } catch { spinner.warn(`Could not create branch ${branch}`); }
+
       const baseCommit = await getCurrentCommit();
       setConfig({ taskState: { activeIssueNumber: issue.number, baseCommit } });
       console.log(chalk.green(`\n  Claimed! Branch: ${branch}  (base: ${baseCommit.slice(0, 7)})\n`));
@@ -202,10 +217,17 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
       return `Error claiming task: ${(err as Error).message}`;
     }
 
-    const branch = makeWorkerBranchName(me);
-    let isNew = false;
-    try { isNew = await switchToBranchOrCreate(branch); } catch { /* ignore */ }
-    if (isNew) { try { await pushBranch(branch); } catch { /* ignore */ } }
+    // Ensure personal worker branch exists
+    const workerBranch = makeWorkerBranchName(me);
+    try {
+      const isNewWorker = await switchToBranchOrCreate(workerBranch);
+      if (isNewWorker) { try { await pushBranch(workerBranch); } catch { /* ignore */ } }
+    } catch { /* ignore */ }
+
+    // Create task-specific branch from worker branch
+    const branch = makeBranchName(issueNumber, me);
+    try { await switchToBranchOrCreate(branch); } catch { /* ignore */ }
+    try { await pushBranch(branch); } catch { /* ignore */ }
     const baseCommit = await getCurrentCommit();
     setConfig({ taskState: { activeIssueNumber: issueNumber, baseCommit } });
 

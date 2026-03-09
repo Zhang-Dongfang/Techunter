@@ -147,12 +147,6 @@ export async function initCommand(): Promise<void> {
     });
   }
 
-  const detectedDefault = 'main';
-  const baseBranch = await input({
-    message: 'Main branch to merge PRs into:',
-    default: detectedDefault,
-  });
-
   const config: TechunterConfig = {
     githubToken,
     githubClientId,
@@ -162,7 +156,6 @@ export async function initCommand(): Promise<void> {
     github: {
       owner: owner.trim(),
       repo: repo.trim(),
-      baseBranch: baseBranch.trim() || detectedDefault,
     },
   };
 

@@ -6,7 +6,6 @@ import type OpenAI from 'openai';
 
 const _require = createRequire(import.meta.url);
 const { version } = _require('../package.json') as { version: string };
-import { input } from '@inquirer/prompts';
 import { initCommand } from './commands/init.js';
 import { configCommand } from './commands/config.js';
 import { getConfig, setConfig } from './lib/config.js';
@@ -114,14 +113,9 @@ async function initNewRepo(config: TechunterConfig, owner: string, repo: string)
   console.log(chalk.bold.cyan(`  New repo detected: ${owner}/${repo}`));
   console.log(chalk.dim('  Setting up Techunter for this repository...\n'));
 
-  const baseBranch = await input({
-    message: 'Main branch to merge PRs into:',
-    default: 'main',
-  });
-
   const newConfig: TechunterConfig = {
     ...config,
-    github: { owner, repo, baseBranch: baseBranch.trim() || 'main' },
+    github: { owner, repo },
   };
 
   setConfig({ github: newConfig.github });

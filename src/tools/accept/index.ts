@@ -3,13 +3,14 @@ import { select } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
 import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask } from '../../lib/github.js';
+import { makeWorkerBranchName } from '../../lib/git.js';
 
 export const definition = {
   type: 'function',
   function: {
     name: 'accept',
     description:
-      'Accept an in-review task: merges the PR into the configured base branch and closes the issue.',
+      'Accept an in-review task: merges the PR into your worker branch and closes the issue.',
     parameters: {
       type: 'object',
       properties: {
@@ -68,12 +69,12 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
 
-  const baseBranch = config.github.baseBranch ?? 'main';
+  const targetBranch = makeWorkerBranchName(me2);
 
   let confirmed: boolean;
   try {
     confirmed = await select({
-      message: `Merge PR for #${issueNumber} into ${chalk.cyan(baseBranch)} and close issue?`,
+      message: `Merge PR for #${issueNumber} into ${chalk.cyan(targetBranch)} and close issue?`,
       choices: [
         { name: 'Yes, accept', value: true },
         { name: 'Cancel', value: false },
@@ -87,9 +88,9 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   const spinner = ora(`Merging PR for #${issueNumber}…`).start();
   try {
     const result = await acceptTask(config, issueNumber);
-    spinner.succeed(`PR #${result.prNumber} merged into ${baseBranch}`);
+    spinner.succeed(`PR #${result.prNumber} merged into ${targetBranch}`);
 
-    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${baseBranch}\nIssue closed.`;
+    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${targetBranch}\nIssue closed.`;
   } catch (err) {
     spinner.fail('Failed');
     return `Error: ${(err as Error).message}`;
@@ -106,12 +107,12 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
 
+  const targetBranch = makeWorkerBranchName(me);
   const spinner = ora(`Merging PR for #${issueNumber}…`).start();
   try {
     const result = await acceptTask(config, issueNumber);
     spinner.stop();
-    const baseBranch = config.github.baseBranch ?? 'main';
-    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${baseBranch}\nIssue closed.`;
+    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${targetBranch}\nIssue closed.`;
   } catch (err) {
     spinner.stop();
     return `Error: ${(err as Error).message}`;

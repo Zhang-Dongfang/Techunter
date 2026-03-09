@@ -3,9 +3,9 @@
 > An AI-powered task distribution CLI for development teams. Manage GitHub Issues through a conversational terminal interface.
 
 ```
-   ▗▄▄▄▄▖     Techunter v0.1.1
-◆──▐████▌══▶  GLM-5 · zai-org
-   ▝▀▀▀▀▘     owner/repo
+    ╔═══════════════╗
+◆═══╬   TECHUNTER   ╬═══▶   Techunter v0.1.2
+    ╚═══════════════╝        GLM-5 · z-ai  ·  owner/repo
 ```
 
 ---
@@ -29,10 +29,11 @@
 ## Features
 
 - **Conversational REPL** — Describe what you need in plain English; the Agent calls the right tools automatically
-- **GitHub Issues integration** — Create, claim, submit, and close tasks; labels and assignees stay in sync
+- **GitHub Issues integration** — Create, claim, submit, review, and close tasks; labels and assignees stay in sync
 - **Automatic branch management** — Claiming a task creates and pushes the corresponding Git branch
 - **Smart task guides** — Before you start, the Agent scans your codebase and posts a detailed implementation guide as an Issue comment
-- **One-command delivery** — `/submit` lets the Agent review your changes against acceptance criteria, then commits and pushes; `/deliver` opens a PR and marks it as in-review
+- **One-command delivery** — `/submit` lets the Agent review your changes against acceptance criteria, then commits and pushes
+- **Review & accept flow** — `/review` lists in-review PRs; `/accept` merges and closes
 - **Slash commands** — Common actions don't need a description: just `/pick`, `/new`, `/submit`
 - **Persistent conversation history** — Full context is retained across turns in the same REPL session
 
@@ -43,7 +44,7 @@
 - Node.js ≥ 18
 - A GitHub repository with Issues enabled
 - GitHub Personal Access Token or OAuth Device Flow authorization
-- [ppio.com](https://ppio.com) API Key (uses the GLM-5 model)
+- An OpenAI-compatible API key (OpenRouter by default, or any custom provider)
 
 ---
 
@@ -75,9 +76,10 @@ tch init
 
 The wizard will ask for:
 
-1. **GitHub authentication** — A Personal Access Token is recommended
-   - Create one at https://github.com/settings/tokens/new with `repo` and `read:user` scopes
-2. **PPIO API Key** — Get yours from the [ppio.com](https://ppio.com) console → API Keys
+1. **GitHub authentication** — Browser OAuth (recommended) or a Personal Access Token
+   - PAT: create one at https://github.com/settings/tokens/new with `repo` and `read:user` scopes
+2. **AI provider** — OpenRouter (default) or a custom OpenAI-compatible endpoint
+   - OpenRouter key: https://openrouter.ai/settings/keys
 3. **GitHub repository** — Auto-detected from your git remote, or enter manually
 
 Config is stored at `~/.config/techunter/`.
@@ -99,10 +101,14 @@ Starts the conversational REPL. Type natural language or slash commands:
 | `/pick` | `/p` | Browse and act on tasks interactively |
 | `/new` | `/n` | Create a new task |
 | `/close` | `/d` | Close (delete) a task |
-| `/submit` | `/s` | Review changes for a task and commit + push |
-| `/review` | `/rv` | Review team submissions — approve or request changes |
+| `/edit` | `/e` | Edit the title or description of a task |
+| `/submit` | `/s` | Review changes, commit, and push |
+| `/review` | `/rv` | List tasks waiting for your approval |
+| `/accept` | `/ac` | Accept a reviewed task: merge PR and close issue |
 | `/status` | `/me` | Show tasks assigned to you |
 | `/code` | `/c` | Launch Claude Code for the current task branch |
+| `/config` | `/cfg` | Change settings (repo, API keys, etc.) |
+| `/init` | | Re-run the setup wizard for this repo |
 
 Any other input is sent to the AI Agent, for example:
 
@@ -140,6 +146,12 @@ task-{issue_number}-{your-github-username}
 ```
 
 Example: Issue #7 claimed by `johndoe` → `task-7-johndoe`
+
+Worker branches (for persistent personal workspaces) follow:
+
+```
+worker-{your-github-username}
+```
 
 ---
 

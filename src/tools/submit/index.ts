@@ -2,8 +2,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, getBaseBranch, getAuthenticatedUser } from '../../lib/github.js';
-import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit } from '../../lib/git.js';
+import { getTask, createPR, markInReview, getAuthenticatedUser } from '../../lib/github.js';
+import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { reviewChanges } from './reviewer.js';
@@ -35,14 +35,14 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   let spinner = ora('Loading task and diff…').start();
   const diffPromise = taskState?.baseCommit
     ? getDiffFromCommit(taskState.baseCommit)
-    : getDiff(config.github.baseBranch);
-  const [issue, defaultBranch, diff, me] = await Promise.all([
+    : getDiff();
+  const [issue, diff, me] = await Promise.all([
     getTask(config, issueNumber),
-    getBaseBranch(config),
     diffPromise,
     getAuthenticatedUser(config),
   ]);
   spinner.stop();
+  const workerBranch = makeWorkerBranchName(issue.author ?? me);
   const branch = await getCurrentBranch();
 
   const isSelfSubmit = issue.author !== null && issue.author === me;
@@ -112,7 +112,7 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
       issue.body ? `\n${issue.body}` : '',
       review ? `\n## AI Review\n${review}` : '',
     ].join('\n').trim();
-    prUrl = await createPR(config, issue.title, prBody, branch, defaultBranch);
+    prUrl = await createPR(config, issue.title, prBody, branch, workerBranch);
     spinner.stop();
   } catch (err) {
     spinner.stop();
@@ -139,14 +139,14 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   const diffPromise = taskState?.baseCommit
     ? getDiffFromCommit(taskState.baseCommit)
-    : getDiff(config.github.baseBranch);
-  const [issue, defaultBranch, diff, branch, me] = await Promise.all([
+    : getDiff();
+  const [issue, diff, branch, me] = await Promise.all([
     getTask(config, issueNumber),
-    getBaseBranch(config),
     diffPromise,
     getCurrentBranch(),
     getAuthenticatedUser(config),
   ]);
+  const workerBranch = makeWorkerBranchName(issue.author ?? me);
 
   const isSelfSubmit = issue.author !== null && issue.author === me;
   let review = '';
@@ -173,7 +173,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
       issue.body ? `\n${issue.body}` : '',
       review ? `\n## AI Review\n${review}` : '',
     ].join('\n').trim();
-    prUrl = await createPR(config, issue.title, prBody, branch, defaultBranch);
+    prUrl = await createPR(config, issue.title, prBody, branch, workerBranch);
   } catch (err) {
     return `Committed but PR creation failed: ${(err as Error).message}`;
   }

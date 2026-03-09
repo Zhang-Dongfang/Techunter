@@ -21,7 +21,6 @@ export async function configCommand(): Promise<void> {
   const field = await select({
     message: 'Which setting to change?',
     choices: [
-      { name: `Base branch          ${chalk.dim(config.github.baseBranch ?? '(not set, uses repo default)')}`, value: 'baseBranch' },
       { name: `GitHub repo          ${chalk.dim(`${config.github.owner}/${config.github.repo}`)}`, value: 'repo' },
       { name: `AI base URL          ${chalk.dim(currentBaseUrl)}`, value: 'aiBaseUrl' },
       { name: `AI model             ${chalk.dim(currentModel)}`, value: 'aiModel' },
@@ -33,14 +32,7 @@ export async function configCommand(): Promise<void> {
 
   if (field === 'cancel') return;
 
-  if (field === 'baseBranch') {
-    const val = await input({
-      message: 'Main branch to merge PRs into:',
-      default: config.github.baseBranch ?? 'main',
-    });
-    setConfig({ github: { ...config.github, baseBranch: val.trim() || 'main' } });
-    console.log(chalk.green(`\nBase branch set to: ${val.trim() || 'main'}\n`));
-  } else if (field === 'repo') {
+  if (field === 'repo') {
     const owner = await input({ message: 'GitHub repo owner:', default: config.github.owner });
     const repo = await input({ message: 'GitHub repo name:', default: config.github.repo });
     setConfig({ github: { ...config.github, owner: owner.trim(), repo: repo.trim() } });

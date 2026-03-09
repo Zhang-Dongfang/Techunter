@@ -410,10 +410,6 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
   return data.default_branch;
 }
 
-export function getBaseBranch(config: TechunterConfig): Promise<string> {
-  if (config.github.baseBranch) return Promise.resolve(config.github.baseBranch);
-  return getDefaultBranch(config);
-}
 
 export async function acceptTask(
   config: TechunterConfig,
