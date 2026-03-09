@@ -4,7 +4,7 @@
 
 ```
     ╔═══════════════╗
-◆═══╬   TECHUNTER   ╬═══▶   Techunter v0.1.2
+◆═══╬   TECHUNTER   ╬═══▶   Techunter v0.1.3
     ╚═══════════════╝        GLM-5 · z-ai  ·  owner/repo
 ```
 
