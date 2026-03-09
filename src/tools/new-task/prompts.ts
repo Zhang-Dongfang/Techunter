@@ -12,5 +12,5 @@ List each file path with CREATE/MODIFY, and one sentence describing what changes
 What the feature/fix receives as input and what it produces or affects.
 
 ### 验收标准
-Checkbox list of testable conditions. Keep it short — 3 to 6 items max.
+Checkbox list of only the most essential testable conditions. Maximum 3 items — include only what is strictly necessary to verify the task is done.
 `.trim();

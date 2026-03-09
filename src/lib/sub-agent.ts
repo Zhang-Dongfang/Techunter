@@ -19,10 +19,10 @@ export async function runSubAgentLoop(
     { role: 'user', content: userMessage },
   ];
 
-  const MAX_ITERATIONS = 20;
+  const MAX_ITERATIONS = 100;
   let iterations = 0;
 
-  for (;;) {
+  for (; ;) {
     if (++iterations > MAX_ITERATIONS) {
       throw new Error(`Sub-agent exceeded ${MAX_ITERATIONS} iterations without finishing.`);
     }

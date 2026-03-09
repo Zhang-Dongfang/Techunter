@@ -71,10 +71,10 @@ export async function runAgentLoop(
     ].join('\n'),
   };
 
-  const MAX_ITERATIONS = 30;
+  const MAX_ITERATIONS = 100;
   let iterations = 0;
 
-  for (;;) {
+  for (; ;) {
     if (++iterations > MAX_ITERATIONS) {
       throw new Error(`Agent exceeded ${MAX_ITERATIONS} iterations without finishing.`);
     }
