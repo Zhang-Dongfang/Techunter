@@ -9,6 +9,10 @@ export interface TechunterConfig {
     repo: string;
     baseBranch?: string;
   };
+  taskState?: {
+    activeIssueNumber?: number;
+    baseCommit?: string;
+  };
 }
 
 export interface TaskGuide {
@@ -24,6 +28,7 @@ export interface GitHubIssue {
   title: string;
   body: string | null;
   state: string;
+  author: string | null;
   assignee: string | null;
   labels: string[];
   htmlUrl: string;

@@ -25,6 +25,7 @@ function parseIssue(issue: {
   title: string;
   body?: string | null;
   state: string;
+  user?: { login: string } | null;
   assignee?: { login: string } | null;
   labels?: Array<{ name?: string } | string>;
   html_url: string;
@@ -34,6 +35,7 @@ function parseIssue(issue: {
     title: issue.title,
     body: issue.body ?? null,
     state: issue.state,
+    author: issue.user?.login ?? null,
     assignee: issue.assignee?.login ?? null,
     labels: (issue.labels ?? []).map((l) =>
       typeof l === 'string' ? l : (l.name ?? '')
@@ -294,6 +296,17 @@ export async function getAuthenticatedUser(config: TechunterConfig): Promise<str
   const octokit = createOctokit(config.githubToken);
   const { data } = await octokit.users.getAuthenticated();
   return data.login;
+}
+
+export async function isCollaborator(config: TechunterConfig, username: string): Promise<boolean> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  try {
+    const { data } = await octokit.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+    return data.permission === 'admin' || data.permission === 'write' || data.permission === 'maintain';
+  } catch {
+    return false;
+  }
 }
 
 export async function listMyTasks(

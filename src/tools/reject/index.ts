@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { select, input as promptInput } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { postComment, rejectTask } from '../../lib/github.js';
+import { postComment, rejectTask, getAuthenticatedUser, getTask } from '../../lib/github.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateRejectionComment } from './comment-generator.js';
 
@@ -26,6 +26,14 @@ export const definition = {
 
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const issueNumber = input['issue_number'] as number;
+
+  const [me, issue] = await Promise.all([
+    getAuthenticatedUser(config),
+    getTask(config, issueNumber),
+  ]);
+  if (issue.author && issue.author !== me) {
+    return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
+  }
 
   let feedback: string;
   try {
@@ -107,6 +115,14 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const issueNumber = input['issue_number'] as number;
   const feedback = input['feedback'] as string;
+
+  const [me, issue] = await Promise.all([
+    getAuthenticatedUser(config),
+    getTask(config, issueNumber),
+  ]);
+  if (issue.author && issue.author !== me) {
+    return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
+  }
 
   let comment: string;
   try {

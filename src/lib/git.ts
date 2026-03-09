@@ -47,6 +47,68 @@ export function makeBranchName(issueNumber: number, username: string): string {
   return `task-${issueNumber}-${slug}`;
 }
 
+export function makeWorkerBranchName(username: string): string {
+  const slug = username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'user';
+  return `worker-${slug}`;
+}
+
+export async function getCurrentCommit(): Promise<string> {
+  return (await git.revparse(['HEAD'])).trim();
+}
+
+export async function switchToBranchOrCreate(name: string): Promise<boolean> {
+  try {
+    const branches = await git.branch(['-a']);
+    const exists = Object.keys(branches.branches).some(
+      (b) => b === name || b === `remotes/origin/${name}`
+    );
+    if (exists) {
+      await git.checkout(name);
+      return false;
+    }
+    await git.checkoutLocalBranch(name);
+    return true;
+  } catch {
+    await git.checkoutLocalBranch(name);
+    return true;
+  }
+}
+
+export async function getDiffFromCommit(baseCommit: string): Promise<string> {
+  const status = await git.status();
+  const parts: string[] = [];
+
+  const fileLines = [
+    ...status.modified.map((f) => `  M  ${f}`),
+    ...status.created.map((f) => `  A  ${f}`),
+    ...status.deleted.map((f) => `  D  ${f}`),
+    ...status.renamed.map((f) => `  R  ${f.from} → ${f.to}`),
+    ...status.not_added.map((f) => `  ?  ${f}`),
+  ];
+  if (fileLines.length > 0) {
+    parts.push('## Uncommitted changes\n' + fileLines.join('\n'));
+    const uncommitted = await git.diff(['HEAD']);
+    if (uncommitted) {
+      const capped = uncommitted.length > 8_000 ? uncommitted.slice(0, 8_000) + '\n... (truncated)' : uncommitted;
+      parts.push('## Uncommitted diff\n```diff\n' + capped + '\n```');
+    }
+  }
+
+  const log = await git.log({ from: baseCommit, to: 'HEAD' });
+  if (log.total > 0) {
+    const logLines = log.all.map((c) => `  ${c.hash.slice(0, 7)}  ${c.message}`);
+    parts.push(`## Commits since task claimed (${log.total} total)\n` + logLines.join('\n'));
+
+    const branchDiff = await git.diff([baseCommit, 'HEAD']);
+    if (branchDiff) {
+      const capped = branchDiff.length > 12_000 ? branchDiff.slice(0, 12_000) + '\n... (truncated)' : branchDiff;
+      parts.push('## Full diff since task claimed\n```diff\n' + capped + '\n```');
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : 'No changes since task was claimed.';
+}
+
 async function findMergeBase(configuredBase?: string): Promise<string | null> {
   const candidates = configuredBase
     ? [`origin/${configuredBase}`, 'origin/main', 'origin/master']

@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { select } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { getAuthenticatedUser, listTasksForReview, acceptTask } from '../../lib/github.js';
+import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask } from '../../lib/github.js';
 
 export const definition = {
   type: 'function',
@@ -51,6 +51,23 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
+  const spinner2 = ora('Verifying permissions…').start();
+  let me2: string;
+  let issue: Awaited<ReturnType<typeof getTask>>;
+  try {
+    [me2, issue] = await Promise.all([
+      getAuthenticatedUser(config),
+      getTask(config, issueNumber),
+    ]);
+    spinner2.stop();
+  } catch (err) {
+    spinner2.stop();
+    return `Error: ${(err as Error).message}`;
+  }
+  if (issue.author && issue.author !== me2) {
+    return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
+  }
+
   const baseBranch = config.github.baseBranch ?? 'main';
 
   let confirmed: boolean;
@@ -81,6 +98,14 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const issueNumber = input['issue_number'] as number;
+  const [me, issue] = await Promise.all([
+    getAuthenticatedUser(config),
+    getTask(config, issueNumber),
+  ]);
+  if (issue.author && issue.author !== me) {
+    return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
+  }
+
   const spinner = ora(`Merging PR for #${issueNumber}…`).start();
   try {
     const result = await acceptTask(config, issueNumber);

@@ -13,6 +13,10 @@ const configSchema = z.object({
     repo: z.string().min(1),
     baseBranch: z.string().optional(),
   }),
+  taskState: z.object({
+    activeIssueNumber: z.number().optional(),
+    baseCommit: z.string().optional(),
+  }).optional(),
 });
 
 const store = new Conf<TechunterConfig>({
@@ -54,6 +58,12 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
   }
   if (partial.githubClientId !== undefined) {
     current['githubClientId'] = partial.githubClientId;
+  }
+  if (partial.taskState !== undefined) {
+    current['taskState'] = {
+      ...(current['taskState'] as Record<string, unknown> | undefined ?? {}),
+      ...partial.taskState,
+    };
   }
 
   store.store = current as unknown as TechunterConfig;

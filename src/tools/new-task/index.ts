@@ -7,7 +7,7 @@ import ora from 'ora';
 import chalk from 'chalk';
 import open from 'open';
 import type { TechunterConfig } from '../../types.js';
-import { createTask } from '../../lib/github.js';
+import { createTask, getAuthenticatedUser, isCollaborator } from '../../lib/github.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateGuide } from './guide-generator.js';
 
@@ -50,6 +50,21 @@ export const definition = {
 } as const;
 
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const authSpinner = ora('Checking permissions…').start();
+  let me: string;
+  let allowed: boolean;
+  try {
+    me = await getAuthenticatedUser(config);
+    allowed = await isCollaborator(config, me);
+    authSpinner.stop();
+  } catch (err) {
+    authSpinner.stop();
+    return `Error checking permissions: ${(err as Error).message}`;
+  }
+  if (!allowed) {
+    return `Permission denied: only repository collaborators can create tasks.`;
+  }
+
   let title = (input['title'] as string | undefined)?.trim();
   if (!title) {
     try {
@@ -157,6 +172,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  const me = await getAuthenticatedUser(config);
+  if (!await isCollaborator(config, me)) {
+    return `Permission denied: only repository collaborators can create tasks.`;
+  }
+
   const title = (input['title'] as string).trim();
   const feedback = input['feedback'] as string | undefined;
 

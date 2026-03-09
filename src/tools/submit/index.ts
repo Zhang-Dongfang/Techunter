@@ -2,8 +2,9 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, getBaseBranch } from '../../lib/github.js';
-import { getCurrentBranch, getDiff, stageAllAndCommit } from '../../lib/git.js';
+import { getTask, createPR, markInReview, getBaseBranch, getAuthenticatedUser } from '../../lib/github.js';
+import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit } from '../../lib/git.js';
+import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { reviewChanges } from './reviewer.js';
 
@@ -25,36 +26,48 @@ export const definition = {
 } as const;
 
 export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
-  const branch = await getCurrentBranch();
-  const match = branch.match(/^task-(\d+)-/);
-  if (!match) {
-    return `Not on a task branch (current: ${branch}). Expected format: task-N-title.`;
+  const taskState = getConfig().taskState;
+  const issueNumber = taskState?.activeIssueNumber;
+  if (!issueNumber) {
+    return 'No active task found. Claim a task first with /pick.';
   }
-  const issueNumber = parseInt(match[1], 10);
 
   let spinner = ora('Loading task and diff…').start();
-  const [issue, defaultBranch, diff] = await Promise.all([
+  const diffPromise = taskState?.baseCommit
+    ? getDiffFromCommit(taskState.baseCommit)
+    : getDiff(config.github.baseBranch);
+  const [issue, defaultBranch, diff, me] = await Promise.all([
     getTask(config, issueNumber),
     getBaseBranch(config),
-    getDiff(config.github.baseBranch),
+    diffPromise,
+    getAuthenticatedUser(config),
   ]);
   spinner.stop();
+  const branch = await getCurrentBranch();
 
-  // AI review with tool access
-  const reviewSpinner = ora('Reviewing changes…').start();
+  const isSelfSubmit = issue.author !== null && issue.author === me;
+
+  // AI review (skipped if submitter is the task author)
   let review = '';
-  try {
-    review = await reviewChanges(config, issueNumber, issue, diff);
-  } catch (err) {
-    review = `(Review failed: ${(err as Error).message})`;
+  if (!isSelfSubmit) {
+    const reviewSpinner = ora('Reviewing changes…').start();
+    try {
+      review = await reviewChanges(config, issueNumber, issue, diff);
+    } catch (err) {
+      review = `(Review failed: ${(err as Error).message})`;
+    }
+    reviewSpinner.stop();
   }
-  reviewSpinner.stop();
 
   const divider = chalk.dim('─'.repeat(70));
   console.log('\n' + divider);
-  console.log(chalk.bold(`  Review — task #${issueNumber} "${issue.title}"`));
-  console.log(divider);
-  console.log(renderMarkdown(review));
+  if (isSelfSubmit) {
+    console.log(chalk.yellow(`  Self-submit detected — AI review skipped.`));
+  } else {
+    console.log(chalk.bold(`  Review — task #${issueNumber} "${issue.title}"`));
+    console.log(divider);
+    console.log(renderMarkdown(review));
+  }
   console.log(divider + '\n');
 
   let shouldProceed: boolean;
@@ -94,13 +107,12 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   spinner = ora('Creating pull request…').start();
   let prUrl: string;
   try {
-    prUrl = await createPR(
-      config,
-      issue.title,
-      `Closes #${issueNumber}\n\n${issue.body ?? ''}`.trim(),
-      branch,
-      defaultBranch
-    );
+    const prBody = [
+      `Closes #${issueNumber}`,
+      issue.body ? `\n${issue.body}` : '',
+      review ? `\n## AI Review\n${review}` : '',
+    ].join('\n').trim();
+    prUrl = await createPR(config, issue.title, prBody, branch, defaultBranch);
     spinner.stop();
   } catch (err) {
     spinner.stop();
@@ -116,26 +128,34 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     return `PR created (${prUrl}) but failed to update label: ${(err as Error).message}`;
   }
 
+  setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
   return `Task #${issueNumber} submitted.\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`;
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
-  const branch = await getCurrentBranch();
-  const match = branch.match(/^task-(\d+)-/);
-  if (!match) return `Not on a task branch (current: ${branch}). Expected format: task-N-title.`;
-  const issueNumber = parseInt(match[1], 10);
+  const taskState = getConfig().taskState;
+  const issueNumber = taskState?.activeIssueNumber;
+  if (!issueNumber) return 'No active task found. Claim a task first.';
 
-  const [issue, defaultBranch, diff] = await Promise.all([
+  const diffPromise = taskState?.baseCommit
+    ? getDiffFromCommit(taskState.baseCommit)
+    : getDiff(config.github.baseBranch);
+  const [issue, defaultBranch, diff, branch, me] = await Promise.all([
     getTask(config, issueNumber),
     getBaseBranch(config),
-    getDiff(config.github.baseBranch),
+    diffPromise,
+    getCurrentBranch(),
+    getAuthenticatedUser(config),
   ]);
 
+  const isSelfSubmit = issue.author !== null && issue.author === me;
   let review = '';
-  try {
-    review = await reviewChanges(config, issueNumber, issue, diff);
-  } catch (err) {
-    review = `(Review failed: ${(err as Error).message})`;
+  if (!isSelfSubmit) {
+    try {
+      review = await reviewChanges(config, issueNumber, issue, diff);
+    } catch (err) {
+      review = `(Review failed: ${(err as Error).message})`;
+    }
   }
 
   const commitMessage = ((input['commit_message'] as string | undefined)?.trim()) || `complete: ${issue.title}`;
@@ -148,13 +168,12 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   let prUrl: string;
   try {
-    prUrl = await createPR(
-      config,
-      issue.title,
-      `Closes #${issueNumber}\n\n${issue.body ?? ''}`.trim(),
-      branch,
-      defaultBranch,
-    );
+    const prBody = [
+      `Closes #${issueNumber}`,
+      issue.body ? `\n${issue.body}` : '',
+      review ? `\n## AI Review\n${review}` : '',
+    ].join('\n').trim();
+    prUrl = await createPR(config, issue.title, prBody, branch, defaultBranch);
   } catch (err) {
     return `Committed but PR creation failed: ${(err as Error).message}`;
   }
