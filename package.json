@@ -25,7 +25,8 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run typecheck"
+    "prepublishOnly": "npm run build && npm run typecheck",
+    "release": "npm version patch && npm publish && git push --follow-tags"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

@@ -104,6 +104,11 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     return `Commit failed: ${(err as Error).message}`;
   }
 
+  if (isSelfSubmit) {
+    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
+    return `Task #${issueNumber} committed.\nCommit: "${commitMessage.trim()}"`;
+  }
+
   spinner = ora('Creating pull request…').start();
   let prUrl: string;
   try {
@@ -164,6 +169,11 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     await stageAllAndCommit(commitMessage);
   } catch (err) {
     return `Commit failed: ${(err as Error).message}`;
+  }
+
+  if (isSelfSubmit) {
+    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
+    return `Task #${issueNumber} committed.\nCommit: "${commitMessage}"`;
   }
 
   let prUrl: string;
