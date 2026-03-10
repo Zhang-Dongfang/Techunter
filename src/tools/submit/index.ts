@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, getAuthenticatedUser } from '../../lib/github.js';
+import { getTask, createPR, markInReview, closeTask, getAuthenticatedUser } from '../../lib/github.js';
 import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
@@ -105,8 +105,16 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   }
 
   if (isSelfSubmit) {
+    spinner = ora('Closing issue…').start();
+    try {
+      await closeTask(config, issueNumber);
+      spinner.stop();
+    } catch (err) {
+      spinner.stop();
+      console.error(chalk.yellow(`Warning: failed to close issue: ${(err as Error).message}`));
+    }
     setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
-    return `Task #${issueNumber} committed.\nCommit: "${commitMessage.trim()}"`;
+    return `Task #${issueNumber} committed and closed.\nCommit: "${commitMessage.trim()}"`;
   }
 
   spinner = ora('Creating pull request…').start();
@@ -172,8 +180,11 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
   }
 
   if (isSelfSubmit) {
+    try {
+      await closeTask(config, issueNumber);
+    } catch { /* non-critical */ }
     setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
-    return `Task #${issueNumber} committed.\nCommit: "${commitMessage}"`;
+    return `Task #${issueNumber} committed and closed.\nCommit: "${commitMessage}"`;
   }
 
   let prUrl: string;
