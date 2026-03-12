@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { setupProxy } from './lib/proxy.js';
+setupProxy();
 import chalk from 'chalk';
 import readline from 'node:readline';
 import { createRequire } from 'node:module';
