@@ -36,6 +36,7 @@
     "commander": "^12.1.0",
     "conf": "^13.0.1",
     "globby": "^14.0.2",
+    "https-proxy-agent": "^8.0.0",
     "ignore": "^6.0.2",
     "inquirer": "^12.3.2",
     "marked": "^15.0.12",

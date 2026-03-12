@@ -1,5 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import type { TechunterConfig, GitHubIssue, TaskGuide } from '../types.js';
+import { fetch as undiciFetch } from 'undici';
+import { getHttpsProxyAgent, getUndiciProxyAgent } from './proxy.js';
 
 const LABEL_AVAILABLE = 'techunter:available';
 const LABEL_CLAIMED = 'techunter:claimed';
@@ -14,9 +16,16 @@ const LABELS = [
 ];
 
 function createOctokit(token: string): Octokit {
+  const agent = getUndiciProxyAgent();
   return new Octokit({
     auth: token,
     log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    ...(agent && {
+      request: {
+        fetch: (url: string, opts?: Parameters<typeof undiciFetch>[1]) =>
+          undiciFetch(url, { ...opts, dispatcher: agent }),
+      },
+    }),
   });
 }
 
