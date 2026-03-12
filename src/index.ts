@@ -14,6 +14,7 @@ import { ensureLabels } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
 import { printTaskList, printMyTasks } from './lib/display.js';
+import { getModel, DEFAULT_BASE_URL } from './lib/client.js';
 import { run as runPick } from './tools/pick/index.js';
 import { run as runNew } from './tools/new-task/index.js';
 import { run as runClose } from './tools/close/index.js';
@@ -102,7 +103,7 @@ function printBanner(config: TechunterConfig): void {
     '    ' +
     chalk.bold('Techunter') + chalk.dim(` v${version}`) +
     chalk.dim('  ·  ') +
-    chalk.cyan('GLM-5') + chalk.dim(' · zai-org') +
+    chalk.cyan(getModel(config)) +
     chalk.dim('  ·  ') +
     chalk.dim(`${owner}/${repo}`)
   );

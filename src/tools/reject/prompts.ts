@@ -1,15 +1,15 @@
 export const REJECTION_FORMAT = `
-Write the rejection comment in the same language as the conversation. Use markdown. Include:
+Detect the language from the reviewer feedback and write everything — including section headings — in that same language. Use markdown. Include exactly these four sections (translate the heading names accordingly):
 
-### ❌ 打回原因 / Rejection Reason
+### ❌ Rejection Reason
 One paragraph: what was reviewed and what the main problem is.
 
-### 🔧 需要修改的内容 / Required Changes
+### 🔧 Required Changes
 Numbered, specific, actionable items. Reference file names and function names.
 
-### ✅ 未通过的验收标准 / Failed Acceptance Criteria
+### ✅ Failed Acceptance Criteria
 Re-list each criterion that was NOT met, prefixed with ❌.
 
-### 📋 下一步 / Next Steps
+### 📋 Next Steps
 Clear instruction on what to fix and how to re-submit (via /submit).
 `.trim();
