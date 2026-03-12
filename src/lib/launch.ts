@@ -20,7 +20,9 @@ export async function launchClaudeCode(issue: GitHubIssue, branch: string): Prom
   const prompt = buildClaudePrompt(issue, branch);
   console.log(chalk.dim('\n  Launching Claude Code…\n'));
   await new Promise<void>((resolve) => {
-    const child = spawn('claude', [prompt], { stdio: 'inherit', shell: true });
+    // Flatten newlines and quote the prompt so the shell passes it as a single argument
+    const safePrompt = prompt.replace(/\r?\n/g, ' ').replace(/"/g, "'");
+    const child = spawn(`claude "${safePrompt}"`, [], { stdio: 'inherit', shell: true });
     child.on('close', () => resolve());
     child.on('error', () => {
       console.log(

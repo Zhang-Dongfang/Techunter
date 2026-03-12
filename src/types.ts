@@ -8,6 +8,7 @@ export interface TechunterConfig {
     owner: string;
     repo: string;
   };
+  baseBranch?: string;
   taskState?: {
     activeIssueNumber?: number;
     baseCommit?: string;

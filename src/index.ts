@@ -46,6 +46,9 @@ let _rl: readline.Interface | null = null;
 
 function promptUser(): Promise<string> {
   return new Promise((resolve) => {
+    // Explicitly resume stdin after inquirer tools may have left it paused/raw
+    if (process.stdin.isPaused()) process.stdin.resume();
+    _rl!.resume();
     _rl!.question(chalk.cyan('You') + chalk.dim(' › '), resolve);
   });
 }

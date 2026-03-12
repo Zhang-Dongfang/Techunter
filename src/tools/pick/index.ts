@@ -8,7 +8,8 @@ import {
   claimTask,
   listComments,
 } from '../../lib/github.js';
-import { makeBranchName, makeWorkerBranchName, switchToBranchOrCreate, pushBranch, getCurrentCommit } from '../../lib/git.js';
+import { makeWorkerBranchName, switchToBranchOrCreate, pushBranch, getCurrentCommit, resetOrCreateBranch } from '../../lib/git.js';
+import { extractBaseCommit } from '../../lib/github.js';
 import { setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { getStatus, colorStatus, printTaskDetail } from '../../lib/display.js';
@@ -132,33 +133,24 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       await claimTask(config, issue.number, me);
       spinner.stop();
 
-      // Ensure personal worker branch exists
       const workerBranch = makeWorkerBranchName(me);
-      spinner = ora(`Switching to ${workerBranch}…`).start();
+      const taskBase = extractBaseCommit(issue.body);
+      spinner = ora(`Switching to ${workerBranch}${taskBase ? ` from ${taskBase.slice(0, 7)}` : ''}…`).start();
       try {
-        const isNewWorker = await switchToBranchOrCreate(workerBranch);
-        spinner.stop();
-        if (isNewWorker) {
-          spinner = ora('Pushing worker branch…').start();
-          try { await pushBranch(workerBranch); spinner.stop(); }
-          catch { spinner.warn('Could not push worker branch'); }
+        if (taskBase) {
+          await resetOrCreateBranch(workerBranch, taskBase);
+        } else {
+          await switchToBranchOrCreate(workerBranch);
         }
-      } catch { spinner.warn(`Could not switch to ${workerBranch}`); }
-
-      // Create task-specific branch from worker branch
-      const branch = makeBranchName(issue.number, me);
-      spinner = ora(`Creating task branch ${branch}…`).start();
-      try {
-        await switchToBranchOrCreate(branch);
         spinner.stop();
-        spinner = ora('Pushing task branch…').start();
-        try { await pushBranch(branch); spinner.stop(); }
-        catch { spinner.warn('Could not push task branch'); }
-      } catch { spinner.warn(`Could not create branch ${branch}`); }
+        spinner = ora('Pushing worker branch…').start();
+        try { await pushBranch(workerBranch); spinner.stop(); }
+        catch { spinner.warn('Could not push worker branch'); }
+      } catch { spinner.warn(`Could not switch to ${workerBranch}`); }
 
       const baseCommit = await getCurrentCommit();
       setConfig({ taskState: { activeIssueNumber: issue.number, baseCommit } });
-      console.log(chalk.green(`\n  Claimed! Branch: ${branch}  (base: ${baseCommit.slice(0, 7)})\n`));
+      console.log(chalk.green(`\n  Claimed! Branch: ${workerBranch}  (base: ${baseCommit.slice(0, 7)})\n`));
       let openClaude: boolean;
       try {
         openClaude = await select({
@@ -169,8 +161,8 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
           ],
         });
       } catch { openClaude = false; }
-      if (openClaude) await launchClaudeCode(issue, branch);
-      return `Task #${issue.number} claimed. Branch: ${branch}`;
+      if (openClaude) await launchClaudeCode(issue, workerBranch);
+      return `Task #${issue.number} claimed. Branch: ${workerBranch}`;
     } catch (err) {
       return `Error claiming task: ${(err as Error).message}`;
     }
@@ -217,21 +209,20 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
       return `Error claiming task: ${(err as Error).message}`;
     }
 
-    // Ensure personal worker branch exists
     const workerBranch = makeWorkerBranchName(me);
+    const taskBase = extractBaseCommit(issue.body);
     try {
-      const isNewWorker = await switchToBranchOrCreate(workerBranch);
-      if (isNewWorker) { try { await pushBranch(workerBranch); } catch { /* ignore */ } }
+      if (taskBase) {
+        await resetOrCreateBranch(workerBranch, taskBase);
+      } else {
+        await switchToBranchOrCreate(workerBranch);
+      }
     } catch { /* ignore */ }
-
-    // Create task-specific branch from worker branch
-    const branch = makeBranchName(issueNumber, me);
-    try { await switchToBranchOrCreate(branch); } catch { /* ignore */ }
-    try { await pushBranch(branch); } catch { /* ignore */ }
+    try { await pushBranch(workerBranch); } catch { /* ignore */ }
     const baseCommit = await getCurrentCommit();
     setConfig({ taskState: { activeIssueNumber: issueNumber, baseCommit } });
 
-    return `Task #${issueNumber} claimed. Branch: ${branch} (base commit: ${baseCommit.slice(0, 7)})`;
+    return `Task #${issueNumber} claimed. Branch: ${workerBranch} (base commit: ${baseCommit.slice(0, 7)})`;
   }
 
   return `Unknown action: ${action}`;

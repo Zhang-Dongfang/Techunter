@@ -17,11 +17,13 @@ export async function configCommand(): Promise<void> {
 
   const currentBaseUrl = config.aiBaseUrl ?? DEFAULT_BASE_URL;
   const currentModel = config.aiModel ?? DEFAULT_MODEL;
+  const currentBaseBranch = config.baseBranch ?? 'main';
 
   const field = await select({
     message: 'Which setting to change?',
     choices: [
       { name: `GitHub repo          ${chalk.dim(`${config.github.owner}/${config.github.repo}`)}`, value: 'repo' },
+      { name: `Base branch          ${chalk.dim(currentBaseBranch)}`, value: 'baseBranch' },
       { name: `AI base URL          ${chalk.dim(currentBaseUrl)}`, value: 'aiBaseUrl' },
       { name: `AI model             ${chalk.dim(currentModel)}`, value: 'aiModel' },
       { name: `AI API Key           ${chalk.dim('(hidden)')}`, value: 'aiApiKey' },
@@ -32,7 +34,13 @@ export async function configCommand(): Promise<void> {
 
   if (field === 'cancel') return;
 
-  if (field === 'repo') {
+  if (field === 'baseBranch') {
+    const val = await input({ message: 'Base branch name:', default: currentBaseBranch });
+    if (val.trim()) {
+      setConfig({ baseBranch: val.trim() });
+      console.log(chalk.green(`\nBase branch set to: ${val.trim()}\n`));
+    }
+  } else if (field === 'repo') {
     const owner = await input({ message: 'GitHub repo owner:', default: config.github.owner });
     const repo = await input({ message: 'GitHub repo name:', default: config.github.repo });
     setConfig({ github: { ...config.github, owner: owner.trim(), repo: repo.trim() } });

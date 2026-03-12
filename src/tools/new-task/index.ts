@@ -8,6 +8,7 @@ import chalk from 'chalk';
 import open from 'open';
 import type { TechunterConfig } from '../../types.js';
 import { createTask, getAuthenticatedUser, isCollaborator } from '../../lib/github.js';
+import { syncWithBase, getCurrentCommit, getRemoteHeadSha } from '../../lib/git.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateGuide } from './guide-generator.js';
 
@@ -140,12 +141,25 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
+  // Sync creator's branch with base and record the base commit
+  const baseBranch = config.baseBranch ?? 'main';
+  let baseCommit: string | undefined;
+  const syncSpinner = ora(`Syncing with ${baseBranch}…`).start();
+  try {
+    await syncWithBase(baseBranch);
+    baseCommit = await getCurrentCommit();
+    syncSpinner.succeed(`Synced with ${baseBranch} (base: ${baseCommit.slice(0, 7)})`);
+  } catch {
+    syncSpinner.warn(`Could not sync with ${baseBranch} — recording remote HEAD as base`);
+    try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
+  }
+
   const createSpinner = ora(`Creating "${title}"…`).start();
   let htmlUrl: string;
   let issueNumber: number;
   let issueTitle: string;
   try {
-    const issue = await createTask(config, title, guide);
+    const issue = await createTask(config, title, guide, baseCommit);
     createSpinner.stop();
     htmlUrl = issue.htmlUrl;
     issueNumber = issue.number;
@@ -186,8 +200,17 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     guide = await generateGuide(config, title, { feedback, previousGuide: guide });
   }
 
+  const baseBranch = config.baseBranch ?? 'main';
+  let baseCommit: string | undefined;
   try {
-    const issue = await createTask(config, title, guide);
+    await syncWithBase(baseBranch);
+    baseCommit = await getCurrentCommit();
+  } catch {
+    try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
+  }
+
+  try {
+    const issue = await createTask(config, title, guide, baseCommit);
     return `Created #${issue.number} "${issue.title}" — ${issue.htmlUrl}\n\nGuide:\n${guide}`;
   } catch (err) {
     return `Error: ${(err as Error).message}`;

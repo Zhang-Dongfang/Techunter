@@ -8,6 +8,7 @@ const configSchema = z.object({
   aiModel: z.string().optional(),
   githubToken: z.string().min(1),
   githubClientId: z.string().optional(),
+  baseBranch: z.string().optional(),
   github: z.object({
     owner: z.string().min(1),
     repo: z.string().min(1),
@@ -57,6 +58,9 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
   }
   if (partial.githubClientId !== undefined) {
     current['githubClientId'] = partial.githubClientId;
+  }
+  if (partial.baseBranch !== undefined) {
+    current['baseBranch'] = partial.baseBranch;
   }
   if (partial.taskState !== undefined) {
     current['taskState'] = {

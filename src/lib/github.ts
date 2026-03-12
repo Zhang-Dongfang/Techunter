@@ -74,25 +74,56 @@ export async function getTask(config: TechunterConfig, number: number): Promise<
   return parseIssue(data);
 }
 
+const BASE_COMMIT_MARKER = '<!-- techunter-base:';
+
+export function embedBaseCommit(body: string, sha: string): string {
+  return `${body}\n\n${BASE_COMMIT_MARKER}${sha} -->`;
+}
+
+export function extractBaseCommit(body: string | null): string | null {
+  if (!body) return null;
+  const match = body.match(/<!-- techunter-base:([a-f0-9]{7,40}) -->/);
+  return match?.[1] ?? null;
+}
+
 export async function createTask(
   config: TechunterConfig,
   title: string,
-  body?: string
+  body?: string,
+  baseCommit?: string
 ): Promise<GitHubIssue> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
   await ensureLabels(config);
 
+  const finalBody = baseCommit ? embedBaseCommit(body ?? '', baseCommit) : body;
+
   const { data } = await octokit.issues.create({
     owner,
     repo,
     title,
-    body,
+    body: finalBody,
     labels: [LABEL_AVAILABLE],
   });
 
   return parseIssue(data);
+}
+
+export async function mergeWorkerIntoBase(
+  config: TechunterConfig,
+  workerBranch: string,
+  baseBranch: string
+): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  await octokit.repos.merge({
+    owner,
+    repo,
+    base: baseBranch,
+    head: workerBranch,
+    commit_message: `chore: merge ${workerBranch} into ${baseBranch}`,
+  });
 }
 
 export async function claimTask(
@@ -413,17 +444,18 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
 
 export async function acceptTask(
   config: TechunterConfig,
-  issueNumber: number
+  issueNumber: number,
+  headBranch?: string
 ): Promise<{ prNumber: number; prUrl: string; sha: string }> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  // Find open PR whose head branch matches task-{number}-*
   const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`));
-  if (!pr) throw new Error(`No open PR found for task #${issueNumber} (expected branch starting with task-${issueNumber}-)`);
+  const pr = headBranch
+    ? prs.find((p) => p.head.ref === headBranch)
+    : prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`) || p.head.ref.startsWith('worker-'));
+  if (!pr) throw new Error(`No open PR found for task #${issueNumber}`);
 
-  // Merge PR
   const { data: merge } = await octokit.pulls.merge({
     owner,
     repo,
@@ -431,7 +463,6 @@ export async function acceptTask(
     merge_method: 'merge',
   });
 
-  // Close issue
   await closeTask(config, issueNumber);
 
   return { prNumber: pr.number, prUrl: pr.html_url, sha: merge.sha ?? '' };

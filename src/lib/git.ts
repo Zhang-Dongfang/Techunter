@@ -177,6 +177,43 @@ export async function stageAllAndCommit(message: string): Promise<void> {
   await git.push('origin', branch, ['--set-upstream']);
 }
 
+export async function syncWithBase(baseBranch: string): Promise<void> {
+  await git.fetch('origin', baseBranch);
+  try {
+    await git.merge([`origin/${baseBranch}`, '--ff-only']);
+  } catch {
+    await git.merge([`origin/${baseBranch}`, '-m', `chore: sync with ${baseBranch}`]);
+  }
+}
+
+export async function getRemoteHeadSha(baseBranch: string): Promise<string> {
+  await git.fetch('origin', baseBranch);
+  return (await git.revparse([`origin/${baseBranch}`])).trim();
+}
+
+export async function checkoutFromCommit(branchName: string, sha: string): Promise<void> {
+  const branches = await git.branch(['-a']);
+  const exists = Object.keys(branches.branches).some(
+    (b) => b === branchName || b === `remotes/origin/${branchName}`
+  );
+  if (exists) {
+    await git.checkout(branchName);
+  } else {
+    await git.checkoutBranch(branchName, sha);
+  }
+}
+
+export async function resetOrCreateBranch(branchName: string, sha: string): Promise<void> {
+  const branches = await git.branch();
+  const localExists = Object.keys(branches.branches).some((b) => b === branchName);
+  if (localExists) {
+    await git.checkout(branchName);
+    await git.reset(['--hard', sha]);
+  } else {
+    await git.checkoutBranch(branchName, sha);
+  }
+}
+
 export async function hasUncommittedChanges(): Promise<boolean> {
   const status = await git.status();
   return !status.isClean();
