@@ -8,6 +8,49 @@ import { printToolCall, printToolResult } from './agent-ui.js';
 
 const tools = toolModules.map((m) => m.definition as OpenAI.ChatCompletionTool);
 
+const HISTORY_KEEP_TURNS = 8; // keep last N turns fully intact
+
+/**
+ * Compress old turns in-place. Each turn = one user message + everything
+ * until the next user message.
+ *
+ * Recent turns (last HISTORY_KEEP_TURNS) stay verbatim.
+ * Older turns are reduced to [user message] + [final assistant text reply],
+ * dropping all intermediate tool_calls and tool results.
+ * The assistant's final reply is a natural summary of what the tools returned.
+ */
+function trimHistory(messages: OpenAI.ChatCompletionMessageParam[]): void {
+  const userIndices = messages
+    .map((m, i) => (m.role === 'user' ? i : -1))
+    .filter((i) => i !== -1);
+
+  if (userIndices.length <= HISTORY_KEEP_TURNS) return;
+
+  const compressBefore = userIndices[userIndices.length - HISTORY_KEEP_TURNS];
+  const compressed: OpenAI.ChatCompletionMessageParam[] = [];
+
+  for (let t = 0; t < userIndices.length - HISTORY_KEEP_TURNS; t++) {
+    const start = userIndices[t];
+    const end = t + 1 < userIndices.length ? userIndices[t + 1] : compressBefore;
+    const turnMessages = messages.slice(start, end);
+
+    compressed.push(turnMessages[0]); // user message
+
+    const lastAssistant = [...turnMessages]
+      .reverse()
+      .find((m): m is OpenAI.ChatCompletionAssistantMessageParam =>
+        m.role === 'assistant' && typeof (m as OpenAI.ChatCompletionAssistantMessageParam).content === 'string'
+        && !!(m as OpenAI.ChatCompletionAssistantMessageParam).content
+      );
+
+    if (lastAssistant) {
+      compressed.push({ role: 'assistant', content: lastAssistant.content });
+    }
+  }
+
+  messages.splice(0, compressBefore, ...compressed);
+}
+
 async function executeTool(
   name: string,
   input: Record<string, unknown>,
@@ -43,8 +86,13 @@ export async function runAgentLoop(
       '## Tool philosophy',
       'Command tools (pick, new_task, close, submit, my_status, review, refresh, open_code) run',
       'hardcoded interactive flows — always use these for user-facing actions.',
-      'Low-level tools are for reasoning: run_command, scan_project, read_file, ask_user,',
+      'Low-level tools are for reasoning: run_command, grep_code, ask_user,',
       'get_task, get_comments, get_diff.',
+      '',
+      '## Exploring the codebase',
+      '1. list_files — see all files or filter by glob to orient yourself.',
+      '2. grep_code(pattern) — find where functions/variables appear.',
+      '3. grep_code(file_glob, start_line, end_line) — read a specific section after grep gives you line numbers.',
       '',
       '## Creating a task',
       'If the task description is vague, call ask_user to clarify (max 3 times).',
@@ -78,6 +126,7 @@ export async function runAgentLoop(
     if (++iterations > MAX_ITERATIONS) {
       throw new Error(`Agent exceeded ${MAX_ITERATIONS} iterations without finishing.`);
     }
+    trimHistory(messages);
     const spinner = ora({ text: chalk.dim('Thinking…'), color: 'cyan' }).start();
 
     let response: Awaited<ReturnType<typeof client.chat.completions.create>>;

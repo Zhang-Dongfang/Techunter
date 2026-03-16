@@ -19,8 +19,8 @@ import * as getTask from './get-task/index.js';
 import * as getComments from './get-comments/index.js';
 import * as getDiff from './get-diff/index.js';
 import * as runCommand from './run-command/index.js';
-import * as scanProject from './scan-project/index.js';
-import * as readFile from './read-file/index.js';
+import * as listFiles from './list-files/index.js';
+import * as grepCode from './grep-code/index.js';
 import * as askUser from './ask-user/index.js';
 
 export const toolModules: ToolModule[] = [
@@ -42,7 +42,7 @@ export const toolModules: ToolModule[] = [
   getComments,
   getDiff,
   runCommand,
-  scanProject,
-  readFile,
+  listFiles,
+  grepCode,
   askUser,
 ];

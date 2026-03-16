@@ -10,9 +10,9 @@ export async function generateRejectionComment(
   return runSubAgentLoop(
     config,
     'You are a senior engineer writing a structured code review rejection comment. ' +
-      'Use get_task to read the acceptance criteria, get_diff or read_file to inspect the implementation, ' +
+      'Use get_task to read the acceptance criteria, get_diff or grep_code to inspect the implementation, ' +
       'and get_comments to see prior discussion. Then write the rejection comment.\n\n' + REJECTION_FORMAT,
     `Write a rejection comment for issue #${issueNumber}.\nReviewer feedback: ${userFeedback}`,
-    ['get_task', 'get_comments', 'get_diff', 'read_file']
+    ['get_task', 'get_comments', 'get_diff', 'grep_code']
   );
 }

@@ -16,10 +16,10 @@ export async function generateGuide(
   return runSubAgentLoop(
     config,
     'You are a senior engineer writing a brief task guide for a developer. ' +
-      'Use scan_project and read_file to identify which files are relevant. ' +
+      'Use list_files then grep_code to identify which files are relevant. ' +
       'Do NOT include code snippets or implementation details. ' +
       'When you have enough context, write the guide.\n\n' + GUIDE_FORMAT,
     userMessage,
-    ['scan_project', 'read_file', 'run_command', 'ask_user']
+    ['list_files', 'grep_code', 'run_command', 'ask_user']
   );
 }
