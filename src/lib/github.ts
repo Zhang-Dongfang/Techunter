@@ -443,6 +443,37 @@ export async function editTask(
   await octokit.issues.update({ owner, repo, issue_number: number, title, body });
 }
 
+export async function upsertRepoFile(
+  config: TechunterConfig,
+  filePath: string,
+  content: string,
+  message: string,
+): Promise<string> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+
+  let sha: string | undefined;
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path: filePath });
+    if (!Array.isArray(data) && data.type === 'file') {
+      sha = data.sha;
+    }
+  } catch {
+    // File does not exist yet — will be created
+  }
+
+  const { data } = await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: filePath,
+    message,
+    content: Buffer.from(content, 'utf-8').toString('base64'),
+    ...(sha ? { sha } : {}),
+  });
+
+  return data.content?.html_url ?? `https://github.com/${owner}/${repo}/blob/main/${filePath}`;
+}
+
 export async function getDefaultBranch(config: TechunterConfig): Promise<string> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;

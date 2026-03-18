@@ -2,8 +2,9 @@ import chalk from 'chalk';
 import { select } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask, mergeWorkerIntoBase } from '../../lib/github.js';
+import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask, mergeWorkerIntoBase, upsertRepoFile } from '../../lib/github.js';
 import { makeWorkerBranchName } from '../../lib/git.js';
+import { generateWiki } from '../wiki/wiki-generator.js';
 
 
 export const definition = {
@@ -116,6 +117,28 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       mergeSpinner.succeed(`Merged ${targetBranch} → ${baseBranch}`);
     } catch (err) {
       mergeSpinner.fail(`Could not merge to ${baseBranch}: ${(err as Error).message}`);
+    }
+  }
+
+  let updateWiki = false;
+  try {
+    updateWiki = await select({
+      message: 'Update TECHUNTER.md project overview?',
+      choices: [
+        { name: 'Yes, regenerate', value: true },
+        { name: 'No, skip', value: false },
+      ],
+    });
+  } catch { /* skip */ }
+
+  if (updateWiki) {
+    const wikiSpinner = ora('Regenerating TECHUNTER.md…').start();
+    try {
+      const content = await generateWiki(config);
+      await upsertRepoFile(config, 'TECHUNTER.md', content, 'docs: update TECHUNTER.md project overview');
+      wikiSpinner.succeed('TECHUNTER.md updated');
+    } catch (err) {
+      wikiSpinner.fail(`Wiki update failed: ${(err as Error).message}`);
     }
   }
 

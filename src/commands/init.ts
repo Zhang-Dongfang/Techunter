@@ -4,10 +4,11 @@ import ora from 'ora';
 import open from 'open';
 import { createOAuthDeviceAuth } from '@octokit/auth-oauth-device';
 import { setConfig, getConfigPath } from '../lib/config.js';
-import { ensureLabels } from '../lib/github.js';
+import { ensureLabels, upsertRepoFile } from '../lib/github.js';
 import { getRemoteUrl, parseOwnerRepo } from '../lib/git.js';
 import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../lib/client.js';
 import type { TechunterConfig } from '../types.js';
+import { generateWiki } from '../tools/wiki/wiki-generator.js';
 
 async function getGitHubTokenViaPAT(): Promise<{ token: string; clientId?: undefined }> {
   console.log(chalk.dim('\n  Create a token at: https://github.com/settings/tokens/new'));
@@ -172,4 +173,27 @@ export async function initCommand(): Promise<void> {
 
   console.log(chalk.green('\nSetup complete!'));
   console.log(chalk.dim(`Config saved to: ${getConfigPath()}\n`));
+
+  let genWiki = false;
+  try {
+    genWiki = await select({
+      message: 'Generate TECHUNTER.md project overview for new team members?',
+      choices: [
+        { name: 'Yes, generate now', value: true },
+        { name: 'No, skip (run /wiki later)', value: false },
+      ],
+    });
+  } catch { /* skip */ }
+
+  if (genWiki) {
+    const wikiSpinner = ora('Analyzing project and generating TECHUNTER.md…').start();
+    try {
+      const content = await generateWiki(config);
+      await upsertRepoFile(config, 'TECHUNTER.md', content, 'docs: add TECHUNTER.md project overview');
+      wikiSpinner.succeed('TECHUNTER.md created');
+    } catch (err) {
+      wikiSpinner.fail(`Could not generate wiki: ${(err as Error).message}`);
+    }
+    console.log('');
+  }
 }

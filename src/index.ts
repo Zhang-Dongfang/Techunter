@@ -13,6 +13,7 @@ import { getRemoteUrl, parseOwnerRepo } from './lib/git.js';
 import { ensureLabels } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
+import { checkForUpdate } from './lib/update-check.js';
 import { printTaskList, printMyTasks } from './lib/display.js';
 import { getModel, DEFAULT_BASE_URL } from './lib/client.js';
 import { run as runPick } from './tools/pick/index.js';
@@ -25,6 +26,7 @@ import { run as runRefresh } from './tools/refresh/index.js';
 import { run as runCode } from './tools/open-code/index.js';
 import { run as runAccept } from './tools/accept/index.js';
 import { run as runEdit } from './tools/edit-task/index.js';
+import { run as runWiki } from './tools/wiki/index.js';
 import type { TechunterConfig } from './types.js';
 
 // ─── Tab completion ───────────────────────────────────────────────────────────
@@ -32,7 +34,7 @@ import type { TechunterConfig } from './types.js';
 const SLASH_NAMES = [
   '/help', '/h', '/refresh', '/r', '/pick', '/p', '/new', '/n',
   '/submit', '/s', '/close', '/d', '/edit', '/e', '/review', '/rv', '/accept', '/ac',
-  '/status', '/me', '/code', '/c', '/config', '/cfg', '/init',
+  '/status', '/me', '/code', '/c', '/wiki', '/w', '/config', '/cfg', '/init',
 ];
 
 function completer(line: string): [string[], string] {
@@ -70,6 +72,7 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/init',                  desc: 'Re-run setup wizard for this repo' },
   { cmd: '/status',  alias: '/me', desc: 'Show tasks assigned to you' },
   { cmd: '/code',    alias: '/c',  desc: 'Open Claude Code for the current task branch' },
+  { cmd: '/wiki',    alias: '/w',  desc: 'Generate or refresh TECHUNTER.md project overview' },
 ];
 
 function cmdHelp(): void {
@@ -184,7 +187,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Start update check in background (non-blocking)
+  const updateCheckPromise = checkForUpdate(version);
+
   printBanner(config);
+
+  // Show update notice if available (already cached or fast enough)
+  const updateNotice = await Promise.race([
+    updateCheckPromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+  ]);
+  if (updateNotice) console.log(updateNotice + '\n');
+
   console.log(chalk.dim('  Type /help for commands, or describe what you want.\n'));
 
   await printTaskList(config);
@@ -293,6 +307,11 @@ async function main(): Promise<void> {
         case '/code': case '/c':
           await runCode({}, config);
           break;
+        case '/wiki': case '/w': {
+          const result = await runWiki({}, config);
+          console.log(chalk.green(`\n  ${result}\n`));
+          break;
+        }
         default:
           console.log(chalk.yellow(`  Unknown command: ${cmd}  (try /help)`));
       }
