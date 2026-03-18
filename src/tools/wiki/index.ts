@@ -1,9 +1,10 @@
 import ora from 'ora';
 import chalk from 'chalk';
+import { readFile } from 'node:fs/promises';
 import { select } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
 import { renderMarkdown } from '../../lib/markdown.js';
-import { getAuthenticatedUser, isCollaborator, upsertRepoFile } from '../../lib/github.js';
+import { getAuthenticatedUser, isCollaborator, upsertRepoFile, getRepoFile } from '../../lib/github.js';
 import { generateWiki } from './wiki-generator.js';
 
 const WIKI_PATH = 'TECHUNTER.md';
@@ -24,7 +25,55 @@ export const definition = {
   },
 } as const;
 
+async function readWikiContent(config: TechunterConfig): Promise<string | null> {
+  // Try local file first (fastest)
+  try {
+    return await readFile(WIKI_PATH, 'utf-8');
+  } catch { /* not found locally */ }
+
+  // Fall back to GitHub
+  return getRepoFile(config, WIKI_PATH);
+}
+
+function printWiki(content: string): void {
+  const divider = chalk.dim('─'.repeat(70));
+  console.log('\n' + divider);
+  console.log(chalk.bold('  TECHUNTER.md'));
+  console.log(divider);
+  console.log(renderMarkdown(content));
+  console.log(divider + '\n');
+}
+
 export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
+  // ── Check if wiki already exists ────────────────────────────────────────────
+  const fetchSpinner = ora('Checking for existing wiki…').start();
+  const existing = await readWikiContent(config).catch(() => null);
+  fetchSpinner.stop();
+
+  // ── Decide what to do ───────────────────────────────────────────────────────
+  let action: string;
+  try {
+    action = await select({
+      message: 'TECHUNTER.md — what would you like to do?',
+      choices: [
+        ...(existing ? [{ name: 'View current wiki', value: 'view' }] : []),
+        { name: existing ? 'Regenerate & commit to repo' : 'Generate & commit to repo', value: 'generate' },
+        { name: 'Cancel', value: 'cancel' },
+      ],
+    });
+  } catch {
+    return 'Cancelled.';
+  }
+
+  if (action === 'cancel') return 'Cancelled.';
+
+  // ── View ─────────────────────────────────────────────────────────────────────
+  if (action === 'view') {
+    printWiki(existing!);
+    return 'Displayed TECHUNTER.md.';
+  }
+
+  // ── Generate ─────────────────────────────────────────────────────────────────
   const authSpinner = ora('Checking permissions…').start();
   let me: string;
   let allowed: boolean;
@@ -50,19 +99,14 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     return `Error generating wiki: ${(err as Error).message}`;
   }
 
-  const divider = chalk.dim('─'.repeat(70));
-  console.log('\n' + divider);
-  console.log(chalk.bold('  Generated TECHUNTER.md preview'));
-  console.log(divider);
-  console.log(renderMarkdown(content));
-  console.log(divider + '\n');
+  printWiki(content);
 
-  let action: string;
+  let confirm: string;
   try {
-    action = await select({
+    confirm = await select({
       message: `Publish to repository as ${WIKI_PATH}?`,
       choices: [
-        { name: 'Yes, write to repo', value: 'publish' },
+        { name: 'Yes, commit to repo', value: 'publish' },
         { name: 'Cancel', value: 'cancel' },
       ],
     });
@@ -70,7 +114,7 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     return 'Cancelled.';
   }
 
-  if (action === 'cancel') return 'Cancelled.';
+  if (confirm === 'cancel') return 'Cancelled.';
 
   const writeSpinner = ora(`Writing ${WIKI_PATH}…`).start();
   try {

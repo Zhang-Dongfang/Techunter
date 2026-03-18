@@ -13,7 +13,7 @@ import { getRemoteUrl, parseOwnerRepo } from './lib/git.js';
 import { ensureLabels } from './lib/github.js';
 import { runAgentLoop } from './lib/agent.js';
 import { renderMarkdown } from './lib/markdown.js';
-import { checkForUpdate } from './lib/update-check.js';
+import { startAutoUpdate } from './lib/update-check.js';
 import { printTaskList, printMyTasks } from './lib/display.js';
 import { getModel, DEFAULT_BASE_URL } from './lib/client.js';
 import { run as runPick } from './tools/pick/index.js';
@@ -187,19 +187,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Start update check in background (non-blocking)
-  const updateCheckPromise = checkForUpdate(version);
-
   printBanner(config);
-
-  // Show update notice if available (already cached or fast enough)
-  const updateNotice = await Promise.race([
-    updateCheckPromise,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-  ]);
-  if (updateNotice) console.log(updateNotice + '\n');
-
   console.log(chalk.dim('  Type /help for commands, or describe what you want.\n'));
+
+  // Check + auto-install update in background after banner
+  startAutoUpdate(version).catch(() => { /* silent */ });
 
   await printTaskList(config);
   await printMyTasks(config);

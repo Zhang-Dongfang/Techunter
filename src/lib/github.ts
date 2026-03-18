@@ -474,6 +474,20 @@ export async function upsertRepoFile(
   return data.content?.html_url ?? `https://github.com/${owner}/${repo}/blob/main/${filePath}`;
 }
 
+export async function getRepoFile(config: TechunterConfig, filePath: string): Promise<string | null> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path: filePath });
+    if (!Array.isArray(data) && data.type === 'file' && 'content' in data) {
+      return Buffer.from(data.content, 'base64').toString('utf-8');
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getDefaultBranch(config: TechunterConfig): Promise<string> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
