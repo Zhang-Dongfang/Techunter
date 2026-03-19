@@ -15,7 +15,11 @@
       "Bash(do)",
       "Bash(echo \"=== $f ===\")",
       "Read(//e/Excalibur/**)",
-      "Bash(done)"
+      "Bash(done)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:algora.io)",
+      "WebFetch(domain:gitstart.com)"
     ]
   },
   "disabledMcpjsonServers": [

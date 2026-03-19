@@ -5,10 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run build      # Build with tsup → dist/index.js
+npm run build      # Build with tsup → dist/index.js and dist/mcp.js
 npm run dev        # Run directly with tsx (no build step)
 npm run typecheck  # Type-check without emitting
-npm link           # Install globally as `tch` / `techunter`
+npm link           # Install globally as `tch` / `techunter` / `tch-mcp`
 ```
 
 There are no tests. To verify end-to-end, build and run `tch init` in a directory with a GitHub remote.
@@ -26,7 +26,7 @@ tch
        └─ natural language → runAgentLoop()
             └─ LLM (tool_use) → toolModules[name].execute(input, config)
                  ├─ command tools   hardcoded interactive flows (terminal=true → loop exits)
-                 └─ low-level tools reasoning helpers (get_task, scan_project, …)
+                 └─ low-level tools reasoning helpers (get_task, list_files, grep_code, …)
 ```
 
 ### Tool architecture
@@ -43,10 +43,10 @@ export function run(config, ...): Promise<string>  // called by slash commands
 `src/tools/registry.ts` collects all modules into `toolModules[]`. The agent uses this to build its tools array and dispatch calls — no hardcoded switch statements.
 
 **Command tools** (`terminal = true`) — hardcoded interactive flows, mirrors slash commands:
-`pick`, `new_task`, `close`, `submit`, `my_status`, `review`, `refresh`, `open_code`, `reject`
+`pick`, `new_task`, `close`, `submit`, `my_status`, `review`, `refresh`, `open_code`, `reject`, `accept`, `edit_task`, `wiki`
 
 **Low-level tools** — reasoning helpers, chainable:
-`get_task`, `get_comments`, `get_diff`, `run_command`, `scan_project`, `read_file`, `ask_user`
+`get_task`, `get_comments`, `get_diff`, `run_command`, `list_files`, `grep_code`, `ask_user`, `list_tasks`
 
 ### Sub-agents
 
@@ -54,9 +54,10 @@ Three sub-agent loops run inside command tools, each using `runSubAgentLoop()`:
 
 | Sub-agent | File | Tools |
 |---|---|---|
-| Guide generator | `new-task/guide-generator.ts` | `scan_project`, `read_file`, `run_command`, `ask_user` |
-| Rejection comment | `reject/comment-generator.ts` | `get_task`, `get_comments`, `get_diff`, `read_file` |
-| Submit reviewer | `submit/reviewer.ts` | `run_command`, `read_file`, `get_diff` |
+| Guide generator | `new-task/guide-generator.ts` | `list_files`, `grep_code`, `run_command`, `ask_user` |
+| Rejection comment | `reject/comment-generator.ts` | `get_task`, `get_comments`, `get_diff`, `grep_code` |
+| Submit reviewer | `submit/reviewer.ts` | `run_command`, `grep_code`, `get_diff` |
+| Wiki generator | `wiki/wiki-generator.ts` | `list_files`, `grep_code`, `run_command` |
 
 Sub-agents reuse tool `execute()` functions from the registry. Prompts live in co-located `prompts.ts` files.
 
@@ -73,9 +74,12 @@ Sub-agents reuse tool `execute()` functions from the registry. Prompts live in c
 | `src/lib/launch.ts` | `launchClaudeCode()` — spawns Claude Code for a task |
 | `src/lib/github.ts` | All Octokit calls; label management, issues, PRs |
 | `src/lib/project.ts` | `buildProjectContext()` — file tree + key files, capped at 80 KB |
-| `src/lib/git.ts` | Branch creation, push, diff via simple-git |
+| `src/lib/git.ts` | Branch creation, push, diff via simple-git; `makeWorkerBranchName(username)` |
 | `src/lib/config.ts` | `conf`-based config store at `~/.config/techunter/` |
 | `src/lib/markdown.ts` | `renderMarkdown()` — terminal markdown renderer |
+| `src/lib/proxy.ts` | `getHttpsProxyAgent()` / `getUndiciProxyAgent()` — reads `HTTPS_PROXY` env vars |
+| `src/lib/update-check.ts` | `startAutoUpdate()` — checks npm, auto-installs update in background |
+| `src/mcp.ts` | MCP server (`tch-mcp`) — exposes all tools (except `ask_user`) via stdio |
 | `src/commands/init.ts` | One-time setup wizard (`tch init`) |
 | `src/tools/registry.ts` | Assembles all tool modules into `toolModules[]` |
 | `src/tools/types.ts` | `ToolModule` interface |
@@ -98,7 +102,9 @@ Labels are auto-created on `tch init` via `ensureLabels()`.
 
 ### Branch naming
 
-`task-{issue_number}-{first-5-words-of-title-kebab-cased}`
+Task branches: `task-{issue_number}-{first-5-words-of-title-kebab-cased}`
+
+Worker branches (per-user integration branch): `worker-{github-username}` — `accept` merges task PRs here, then optionally pushes to `baseBranch`.
 
 `submit` derives the issue number from the current branch via regex `^task-(\d+)-`.
 

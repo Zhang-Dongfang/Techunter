@@ -1,50 +1,27 @@
 # Techunter
 
-> An AI-powered task distribution CLI for development teams. Manage GitHub Issues through a conversational terminal interface.
+> AI-powered task distribution CLI for development teams — manage GitHub Issues through a conversational terminal interface.
 
 ```
     ╔═══════════════╗
-◆═══╬   TECHUNTER   ╬═══▶   Techunter v0.1.6
-    ╚═══════════════╝        GLM-5 · z-ai  ·  owner/repo
+◆═══╬   TECHUNTER   ╬═══▶
+    ╚═══════════════╝
 ```
 
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Setup](#setup)
-- [Usage](#usage)
-- [Task Lifecycle](#task-lifecycle)
-- [Branch Naming](#branch-naming)
-- [AI Agent Tools](#ai-agent-tools)
-- [Development](#development)
-- [Architecture](#architecture)
-- [License](#license)
+<!-- demo GIF goes here -->
 
 ---
 
-## Features
+## Why Techunter?
 
-- **Conversational REPL** — Describe what you need in plain English; the Agent calls the right tools automatically
-- **GitHub Issues integration** — Create, claim, submit, review, and close tasks; labels and assignees stay in sync
-- **Automatic branch management** — Claiming a task creates and pushes the corresponding Git branch
-- **Smart task guides** — Before you start, the Agent scans your codebase and posts a detailed implementation guide as an Issue comment
-- **One-command delivery** — `/submit` lets the Agent review your changes against acceptance criteria, then commits and pushes
-- **Review & accept flow** — `/review` lists in-review PRs; `/accept` merges and closes
-- **Slash commands** — Common actions don't need a description: just `/pick`, `/new`, `/submit`
-- **Persistent conversation history** — Full context is retained across turns in the same REPL session
+Most teams manage tasks in GitHub Issues but switch between multiple tools to actually act on them. Techunter closes that gap:
 
----
-
-## Requirements
-
-- Node.js ≥ 18
-- A GitHub repository with Issues enabled
-- GitHub Personal Access Token or OAuth Device Flow authorization
-- An OpenAI-compatible API key (OpenRouter by default, or any custom provider)
+| Without Techunter | With Techunter |
+|---|---|
+| Manually write Issue descriptions | `/new` → AI scans your codebase and generates a full implementation guide |
+| Browse Issues in the browser, create branches by hand | `/pick` → select a task, branch is created and pushed automatically |
+| Write PR descriptions, update labels manually | `/submit` → AI reviews your changes against acceptance criteria, then commits and opens the PR |
+| Back-and-forth review comments | `/accept` or `/reject` with AI-generated feedback |
 
 ---
 
@@ -54,139 +31,190 @@
 npm install -g techunter
 ```
 
-**Install from source (for development):**
+**Install from source:**
 
 ```bash
 git clone https://github.com/Zhang-Dongfang/Techunter.git
 cd Techunter
-npm install
-npm run build
-npm link          # registers the tch / techunter commands globally
+npm install && npm run build && npm link
 ```
 
 ---
 
-## Setup
+## Quick Start
 
-Run the one-time setup wizard inside any directory that has a GitHub remote:
+Run the one-time setup wizard inside any directory with a GitHub remote:
 
 ```bash
 tch init
 ```
 
-The wizard will ask for:
+The wizard will prompt for:
+1. **GitHub auth** — Browser OAuth (recommended) or a Personal Access Token (`repo` + `read:user` scopes)
+2. **AI provider** — OpenRouter (default) or any OpenAI-compatible endpoint + API key
+3. **Repository** — auto-detected from your git remote
 
-1. **GitHub authentication** — Browser OAuth (recommended) or a Personal Access Token
-   - PAT: create one at https://github.com/settings/tokens/new with `repo` and `read:user` scopes
-2. **AI provider** — OpenRouter (default) or a custom OpenAI-compatible endpoint
-   - OpenRouter key: https://openrouter.ai/settings/keys
-3. **GitHub repository** — Auto-detected from your git remote, or enter manually
-
-Config is stored at `~/.config/techunter/`.
-
----
-
-## Usage
+Then start the REPL:
 
 ```bash
 tch
 ```
 
-Starts the conversational REPL. Type natural language or slash commands:
+---
+
+## Workflow
+
+### 1. Create a task
+
+```
+You › /new
+? Task title: Add email verification on signup
+
+⠋ Scanning project and generating guide…
+
+  ## Goal
+  Send a verification email after user registration.
+
+  ## Acceptance Criteria
+  - [ ] POST /auth/register sends a verification email
+  - [ ] Email contains a signed token with 24h expiry
+  - [ ] GET /auth/verify/:token activates the account
+  - [ ] Unverified users cannot access protected routes
+
+  ## Implementation Notes
+  - Use nodemailer (already in package.json)
+  - See existing token pattern in src/lib/auth.ts
+  - Add `verified` boolean column to users table
+
+? Create this task?  ❯ Yes, create task
+```
+
+### 2. Claim a task
+
+```
+You › /pick
+
+? Select a task:
+  #14   available   Add email verification on signup
+❯ #11   available   Fix login redirect bug
+
+  #11  Fix login redirect bug         available
+  After OAuth login, users are redirected to /home
+  instead of their original destination URL.
+
+? Action:  ❯ Claim this task
+
+✔ Claimed! Branch: worker-johndoe  (base: a3f92c1)
+
+? Open Claude Code for this task?  ❯ Yes, start coding now
+```
+
+### 3. Submit when done
+
+```
+You › /submit
+
+⠋ Reviewing changes against acceptance criteria…
+
+  ✅ Return URL stored in session before redirect
+  ✅ Redirects to return URL after successful login
+  ✅ Falls back to /dashboard when no return URL
+  ⚠️  Consider validating return URL to prevent open redirect
+
+? Submit task #11?  ❯ Yes, submit
+
+✔ Committed and pushed
+✔ PR created: https://github.com/myorg/my-project/pull/8
+✔ Marked as in-review
+```
+
+### 4. Review and accept
+
+```
+You › /review     # see all in-review PRs
+You › /accept     # merge PR, close issue, release branch
+```
+
+---
+
+## Commands
 
 | Command | Alias | Description |
 |---|---|---|
 | `/help` | `/h` | Show all commands |
-| `/refresh` | `/r` | Refresh the task list |
-| `/pick` | `/p` | Browse and act on tasks interactively |
-| `/new` | `/n` | Create a new task |
-| `/close` | `/d` | Close (delete) a task |
-| `/edit` | `/e` | Edit the title or description of a task |
-| `/submit` | `/s` | Review changes, commit, and push |
+| `/new` | `/n` | Create a task — AI generates an implementation guide |
+| `/pick` | `/p` | Browse tasks and claim one |
+| `/submit` | `/s` | AI-review changes, commit, push, open PR |
 | `/review` | `/rv` | List tasks waiting for your approval |
-| `/accept` | `/ac` | Accept a reviewed task: merge PR and close issue |
+| `/accept` | `/ac` | Merge PR and close issue |
 | `/status` | `/me` | Show tasks assigned to you |
-| `/code` | `/c` | Launch Claude Code for the current task branch |
-| `/config` | `/cfg` | Change settings (repo, API keys, etc.) |
-| `/init` | | Re-run the setup wizard for this repo |
+| `/edit` | `/e` | Edit a task title or description |
+| `/close` | `/d` | Close (delete) a task |
+| `/refresh` | `/r` | Reload the task list |
+| `/code` | `/c` | Open Claude Code for the current task branch |
+| `/wiki` | `/w` | Generate or refresh `TECHUNTER.md` project overview |
+| `/config` | `/cfg` | Change settings (repo, API keys, model) |
+| `/init` | | Re-run the setup wizard |
 
-Any other input is sent to the AI Agent, for example:
+Any other input is sent to the AI agent:
 
 ```
-> claim task #12
-> create a task to add pagination to the user list
-> what tasks are available right now?
-> deliver the current task
+You › what tasks are available?
+You › claim the task about login redirect
+You › create a task to add pagination to the user list
 ```
 
 ---
 
 ## Task Lifecycle
 
-Each GitHub Issue carries exactly one `techunter:*` label at a time:
+Issues carry exactly one `techunter:*` label at a time:
 
 ```
 techunter:available  →  techunter:claimed  →  techunter:in-review
-     (green)                (yellow)               (blue)
-                                                      ↓ rejected
+                                                      ↓  (if rejected)
                                            techunter:changes-needed
-                                                     (red)
 ```
 
-Labels are created automatically in your repository during `tch init` and when tasks are created.
+Labels are created automatically in your repository during `tch init`.
 
 ---
 
 ## Branch Naming
 
-A branch is created automatically when you claim a task:
+Each user has a persistent **worker branch** created when they first claim a task:
 
 ```
-task-{issue_number}-{your-github-username}
+worker-{github-username}
 ```
 
-Example: Issue #7 claimed by `johndoe` → `task-7-johndoe`
-
-Worker branches (for persistent personal workspaces) follow:
+Task branches submitted as PRs follow:
 
 ```
-worker-{your-github-username}
+task-{issue_number}-{first-five-words-of-title}
 ```
 
 ---
 
-## AI Agent Tools
+## MCP Server
 
-The Agent can call the following tools:
+Techunter ships a Model Context Protocol server that exposes all tools to any MCP-compatible client (e.g. Claude Desktop):
 
-| Tool | Description |
-|---|---|
-| `list_tasks` | List all open tasks |
-| `get_task` | Get full details of a specific Issue |
-| `create_task` | Create a new GitHub Issue |
-| `claim_task` | Assign an Issue and create a local branch |
-| `deliver_task` | Push the branch, open a PR, mark as in-review |
-| `close_task` | Close a GitHub Issue |
-| `post_comment` | Post a Markdown comment on an Issue |
-| `scan_project` | Scan the project file tree and read key files |
-| `read_file` | Read the contents of a specific file |
-| `run_command` | Execute a shell command in the project root |
-| `get_diff` | Get the current Git diff |
-| `stage_and_commit` | Stage all changes, commit, and push |
-| `ask_user` | Ask the user a question (max 3 times per task) |
-| `get_my_status` | Show tasks assigned to the current user |
-| `get_comments` | Read the latest comments on an Issue (e.g. rejection feedback) |
-| `reject_task` | Reject an in-review task: post feedback and mark as changes-needed |
+```bash
+tch-mcp
+```
 
 ---
 
 ## Development
 
 ```bash
-npm run dev        # Run directly with tsx (no build step)
-npm run build      # Compile to dist/index.js
-npm run typecheck  # Type-check without emitting files
+npm run dev        # Run with tsx (no build step)
+npm run build      # Compile to dist/
+npm run typecheck  # Type-check without emitting
 ```
+
+To verify end-to-end: build and run `tch init` in a directory with a GitHub remote.
 
 ---
 
@@ -194,13 +222,13 @@ npm run typecheck  # Type-check without emitting files
 
 ```
 tch
-  └─ src/index.ts           Entry point, REPL, slash command dispatch
-       └─ src/lib/agent.ts   AI tool-call loop
-            ├─ src/lib/github.ts    Octokit — Issues, PRs, label management
-            ├─ src/lib/git.ts       simple-git — branches, push, diff
-            ├─ src/lib/project.ts   File tree + key file scanning (80 KB cap)
-            └─ src/lib/config.ts    conf-based config store (~/.config/techunter/)
+  └─ src/index.ts          readline REPL + slash command dispatch
+       ├─ /pick, /new …    → tool run() functions directly
+       └─ natural language → runAgentLoop()
+            └─ LLM (tool_use) → toolModules[name].execute(input, config)
 ```
+
+All tools live in `src/tools/{name}/index.ts`. See [CLAUDE.md](CLAUDE.md) for full architecture notes.
 
 ---
 
