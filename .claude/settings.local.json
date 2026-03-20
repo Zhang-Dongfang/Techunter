@@ -19,7 +19,10 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:algora.io)",
-      "WebFetch(domain:gitstart.com)"
+      "WebFetch(domain:gitstart.com)",
+      "Bash(npx tsc:*)",
+      "Bash(./node_modules/.bin/tsc --noEmit 2>&1)",
+      "Bash(node_modules/.bin/tsc.cmd --noEmit)"
     ]
   },
   "disabledMcpjsonServers": [

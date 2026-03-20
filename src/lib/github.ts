@@ -238,6 +238,31 @@ export async function postGuideComment(
   });
 }
 
+export async function ensureRemoteBranch(
+  config: TechunterConfig,
+  branchName: string,
+  fallbackBase: string
+): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+
+  try {
+    await octokit.repos.getBranch({ owner, repo, branch: branchName });
+    return; // already exists
+  } catch (err: unknown) {
+    if ((err as { status?: number }).status !== 404) throw err;
+  }
+
+  // Branch doesn't exist — create it from fallbackBase
+  const { data: baseRef } = await octokit.repos.getBranch({ owner, repo, branch: fallbackBase });
+  await octokit.git.createRef({
+    owner,
+    repo,
+    ref: `refs/heads/${branchName}`,
+    sha: baseRef.commit.sha,
+  });
+}
+
 export async function createPR(
   config: TechunterConfig,
   title: string,
