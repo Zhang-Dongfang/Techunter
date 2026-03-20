@@ -496,6 +496,33 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
 }
 
 
+export async function getTaskPR(
+  config: TechunterConfig,
+  issueNumber: number
+): Promise<{ number: number; url: string; body: string } | null> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+  const pr = prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`) || p.head.ref.startsWith('worker-'));
+  if (!pr) return null;
+  return { number: pr.number, url: pr.html_url, body: pr.body ?? '' };
+}
+
+export async function getTaskPRDiff(
+  config: TechunterConfig,
+  prNumber: number
+): Promise<string> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  const response = await octokit.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+    mediaType: { format: 'diff' },
+  });
+  return response.data as unknown as string;
+}
+
 export async function acceptTask(
   config: TechunterConfig,
   issueNumber: number,
