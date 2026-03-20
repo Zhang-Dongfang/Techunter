@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, closeTask, getAuthenticatedUser } from '../../lib/github.js';
+import { getTask, createPR, markInReview, closeTask, getAuthenticatedUser, ensureRemoteBranch } from '../../lib/github.js';
 import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
@@ -120,6 +120,7 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   spinner = ora('Creating pull request…').start();
   let prUrl: string;
   try {
+    await ensureRemoteBranch(config, workerBranch, config.baseBranch ?? 'main');
     const prBody = [
       `Closes #${issueNumber}`,
       issue.body ? `\n${issue.body}` : '',
@@ -189,6 +190,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   let prUrl: string;
   try {
+    await ensureRemoteBranch(config, workerBranch, config.baseBranch ?? 'main');
     const prBody = [
       `Closes #${issueNumber}`,
       issue.body ? `\n${issue.body}` : '',
