@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getConfig } from '../lib/config.js';
 import { getAuthenticatedUser, listMyTasks } from '../lib/github.js';
-import { makeBranchName } from '../lib/git.js';
+import { makeTaskBranchName } from '../lib/git.js';
 import type { GitHubIssue } from '../types.js';
 
 function getStatus(labels: string[]): { text: string; color: (s: string) => string } {
@@ -22,7 +22,7 @@ function renderStatus(issues: GitHubIssue[], username: string): void {
 
   for (const issue of issues) {
     const { text, color } = getStatus(issue.labels);
-    const branch = makeBranchName(issue.number, issue.title);
+    const branch = issue.assignee ? makeTaskBranchName(issue.number, issue.assignee) : `task-${issue.number}`;
 
     console.log(
       color(`#${issue.number}`) + '  ' + chalk.bold(issue.title)

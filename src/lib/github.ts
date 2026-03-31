@@ -84,6 +84,7 @@ export async function getTask(config: TechunterConfig, number: number): Promise<
 }
 
 const BASE_COMMIT_MARKER = '<!-- techunter-base:';
+const TARGET_BRANCH_MARKER = '<!-- techunter-target:';
 
 export function embedBaseCommit(body: string, sha: string): string {
   return `${body}\n\n${BASE_COMMIT_MARKER}${sha} -->`;
@@ -95,18 +96,31 @@ export function extractBaseCommit(body: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+export function embedTargetBranch(body: string, branch: string): string {
+  return `${body}\n${TARGET_BRANCH_MARKER}${branch} -->`;
+}
+
+export function extractTargetBranch(body: string | null): string | null {
+  if (!body) return null;
+  const match = body.match(/<!-- techunter-target:([^\s>]+) -->/);
+  return match?.[1] ?? null;
+}
+
 export async function createTask(
   config: TechunterConfig,
   title: string,
   body?: string,
-  baseCommit?: string
+  baseCommit?: string,
+  targetBranch?: string
 ): Promise<GitHubIssue> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
   await ensureLabels(config);
 
-  const finalBody = baseCommit ? embedBaseCommit(body ?? '', baseCommit) : body;
+  let finalBody = body ?? '';
+  if (baseCommit) finalBody = embedBaseCommit(finalBody, baseCommit);
+  if (targetBranch) finalBody = embedTargetBranch(finalBody, targetBranch);
 
   const { data } = await octokit.issues.create({
     owner,
@@ -126,13 +140,22 @@ export async function mergeWorkerIntoBase(
 ): Promise<void> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
-  await octokit.repos.merge({
-    owner,
-    repo,
-    base: baseBranch,
-    head: workerBranch,
-    commit_message: `chore: merge ${workerBranch} into ${baseBranch}`,
-  });
+  try {
+    await octokit.repos.merge({
+      owner,
+      repo,
+      base: baseBranch,
+      head: workerBranch,
+      commit_message: `chore: merge ${workerBranch} into ${baseBranch}`,
+    });
+  } catch (err: unknown) {
+    if ((err as { status?: number }).status === 409) {
+      throw new Error(
+        `Merge conflict: ${workerBranch} cannot be merged into ${baseBranch} cleanly. Resolve conflicts manually.`
+      );
+    }
+    throw err;
+  }
 }
 
 export async function claimTask(
@@ -524,13 +547,47 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
 export async function getTaskPR(
   config: TechunterConfig,
   issueNumber: number
-): Promise<{ number: number; url: string; body: string } | null> {
+): Promise<{ number: number; url: string; body: string; baseBranch: string } | null> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
   const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`) || p.head.ref.startsWith('worker-'));
+  const pr = prs.find((p) =>
+    new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? '')
+  );
   if (!pr) return null;
-  return { number: pr.number, url: pr.html_url, body: pr.body ?? '' };
+  return { number: pr.number, url: pr.html_url, body: pr.body ?? '', baseBranch: pr.base.ref };
+}
+
+export async function getOpenSubtasks(
+  config: TechunterConfig,
+  targetBranch: string
+): Promise<number[]> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  const { data } = await octokit.issues.listForRepo({
+    owner,
+    repo,
+    state: 'open',
+    per_page: 100,
+  });
+  return data
+    .filter((issue) => !issue.pull_request)
+    .filter((issue) => extractTargetBranch(issue.body ?? null) === targetBranch)
+    .map((issue) => issue.number);
+}
+
+export async function getIssueNumberFromBranch(
+  config: TechunterConfig,
+  branch: string
+): Promise<{ issueNumber: number; prUrl: string } | null> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+  const pr = prs.find((p) => p.head.ref === branch);
+  if (!pr) return null;
+  const match = (pr.body ?? '').match(/Closes #(\d+)/i);
+  if (!match) return null;
+  return { issueNumber: parseInt(match[1], 10), prUrl: pr.html_url };
 }
 
 export async function getTaskPRDiff(
@@ -550,26 +607,32 @@ export async function getTaskPRDiff(
 
 export async function acceptTask(
   config: TechunterConfig,
-  issueNumber: number,
-  headBranch?: string
-): Promise<{ prNumber: number; prUrl: string; sha: string }> {
+  issueNumber: number
+): Promise<{ prNumber: number; prUrl: string; sha: string; baseBranch: string }> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
   const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = headBranch
-    ? prs.find((p) => p.head.ref === headBranch)
-    : prs.find((p) => p.head.ref.startsWith(`task-${issueNumber}-`) || p.head.ref.startsWith('worker-'));
+  const pr = prs.find((p) =>
+    new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? '')
+  );
   if (!pr) throw new Error(`No open PR found for task #${issueNumber}`);
 
-  const { data: merge } = await octokit.pulls.merge({
-    owner,
-    repo,
-    pull_number: pr.number,
-    merge_method: 'merge',
-  });
-
-  await closeTask(config, issueNumber);
-
-  return { prNumber: pr.number, prUrl: pr.html_url, sha: merge.sha ?? '' };
+  try {
+    const { data: merge } = await octokit.pulls.merge({
+      owner,
+      repo,
+      pull_number: pr.number,
+      merge_method: 'merge',
+    });
+    await closeTask(config, issueNumber);
+    return { prNumber: pr.number, prUrl: pr.html_url, sha: merge.sha ?? '', baseBranch: pr.base.ref };
+  } catch (err: unknown) {
+    if ((err as { status?: number }).status === 405) {
+      throw new Error(
+        `PR #${pr.number} cannot be merged — may have conflicts or is not in a mergeable state.`
+      );
+    }
+    throw err;
+  }
 }

@@ -42,14 +42,19 @@ export function parseOwnerRepo(remoteUrl: string): { owner: string; repo: string
   return null;
 }
 
-export function makeBranchName(issueNumber: number, username: string): string {
-  const slug = username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'user';
-  return `task-${issueNumber}-${slug}`;
-}
 
 export function makeWorkerBranchName(username: string): string {
   const slug = username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'user';
   return `worker-${slug}`;
+}
+
+export function makeTaskBranchName(issueNumber: number, username: string): string {
+  const slug = username.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'user';
+  return `task-${issueNumber}-${slug}`;
+}
+
+export function isTaskBranch(branch: string): boolean {
+  return /^task-\d+-/.test(branch);
 }
 
 export async function getCurrentCommit(): Promise<string> {
@@ -204,7 +209,7 @@ export async function checkoutFromCommit(branchName: string, sha: string): Promi
 }
 
 export async function resetOrCreateBranch(branchName: string, sha: string): Promise<void> {
-  const branches = await git.branch();
+  const branches = await git.branch(['-a']);
   const localExists = Object.keys(branches.branches).some((b) => b === branchName);
   if (localExists) {
     await git.checkout(branchName);
@@ -217,6 +222,14 @@ export async function resetOrCreateBranch(branchName: string, sha: string): Prom
 export async function hasUncommittedChanges(): Promise<boolean> {
   const status = await git.status();
   return !status.isClean();
+}
+
+export async function stash(message: string): Promise<void> {
+  await git.stash(['push', '-u', '-m', message]);
+}
+
+export async function stashPop(): Promise<void> {
+  await git.stash(['pop']);
 }
 
 export async function getCurrentRepoRoot(): Promise<string> {

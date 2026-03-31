@@ -8,7 +8,7 @@ import chalk from 'chalk';
 import open from 'open';
 import type { TechunterConfig } from '../../types.js';
 import { createTask, getAuthenticatedUser, isCollaborator } from '../../lib/github.js';
-import { syncWithBase, getCurrentCommit, getRemoteHeadSha } from '../../lib/git.js';
+import { syncWithBase, getCurrentCommit, getRemoteHeadSha, getCurrentBranch, isTaskBranch, makeWorkerBranchName, hasUncommittedChanges, stash } from '../../lib/git.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateGuide } from './guide-generator.js';
 
@@ -30,6 +30,73 @@ async function openInEditor(content: string): Promise<string> {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function resolveBaseAndTarget(
+  config: TechunterConfig,
+  me: string,
+  interactive: boolean
+): Promise<{ baseCommit: string | undefined; targetBranch: string; isSubtask: boolean }> {
+  const currentBranch = await getCurrentBranch();
+
+  if (isTaskBranch(currentBranch)) {
+    // Sub-task: base from current task branch HEAD, target = current task branch.
+    // Uncommitted changes won't be included in baseCommit — executor starts without them.
+    if (await hasUncommittedChanges()) {
+      if (!interactive) {
+        throw new Error('Cannot create sub-task: you have uncommitted changes. Commit them first so the executor starts from the correct base.');
+      }
+      const { select: inquirerSelect } = await import('@inquirer/prompts');
+      let choice: string;
+      try {
+        choice = await inquirerSelect({
+          message: 'You have uncommitted changes. The sub-task executor will start from the last commit — they won\'t see your current unsaved work.',
+          choices: [
+            { name: 'Commit first (cancel and commit manually)', value: 'cancel' },
+            { name: 'Continue anyway (executor starts without my unsaved changes)', value: 'continue' },
+          ],
+        });
+      } catch { choice = 'cancel'; }
+      if (choice === 'cancel') throw new Error('Cancelled. Commit your changes first, then create the sub-task.');
+    }
+    const baseCommit = await getCurrentCommit();
+    return { baseCommit, targetBranch: currentBranch, isSubtask: true };
+  }
+
+  // Root task: check staging area before syncing with main
+  if (await hasUncommittedChanges()) {
+    if (!interactive) {
+      throw new Error('Cannot create task: you have uncommitted changes. Commit or stash them first (git stash).');
+    }
+    const { select: inquirerSelect } = await import('@inquirer/prompts');
+    let choice: string;
+    try {
+      choice = await inquirerSelect({
+        message: 'You have uncommitted changes. Syncing with main requires a clean working tree.',
+        choices: [
+          { name: 'Stash changes and continue (restore with: git stash pop)', value: 'stash' },
+          { name: 'Cancel', value: 'cancel' },
+        ],
+      });
+    } catch { choice = 'cancel'; }
+    if (choice === 'cancel') throw new Error('Cancelled.');
+    await stash('tch: before creating new task');
+    console.log(chalk.dim('  Changes stashed. Run `git stash pop` after creating the task.'));
+  }
+
+  // Root task: sync with main, target = worker branch
+  const baseBranch = config.baseBranch ?? 'main';
+  let baseCommit: string | undefined;
+  const syncSpinner = ora(`Syncing with ${baseBranch}…`).start();
+  try {
+    await syncWithBase(baseBranch);
+    baseCommit = await getCurrentCommit();
+    syncSpinner.succeed(`Synced with ${baseBranch} (base: ${baseCommit.slice(0, 7)})`);
+  } catch {
+    syncSpinner.warn(`Could not sync with ${baseBranch} — recording remote HEAD as base`);
+    try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
+  }
+  return { baseCommit, targetBranch: makeWorkerBranchName(me), isSubtask: false };
 }
 
 export const definition = {
@@ -141,17 +208,17 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
-  // Sync creator's branch with base and record the base commit
-  const baseBranch = config.baseBranch ?? 'main';
   let baseCommit: string | undefined;
-  const syncSpinner = ora(`Syncing with ${baseBranch}…`).start();
+  let targetBranch: string;
+  let isSubtask: boolean;
   try {
-    await syncWithBase(baseBranch);
-    baseCommit = await getCurrentCommit();
-    syncSpinner.succeed(`Synced with ${baseBranch} (base: ${baseCommit.slice(0, 7)})`);
-  } catch {
-    syncSpinner.warn(`Could not sync with ${baseBranch} — recording remote HEAD as base`);
-    try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
+    ({ baseCommit, targetBranch, isSubtask } = await resolveBaseAndTarget(config, me, true));
+  } catch (err) {
+    return (err as Error).message;
+  }
+
+  if (isSubtask) {
+    console.log(chalk.dim(`  Sub-task: will target branch ${chalk.cyan(targetBranch)} (base: ${baseCommit?.slice(0, 7) ?? 'HEAD'})`));
   }
 
   const createSpinner = ora(`Creating "${title}"…`).start();
@@ -159,7 +226,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   let issueNumber: number;
   let issueTitle: string;
   try {
-    const issue = await createTask(config, title, guide, baseCommit);
+    const issue = await createTask(config, title, guide, baseCommit, targetBranch);
     createSpinner.stop();
     htmlUrl = issue.htmlUrl;
     issueNumber = issue.number;
@@ -200,17 +267,10 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     guide = await generateGuide(config, title, { feedback, previousGuide: guide });
   }
 
-  const baseBranch = config.baseBranch ?? 'main';
-  let baseCommit: string | undefined;
-  try {
-    await syncWithBase(baseBranch);
-    baseCommit = await getCurrentCommit();
-  } catch {
-    try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
-  }
+  const { baseCommit, targetBranch } = await resolveBaseAndTarget(config, me, false);
 
   try {
-    const issue = await createTask(config, title, guide, baseCommit);
+    const issue = await createTask(config, title, guide, baseCommit, targetBranch);
     return `Created #${issue.number} "${issue.title}" — ${issue.htmlUrl}\n\nGuide:\n${guide}`;
   } catch (err) {
     return `Error: ${(err as Error).message}`;

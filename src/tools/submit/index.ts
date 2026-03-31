@@ -2,7 +2,18 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
 import type { TechunterConfig } from '../../types.js';
-import { getTask, createPR, markInReview, closeTask, getAuthenticatedUser, ensureRemoteBranch } from '../../lib/github.js';
+import {
+  getTask,
+  createPR,
+  markInReview,
+  closeTask,
+  getAuthenticatedUser,
+  ensureRemoteBranch,
+  getTaskPR,
+  getIssueNumberFromBranch,
+  extractTargetBranch,
+  getOpenSubtasks,
+} from '../../lib/github.js';
 import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
@@ -27,9 +38,22 @@ export const definition = {
 
 export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const taskState = getConfig().taskState;
-  const issueNumber = taskState?.activeIssueNumber;
+  const currentBranch = await getCurrentBranch();
+
+  // If current branch doesn't match taskState, ignore taskState and detect from branch
+  let issueNumber =
+    taskState?.activeIssueNumber &&
+    taskState?.activeBranch &&
+    currentBranch === taskState.activeBranch
+      ? taskState.activeIssueNumber
+      : undefined;
+
   if (!issueNumber) {
-    return 'No active task found. Claim a task first with /pick.';
+    const found = await getIssueNumberFromBranch(config, currentBranch);
+    if (!found) {
+      return 'No active task found. Claim a task first with /pick.';
+    }
+    issueNumber = found.issueNumber;
   }
 
   let spinner = ora('Loading task and diff…').start();
@@ -42,10 +66,24 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     getAuthenticatedUser(config),
   ]);
   spinner.stop();
-  const workerBranch = makeWorkerBranchName(issue.author ?? me);
+
+  // Determine PR target: from issue body or fall back to task author's worker branch
+  const targetBranch = extractTargetBranch(issue.body) ?? makeWorkerBranchName(issue.author ?? me);
   const branch = await getCurrentBranch();
 
   const isSelfSubmit = issue.author !== null && issue.author === me;
+
+  // Check for open sub-tasks before submitting
+  spinner = ora('Checking for open sub-tasks…').start();
+  const openSubtaskNumbers = await getOpenSubtasks(config, branch);
+  spinner.stop();
+  if (openSubtaskNumbers.length > 0) {
+    return (
+      `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open:\n` +
+      openSubtaskNumbers.map((n) => `  - #${n}`).join('\n') +
+      '\nComplete all sub-tasks before submitting.'
+    );
+  }
 
   // AI review (skipped if submitter is the task author)
   let review = '';
@@ -113,24 +151,34 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
       spinner.stop();
       console.error(chalk.yellow(`Warning: failed to close issue: ${(err as Error).message}`));
     }
-    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
+    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
     return `Task #${issueNumber} committed and closed.\nCommit: "${commitMessage.trim()}"`;
   }
 
-  spinner = ora('Creating pull request…').start();
+  // Check if a PR already exists for this issue (re-submission case)
+  spinner = ora('Checking for existing PR…').start();
+  const existingPR = await getTaskPR(config, issueNumber);
+  spinner.stop();
+
   let prUrl: string;
-  try {
-    await ensureRemoteBranch(config, workerBranch, config.baseBranch ?? 'main');
-    const prBody = [
-      `Closes #${issueNumber}`,
-      issue.body ? `\n${issue.body}` : '',
-      review ? `\n## AI Review\n${review}` : '',
-    ].join('\n').trim();
-    prUrl = await createPR(config, issue.title, prBody, branch, workerBranch);
-    spinner.stop();
-  } catch (err) {
-    spinner.stop();
-    return `Committed but PR creation failed: ${(err as Error).message}`;
+  if (existingPR) {
+    prUrl = existingPR.url;
+    console.log(chalk.dim(`  Existing PR found: ${prUrl} — updating.`));
+  } else {
+    spinner = ora('Creating pull request…').start();
+    try {
+      await ensureRemoteBranch(config, targetBranch, config.baseBranch ?? 'main');
+      const prBody = [
+        `Closes #${issueNumber}`,
+        issue.body ? `\n${issue.body}` : '',
+        review ? `\n## AI Review\n${review}` : '',
+      ].join('\n').trim();
+      prUrl = await createPR(config, issue.title, prBody, branch, targetBranch);
+      spinner.stop();
+    } catch (err) {
+      spinner.stop();
+      return `Committed but PR creation failed: ${(err as Error).message}`;
+    }
   }
 
   spinner = ora('Marking as in-review…').start();
@@ -139,17 +187,23 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
     spinner.stop();
   } catch (err) {
     spinner.stop();
-    return `PR created (${prUrl}) but failed to update label: ${(err as Error).message}`;
+    return `PR ${existingPR ? 'updated' : 'created'} (${prUrl}) but failed to update label: ${(err as Error).message}`;
   }
 
-  setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
-  return `Task #${issueNumber} submitted.\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`;
+  setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
+  return `Task #${issueNumber} ${existingPR ? 're-submitted' : 'submitted'}.\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`;
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const taskState = getConfig().taskState;
-  const issueNumber = taskState?.activeIssueNumber;
-  if (!issueNumber) return 'No active task found. Claim a task first.';
+  let issueNumber = taskState?.activeIssueNumber;
+
+  if (!issueNumber) {
+    const currentBranch = await getCurrentBranch();
+    const found = await getIssueNumberFromBranch(config, currentBranch);
+    if (!found) return 'No active task found. Claim a task first.';
+    issueNumber = found.issueNumber;
+  }
 
   const diffPromise = taskState?.baseCommit
     ? getDiffFromCommit(taskState.baseCommit)
@@ -160,7 +214,17 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     getCurrentBranch(),
     getAuthenticatedUser(config),
   ]);
-  const workerBranch = makeWorkerBranchName(issue.author ?? me);
+
+  const targetBranch = extractTargetBranch(issue.body) ?? makeWorkerBranchName(issue.author ?? me);
+
+  // Check open sub-tasks
+  const openSubtaskNumbers = await getOpenSubtasks(config, branch);
+  if (openSubtaskNumbers.length > 0) {
+    return (
+      `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open: ` +
+      openSubtaskNumbers.map((n) => `#${n}`).join(', ')
+    );
+  }
 
   const isSelfSubmit = issue.author !== null && issue.author === me;
   let review = '';
@@ -184,27 +248,34 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     try {
       await closeTask(config, issueNumber);
     } catch { /* non-critical */ }
-    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined } });
+    setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
     return `Task #${issueNumber} committed and closed.\nCommit: "${commitMessage}"`;
   }
 
+  const existingPR = await getTaskPR(config, issueNumber);
+
   let prUrl: string;
-  try {
-    await ensureRemoteBranch(config, workerBranch, config.baseBranch ?? 'main');
-    const prBody = [
-      `Closes #${issueNumber}`,
-      issue.body ? `\n${issue.body}` : '',
-      review ? `\n## AI Review\n${review}` : '',
-    ].join('\n').trim();
-    prUrl = await createPR(config, issue.title, prBody, branch, workerBranch);
-  } catch (err) {
-    return `Committed but PR creation failed: ${(err as Error).message}`;
+  if (existingPR) {
+    prUrl = existingPR.url;
+  } else {
+    try {
+      await ensureRemoteBranch(config, targetBranch, config.baseBranch ?? 'main');
+      const prBody = [
+        `Closes #${issueNumber}`,
+        issue.body ? `\n${issue.body}` : '',
+        review ? `\n## AI Review\n${review}` : '',
+      ].join('\n').trim();
+      prUrl = await createPR(config, issue.title, prBody, branch, targetBranch);
+    } catch (err) {
+      return `Committed but PR creation failed: ${(err as Error).message}`;
+    }
   }
 
   try {
     await markInReview(config, issueNumber);
   } catch { /* label update is non-critical */ }
 
-  return `Task #${issueNumber} submitted.\nReview:\n${review}\nCommit: "${commitMessage}"\nPR: ${prUrl}`;
+  setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
+  return `Task #${issueNumber} ${existingPR ? 're-submitted' : 'submitted'}.\nReview:\n${review}\nCommit: "${commitMessage}"\nPR: ${prUrl}`;
 }
 export const terminal = true;

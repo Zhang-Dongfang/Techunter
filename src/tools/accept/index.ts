@@ -3,7 +3,7 @@ import { select } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
 import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask, mergeWorkerIntoBase, upsertRepoFile } from '../../lib/github.js';
-import { makeWorkerBranchName } from '../../lib/git.js';
+import { isTaskBranch } from '../../lib/git.js';
 import { generateWiki } from '../wiki/wiki-generator.js';
 
 
@@ -12,7 +12,7 @@ export const definition = {
   function: {
     name: 'accept',
     description:
-      'Accept an in-review task: merges the PR into your worker branch and closes the issue.',
+      'Accept an in-review task: merges the PR into the target branch and closes the issue.',
     parameters: {
       type: 'object',
       properties: {
@@ -71,12 +71,10 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
 
-  const targetBranch = makeWorkerBranchName(me2);
-
   let confirmed: boolean;
   try {
     confirmed = await select({
-      message: `Merge PR for #${issueNumber} into ${chalk.cyan(targetBranch)} and close issue?`,
+      message: `Merge PR for #${issueNumber} and close issue?`,
       choices: [
         { name: 'Yes, accept', value: true },
         { name: 'Cancel', value: false },
@@ -90,33 +88,36 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   const spinner = ora(`Merging PR for #${issueNumber}…`).start();
   let result: Awaited<ReturnType<typeof acceptTask>>;
   try {
-    const assigneeWorkerBranch = issue.assignee ? makeWorkerBranchName(issue.assignee) : undefined;
-    result = await acceptTask(config, issueNumber, assigneeWorkerBranch);
-    spinner.succeed(`PR #${result.prNumber} merged into ${targetBranch}`);
+    result = await acceptTask(config, issueNumber);
+    spinner.succeed(`PR #${result.prNumber} merged → ${chalk.cyan(result.baseBranch)}`);
   } catch (err) {
     spinner.fail('Failed');
     return `Error: ${(err as Error).message}`;
   }
 
-  const baseBranch = config.baseBranch ?? 'main';
-  let pushToMain: boolean;
-  try {
-    pushToMain = await select({
-      message: `Push ${chalk.cyan(targetBranch)} → ${chalk.cyan(baseBranch)}?`,
-      choices: [
-        { name: `Yes, push to ${baseBranch}`, value: true },
-        { name: 'No, keep in worker branch', value: false },
-      ],
-    });
-  } catch { pushToMain = false; }
-
-  if (pushToMain) {
-    const mergeSpinner = ora(`Merging ${targetBranch} → ${baseBranch}…`).start();
+  // Only offer push-to-main when PR target is a worker branch (not a task branch)
+  const mergedIntoTaskBranch = isTaskBranch(result.baseBranch);
+  if (!mergedIntoTaskBranch) {
+    const baseBranch = config.baseBranch ?? 'main';
+    let pushToMain: boolean;
     try {
-      await mergeWorkerIntoBase(config, targetBranch, baseBranch);
-      mergeSpinner.succeed(`Merged ${targetBranch} → ${baseBranch}`);
-    } catch (err) {
-      mergeSpinner.fail(`Could not merge to ${baseBranch}: ${(err as Error).message}`);
+      pushToMain = await select({
+        message: `Push ${chalk.cyan(result.baseBranch)} → ${chalk.cyan(baseBranch)}?`,
+        choices: [
+          { name: `Yes, push to ${baseBranch}`, value: true },
+          { name: 'No, keep in worker branch', value: false },
+        ],
+      });
+    } catch { pushToMain = false; }
+
+    if (pushToMain) {
+      const mergeSpinner = ora(`Merging ${result.baseBranch} → ${baseBranch}…`).start();
+      try {
+        await mergeWorkerIntoBase(config, result.baseBranch, baseBranch);
+        mergeSpinner.succeed(`Merged ${result.baseBranch} → ${baseBranch}`);
+      } catch (err) {
+        mergeSpinner.fail(`Could not merge to ${baseBranch}: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -142,7 +143,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
-  return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${targetBranch}${pushToMain ? ` → ${baseBranch}` : ''}\nIssue closed.`;
+  const mergeTarget = mergedIntoTaskBranch
+    ? `${result.baseBranch} (sub-task merged, no push to main)`
+    : result.baseBranch;
+
+  return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${mergeTarget}\nIssue closed.`;
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
@@ -155,13 +160,11 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
 
-  const targetBranch = makeWorkerBranchName(me);
   const spinner = ora(`Merging PR for #${issueNumber}…`).start();
   try {
-    const assigneeWorkerBranch = issue.assignee ? makeWorkerBranchName(issue.assignee) : undefined;
-    const result = await acceptTask(config, issueNumber, assigneeWorkerBranch);
+    const result = await acceptTask(config, issueNumber);
     spinner.stop();
-    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${targetBranch}\nIssue closed.`;
+    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${result.baseBranch}\nIssue closed.`;
   } catch (err) {
     spinner.stop();
     return `Error: ${(err as Error).message}`;

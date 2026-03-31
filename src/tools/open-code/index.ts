@@ -1,6 +1,7 @@
 import type { TechunterConfig } from '../../types.js';
 import { getCurrentBranch } from '../../lib/git.js';
-import { getTask } from '../../lib/github.js';
+import { getTask, getIssueNumberFromBranch } from '../../lib/github.js';
+import { getConfig } from '../../lib/config.js';
 import { launchClaudeCode } from '../../lib/launch.js';
 
 export const definition = {
@@ -19,9 +20,14 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   } catch (err) {
     return `Error: ${(err as Error).message}`;
   }
-  const match = branch.match(/^task-(\d+)-/);
-  if (!match) return `Not on a task branch (current: ${branch}).`;
-  const issueNum = parseInt(match[1], 10);
+
+  let issueNum = getConfig().taskState?.activeIssueNumber;
+  if (!issueNum) {
+    const found = await getIssueNumberFromBranch(config, branch);
+    if (!found) return `No active task found (current branch: ${branch}).`;
+    issueNum = found.issueNumber;
+  }
+
   let issue;
   try {
     issue = await getTask(config, issueNum);

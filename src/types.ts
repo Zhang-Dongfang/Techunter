@@ -12,6 +12,7 @@ export interface TechunterConfig {
   taskState?: {
     activeIssueNumber?: number;
     baseCommit?: string;
+    activeBranch?: string;
   };
 }
 
