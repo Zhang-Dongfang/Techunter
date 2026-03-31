@@ -14,7 +14,7 @@ import {
   extractTargetBranch,
   getOpenSubtasks,
 } from '../../lib/github.js';
-import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName } from '../../lib/git.js';
+import { getCurrentBranch, getDiff, getDiffFromCommit, stageAllAndCommit, makeWorkerBranchName, parseIssueNumberFromBranch } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { reviewChanges } from './reviewer.js';
@@ -49,11 +49,18 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
       : undefined;
 
   if (!issueNumber) {
-    const found = await getIssueNumberFromBranch(config, currentBranch);
-    if (!found) {
-      return 'No active task found. Claim a task first with /pick.';
+    // Try parsing from branch name first (fast, no API call)
+    const fromBranch = parseIssueNumberFromBranch(currentBranch);
+    if (fromBranch) {
+      issueNumber = fromBranch;
+    } else {
+      // Fall back to PR lookup
+      const found = await getIssueNumberFromBranch(config, currentBranch);
+      if (!found) {
+        return 'No active task found. Claim a task first with /pick.';
+      }
+      issueNumber = found.issueNumber;
     }
-    issueNumber = found.issueNumber;
   }
 
   let spinner = ora('Loading task and diff…').start();
@@ -200,9 +207,14 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   if (!issueNumber) {
     const currentBranch = await getCurrentBranch();
-    const found = await getIssueNumberFromBranch(config, currentBranch);
-    if (!found) return 'No active task found. Claim a task first.';
-    issueNumber = found.issueNumber;
+    const fromBranch = parseIssueNumberFromBranch(currentBranch);
+    if (fromBranch) {
+      issueNumber = fromBranch;
+    } else {
+      const found = await getIssueNumberFromBranch(config, currentBranch);
+      if (!found) return 'No active task found. Claim a task first.';
+      issueNumber = found.issueNumber;
+    }
   }
 
   const diffPromise = taskState?.baseCommit

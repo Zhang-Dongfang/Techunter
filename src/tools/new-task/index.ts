@@ -8,7 +8,7 @@ import chalk from 'chalk';
 import open from 'open';
 import type { TechunterConfig } from '../../types.js';
 import { createTask, getAuthenticatedUser, isCollaborator } from '../../lib/github.js';
-import { syncWithBase, getCurrentCommit, getRemoteHeadSha, getCurrentBranch, isTaskBranch, makeWorkerBranchName, hasUncommittedChanges, stash } from '../../lib/git.js';
+import { syncWithBase, getCurrentCommit, getRemoteHeadSha, getCurrentBranch, isTaskBranch, makeWorkerBranchName, hasUncommittedChanges, stash, stashPop } from '../../lib/git.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateGuide } from './guide-generator.js';
 
@@ -64,6 +64,7 @@ async function resolveBaseAndTarget(
   }
 
   // Root task: check staging area before syncing with main
+  let stashedForSync = false;
   if (await hasUncommittedChanges()) {
     if (!interactive) {
       throw new Error('Cannot create task: you have uncommitted changes. Commit or stash them first (git stash).');
@@ -81,6 +82,7 @@ async function resolveBaseAndTarget(
     } catch { choice = 'cancel'; }
     if (choice === 'cancel') throw new Error('Cancelled.');
     await stash('tch: before creating new task');
+    stashedForSync = true;
     console.log(chalk.dim('  Changes stashed. Run `git stash pop` after creating the task.'));
   }
 
@@ -95,6 +97,11 @@ async function resolveBaseAndTarget(
   } catch {
     syncSpinner.warn(`Could not sync with ${baseBranch} — recording remote HEAD as base`);
     try { baseCommit = await getRemoteHeadSha(baseBranch); } catch { /* ignore */ }
+    // If we stashed and sync failed, restore the stash so user doesn't lose work
+    if (stashedForSync) {
+      try { await stashPop(); } catch { /* stash pop failure is non-critical here */ }
+      throw new Error(`Could not sync with ${baseBranch}. Your changes have been restored from stash.`);
+    }
   }
   return { baseCommit, targetBranch: makeWorkerBranchName(me), isSubtask: false };
 }

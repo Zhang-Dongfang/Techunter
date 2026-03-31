@@ -83,23 +83,27 @@ export async function printTaskList(config: TechunterConfig): Promise<GitHubIssu
         childrenOf.get(key)!.push(t);
       }
 
-      function printTask(t: GitHubIssue, prefix: string, isLast: boolean): void {
+      function printTask(t: GitHubIssue, indent: string, connector: string, isLast: boolean): void {
         const num = `#${t.number}`.padEnd(5);
         const status = colorStatus(getStatus(t));
         const assignee = (t.assignee ? `@${t.assignee}` : '—').padEnd(16);
-        const maxTitle = 36 - prefix.length;
+        const fullPrefix = indent + connector;
+        const maxTitle = 36 - fullPrefix.length;
         const title = t.title.length > maxTitle ? t.title.slice(0, maxTitle - 3) + '...' : t.title;
-        console.log(` ${num}${status}${assignee}${chalk.dim(prefix)}${title}`);
+        console.log(` ${num}${status}${assignee}${chalk.dim(fullPrefix)}${title}`);
 
         const children = childrenOf.get(t.number) ?? [];
+        const childIndent = indent + (isLast ? '   ' : '│  ');
         for (let i = 0; i < children.length; i++) {
-          printTask(children[i]!, prefix + (isLast ? '  ' : '│ '), i === children.length - 1);
+          const childIsLast = i === children.length - 1;
+          printTask(children[i]!, childIndent, childIsLast ? '└─ ' : '├─ ', childIsLast);
         }
       }
 
       const roots = childrenOf.get(null) ?? [];
       for (let i = 0; i < roots.length; i++) {
-        printTask(roots[i]!, i === roots.length - 1 ? '└─ ' : '├─ ', i === roots.length - 1);
+        const isLast = i === roots.length - 1;
+        printTask(roots[i]!, '', isLast ? '└─ ' : '├─ ', isLast);
       }
     }
 

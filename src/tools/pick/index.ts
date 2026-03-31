@@ -7,6 +7,8 @@ import {
   getTask,
   claimTask,
   listComments,
+  getAuthenticatedUser,
+  listMyTasks,
 } from '../../lib/github.js';
 import {
   makeTaskBranchName,
@@ -19,7 +21,7 @@ import {
   stash,
   stashPop,
 } from '../../lib/git.js';
-import { extractBaseCommit } from '../../lib/github.js';
+import { extractBaseCommit, extractTargetBranch } from '../../lib/github.js';
 import { setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { getStatus, colorStatus, printTaskDetail } from '../../lib/display.js';
@@ -140,7 +142,6 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
 
   if (action === 'claim') {
     try {
-      const { getAuthenticatedUser, listMyTasks } = await import('../../lib/github.js');
       const me = await getAuthenticatedUser(config);
 
       // WIP limit: block if user already has an active claimed/changes-needed task
@@ -267,7 +268,8 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       return `Error: ${(err as Error).message}`;
     }
 
-    const baseCommit = await getCurrentCommit();
+    // Use original base commit from issue body so getDiffFromCommit shows all changes since claiming
+    const baseCommit = extractBaseCommit(issue.body) ?? await getCurrentCommit();
     setConfig({ taskState: { activeIssueNumber: issue.number, baseCommit, activeBranch: taskBranch } });
     console.log(chalk.green(`\n  Switched to ${taskBranch}. Fix the issues then run /submit.\n`));
     return `Switched to ${taskBranch} for task #${issue.number}.`;

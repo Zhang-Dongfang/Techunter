@@ -57,6 +57,11 @@ export function isTaskBranch(branch: string): boolean {
   return /^task-\d+-/.test(branch);
 }
 
+export function parseIssueNumberFromBranch(branch: string): number | null {
+  const match = branch.match(/^task-(\d+)-/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 export async function getCurrentCommit(): Promise<string> {
   return (await git.revparse(['HEAD'])).trim();
 }

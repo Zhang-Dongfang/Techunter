@@ -16,6 +16,7 @@ const configSchema = z.object({
   taskState: z.object({
     activeIssueNumber: z.number().optional(),
     baseCommit: z.string().optional(),
+    activeBranch: z.string().optional(),
   }).optional(),
 });
 

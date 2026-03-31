@@ -315,15 +315,12 @@ export async function markInReview(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  try {
-    await octokit.issues.removeLabel({
-      owner,
-      repo,
-      issue_number: number,
-      name: LABEL_CLAIMED,
-    });
-  } catch {
-    // Label might not exist
+  for (const label of [LABEL_CLAIMED, LABEL_CHANGES_NEEDED]) {
+    try {
+      await octokit.issues.removeLabel({ owner, repo, issue_number: number, name: label });
+    } catch {
+      // Label might not exist
+    }
   }
 
   await octokit.issues.addLabels({
