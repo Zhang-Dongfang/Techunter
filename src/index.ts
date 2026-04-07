@@ -50,8 +50,12 @@ let _rl: readline.Interface | null = null;
 
 function promptUser(): Promise<string> {
   return new Promise((resolve) => {
-    // Explicitly resume stdin after inquirer tools may have left it paused/raw
+    // inquirer may have paused stdin or disabled raw mode when it finished.
+    // readline in terminal mode requires raw mode = true and stdin resumed.
     if (process.stdin.isPaused()) process.stdin.resume();
+    if (process.stdin.isTTY) {
+      try { process.stdin.setRawMode(true); } catch { /* non-TTY */ }
+    }
     _rl!.resume();
     _rl!.question(chalk.cyan('You') + chalk.dim(' › '), resolve);
   });
@@ -217,7 +221,7 @@ async function main(): Promise<void> {
 
   for (;;) {
     const userInput = (await promptUser()).trim();
-    // pause so inquirer tools don't share the same stdin listener
+    // Pause readline so inquirer can take exclusive control of stdin
     _rl.pause();
 
     if (!userInput) continue;
