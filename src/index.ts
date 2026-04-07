@@ -27,13 +27,14 @@ import { run as runCode } from './tools/open-code/index.js';
 import { run as runAccept } from './tools/accept/index.js';
 import { run as runEdit } from './tools/edit-task/index.js';
 import { run as runWiki } from './tools/wiki/index.js';
+import { run as runMove } from './tools/move-task/index.js';
 import type { TechunterConfig } from './types.js';
 
 // ─── Tab completion ───────────────────────────────────────────────────────────
 
 const SLASH_NAMES = [
   '/help', '/h', '/refresh', '/r', '/pick', '/p', '/new', '/n',
-  '/submit', '/s', '/close', '/d', '/edit', '/e', '/review', '/rv', '/accept', '/ac',
+  '/submit', '/s', '/close', '/d', '/edit', '/e', '/move', '/mv', '/review', '/rv', '/accept', '/ac',
   '/status', '/me', '/code', '/c', '/wiki', '/w', '/config', '/cfg', '/init',
 ];
 
@@ -65,6 +66,7 @@ const COMMANDS: { cmd: string; alias?: string; desc: string }[] = [
   { cmd: '/new',     alias: '/n',  desc: 'Create a new task interactively' },
   { cmd: '/close',   alias: '/d',  desc: 'Close (delete) a task' },
   { cmd: '/edit',    alias: '/e',  desc: 'Edit the title or description of a task' },
+  { cmd: '/move',    alias: '/mv', desc: 'Move your task under another task as a sub-task' },
   { cmd: '/submit',  alias: '/s',  desc: 'Commit, create PR, and mark in-review' },
   { cmd: '/review',  alias: '/rv', desc: 'List tasks waiting for your approval' },
   { cmd: '/accept',  alias: '/ac', desc: 'Accept a reviewed task: merge PR and close issue' },
@@ -256,6 +258,14 @@ async function main(): Promise<void> {
           const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
           const preselected = arg ? parseInt(arg, 10) : undefined;
           const result = await runEdit({ issue_number: Number.isNaN(preselected) ? undefined : preselected }, config);
+          console.log(chalk.green(`\n  ${result}\n`));
+          await printTaskList(config);
+          break;
+        }
+        case '/move': case '/mv': {
+          const arg = userInput.slice(cmd.length).trim().replace(/^#/, '');
+          const preselected = arg ? parseInt(arg, 10) : undefined;
+          const result = await runMove({ issue_number: Number.isNaN(preselected) ? undefined : preselected }, config);
           console.log(chalk.green(`\n  ${result}\n`));
           await printTaskList(config);
           break;

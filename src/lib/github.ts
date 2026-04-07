@@ -540,6 +540,48 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
   return data.default_branch;
 }
 
+export async function getTaskBranch(config: TechunterConfig, issueNumber: number): Promise<string | null> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  // First try open PRs
+  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+  const pr = prs.find((p) => new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? ''));
+  if (pr) return pr.head.ref;
+  // Fall back to remote branches matching task-{issueNumber}-*
+  const { data: branches } = await octokit.repos.listBranches({ owner, repo, per_page: 100 });
+  const taskBranch = branches.find((b) => new RegExp(`^task-${issueNumber}-`).test(b.name));
+  return taskBranch?.name ?? null;
+}
+
+export async function getBranchHeadSha(config: TechunterConfig, branchName: string): Promise<string | null> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  try {
+    const { data } = await octokit.repos.getBranch({ owner, repo, branch: branchName });
+    return data.commit.sha;
+  } catch {
+    return null;
+  }
+}
+
+export async function moveTask(
+  config: TechunterConfig,
+  issueNumber: number,
+  newTargetBranch: string,
+  newBaseCommit: string
+): Promise<void> {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  const { data } = await octokit.issues.get({ owner, repo, issue_number: issueNumber });
+  let body = data.body ?? '';
+  // Strip existing markers, then re-embed updated values
+  body = body.replace(/\n*<!-- techunter-base:[a-f0-9]{7,40} -->/g, '');
+  body = body.replace(/\n*<!-- techunter-target:[^\s>]+ -->/g, '');
+  body = embedBaseCommit(body, newBaseCommit);
+  body = embedTargetBranch(body, newTargetBranch);
+  await octokit.issues.update({ owner, repo, issue_number: issueNumber, body });
+}
+
 
 export async function getTaskPR(
   config: TechunterConfig,

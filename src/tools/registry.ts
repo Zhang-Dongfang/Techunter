@@ -12,6 +12,7 @@ import * as openCode from './open-code/index.js';
 import * as reject from './reject/index.js';
 import * as accept from './accept/index.js';
 import * as editTask from './edit-task/index.js';
+import * as moveTask from './move-task/index.js';
 import * as wiki from './wiki/index.js';
 
 // Low-level tools
@@ -37,6 +38,7 @@ export const toolModules: ToolModule[] = [
   reject,
   accept,
   editTask,
+  moveTask,
   wiki,
   // Low-level tools
   listTasksTool,
