@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import chalk from 'chalk';
 import readline from 'node:readline';
-import { createRequire } from 'node:module';
 import type OpenAI from 'openai';
 
-const _require = createRequire(import.meta.url);
-const { version } = _require('../package.json') as { version: string };
+declare const __TECHUNTER_VERSION__: string;
+
+const version = __TECHUNTER_VERSION__;
 import { initCommand } from './commands/init.js';
 import { configCommand } from './commands/config.js';
 import { getConfig, setConfig } from './lib/config.js';

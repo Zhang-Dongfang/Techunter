@@ -35,6 +35,7 @@ import {
   resolveBranchRef,
   abortMergeOperation,
   isTaskBranch,
+  syncBranchWithRemote,
 } from '../../lib/git.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { renderMarkdown } from '../../lib/markdown.js';
@@ -42,6 +43,17 @@ import { reviewChanges } from './reviewer.js';
 import { getStatus } from '../../lib/display.js';
 
 const SUBMITTABLE_LABELS = new Set(['techunter:claimed', 'techunter:changes-needed']);
+
+type SubmitOutcome = {
+  message: string;
+  success: boolean;
+};
+
+type SubmitRestoreContext = {
+  originalBranch: string;
+  restoreStash: boolean;
+  previousTaskState?: TechunterConfig['taskState'];
+};
 
 function isSubmittableTask(issue: GitHubIssue): boolean {
   return issue.labels.some((label) => SUBMITTABLE_LABELS.has(label));
@@ -133,7 +145,8 @@ async function prepareTaskContext(
   currentBranch: string,
   interactive: boolean,
   carryCurrentWork?: boolean,
-): Promise<{ branch: string; notices: string[] }> {
+  previousTaskState?: TechunterConfig['taskState'],
+): Promise<{ branch: string; notices: string[]; restore?: SubmitRestoreContext }> {
   const targetBranch = getTaskBranch(issue, username);
   if (currentBranch === targetBranch) {
     await setActiveTaskState(issue, targetBranch);
@@ -179,6 +192,7 @@ async function prepareTaskContext(
   }
 
   const notices: string[] = [];
+  const shouldRestoreOriginalContext = action === 'switch';
   let stashed = false;
   let switched = false;
   let switchedBranch = targetBranch;
@@ -210,7 +224,17 @@ async function prepareTaskContext(
       );
     }
 
-    return { branch: switchedBranch, notices };
+    return {
+      branch: switchedBranch,
+      notices,
+      restore: shouldRestoreOriginalContext
+        ? {
+          originalBranch: currentBranch,
+          restoreStash: stashed && !stashRestoredOnTarget,
+          previousTaskState: previousTaskState?.activeBranch === currentBranch ? previousTaskState : undefined,
+        }
+        : undefined,
+    };
   } catch (err) {
     const rollbackNotices: string[] = [];
 
@@ -245,6 +269,54 @@ async function prepareTaskContext(
   }
 }
 
+async function restorePreviousContext(context: SubmitRestoreContext): Promise<string[]> {
+  const notices: string[] = [];
+
+  try {
+    await switchToBranchOrCreate(context.originalBranch);
+    notices.push(`Returned to ${context.originalBranch}.`);
+  } catch (err) {
+    notices.push(`Could not return to ${context.originalBranch} automatically: ${(err as Error).message}`);
+    if (context.restoreStash) {
+      notices.push('Your stashed work was kept unchanged.');
+    }
+    return notices;
+  }
+
+  try {
+    const syncResult = await syncBranchWithRemote(context.originalBranch);
+    if (syncResult.mode === 'fast-forward') {
+      notices.push(`Fast-forwarded ${context.originalBranch} to the latest origin/${context.originalBranch}.`);
+    } else if (syncResult.mode === 'merge') {
+      notices.push(`Merged the latest origin/${context.originalBranch} into ${context.originalBranch} before restoring your work.`);
+    }
+  } catch (err) {
+    notices.push(`Could not sync ${context.originalBranch} with origin/${context.originalBranch}: ${(err as Error).message}`);
+    if (context.restoreStash) {
+      notices.push('Your stashed work was not restored because the branch needs manual sync first.');
+    }
+    if (context.previousTaskState) {
+      setConfig({ taskState: context.previousTaskState });
+    }
+    return notices;
+  }
+
+  if (context.restoreStash) {
+    try {
+      await stashPop();
+      notices.push(`Restored your stashed work on ${context.originalBranch}.`);
+    } catch (err) {
+      notices.push(`Could not restore your stashed work automatically on ${context.originalBranch}: ${(err as Error).message}`);
+    }
+  }
+
+  if (context.previousTaskState) {
+    setConfig({ taskState: context.previousTaskState });
+  }
+
+  return notices;
+}
+
 async function buildDiffForIssue(issue: GitHubIssue, branch: string): Promise<string> {
   const taskState = getConfig().taskState;
   if (
@@ -268,7 +340,7 @@ async function performSubmit(
   username: string,
   interactive: boolean,
   commitMessageOverride?: string,
-): Promise<string> {
+): Promise<SubmitOutcome> {
   let spinner: ReturnType<typeof ora> | undefined;
 
   if (interactive) spinner = ora('Loading task and diff...').start();
@@ -282,16 +354,19 @@ async function performSubmit(
   const openSubtaskNumbers = await getOpenSubtasks(config, branch);
   spinner?.stop();
   if (openSubtaskNumbers.length > 0) {
-    return interactive
-      ? (
-        `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open:\n` +
-        openSubtaskNumbers.map((n) => `  - #${n}`).join('\n') +
-        '\nComplete all sub-tasks before submitting.'
-      )
-      : (
-        `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open: ` +
-        openSubtaskNumbers.map((n) => `#${n}`).join(', ')
-      );
+    return {
+      message: interactive
+        ? (
+          `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open:\n` +
+          openSubtaskNumbers.map((n) => `  - #${n}`).join('\n') +
+          '\nComplete all sub-tasks before submitting.'
+        )
+        : (
+          `Cannot submit: ${openSubtaskNumbers.length} sub-task(s) still open: ` +
+          openSubtaskNumbers.map((n) => `#${n}`).join(', ')
+        ),
+      success: false,
+    };
   }
 
   let review = '';
@@ -327,9 +402,9 @@ async function performSubmit(
         ],
       });
     } catch {
-      return 'Submit cancelled.';
+      return { message: 'Submit cancelled.', success: false };
     }
-    if (!shouldProceed) return 'Submit cancelled by user.';
+    if (!shouldProceed) return { message: 'Submit cancelled by user.', success: false };
   }
 
   let commitMessage = commitMessageOverride?.trim();
@@ -341,9 +416,9 @@ async function performSubmit(
           default: `complete: ${issue.title}`,
         });
       } catch {
-        return 'Submit cancelled.';
+        return { message: 'Submit cancelled.', success: false };
       }
-      if (!commitMessage.trim()) return 'Submit cancelled.';
+      if (!commitMessage.trim()) return { message: 'Submit cancelled.', success: false };
     } else {
       commitMessage = `complete: ${issue.title}`;
     }
@@ -355,7 +430,7 @@ async function performSubmit(
     spinner?.stop();
   } catch (err) {
     spinner?.stop();
-    return `Commit failed: ${(err as Error).message}`;
+    return { message: `Commit failed: ${(err as Error).message}`, success: false };
   }
 
   if (isSelfSubmit) {
@@ -370,7 +445,10 @@ async function performSubmit(
         spinner?.stop();
       } catch (err) {
         spinner?.stop();
-        return `Committed and pushed to ${branch}, but failed to merge into ${targetBranch}: ${(err as Error).message}`;
+        return {
+          message: `Committed and pushed to ${branch}, but failed to merge into ${targetBranch}: ${(err as Error).message}`,
+          success: false,
+        };
       }
     }
 
@@ -382,7 +460,10 @@ async function performSubmit(
         spinner?.stop();
       } catch (err) {
         spinner?.stop();
-        return `Committed and merged ${branch} -> ${targetBranch}, but failed to merge ${targetBranch} into ${baseBranch}: ${(err as Error).message}`;
+        return {
+          message: `Committed and merged ${branch} -> ${targetBranch}, but failed to merge ${targetBranch} into ${baseBranch}: ${(err as Error).message}`,
+          success: false,
+        };
       }
     }
 
@@ -400,7 +481,10 @@ async function performSubmit(
     const mergePath = finalBranch === targetBranch
       ? `${branch} -> ${targetBranch}`
       : `${branch} -> ${targetBranch} -> ${finalBranch}`;
-    return `Task #${issue.number} committed and closed.\nMerged: ${mergePath}\nCommit: "${commitMessage.trim()}"`;
+    return {
+      message: `Task #${issue.number} committed and closed.\nMerged: ${mergePath}\nCommit: "${commitMessage.trim()}"`,
+      success: true,
+    };
   }
 
   spinner = interactive ? ora('Checking for existing PR...').start() : undefined;
@@ -426,7 +510,7 @@ async function performSubmit(
       spinner?.stop();
     } catch (err) {
       spinner?.stop();
-      return `Committed but PR creation failed: ${(err as Error).message}`;
+      return { message: `Committed but PR creation failed: ${(err as Error).message}`, success: false };
     }
   }
 
@@ -436,15 +520,21 @@ async function performSubmit(
     spinner?.stop();
   } catch (err) {
     spinner?.stop();
-    return interactive
-      ? `PR ${existingPR ? 'updated' : 'created'} (${prUrl}) but failed to update label: ${(err as Error).message}`
-      : `PR ${existingPR ? 'updated' : 'created'} (${prUrl}) but failed to update label: ${(err as Error).message}`;
+    return {
+      message: interactive
+        ? `PR ${existingPR ? 'updated' : 'created'} (${prUrl}) but failed to update label: ${(err as Error).message}`
+        : `PR ${existingPR ? 'updated' : 'created'} (${prUrl}) but failed to update label: ${(err as Error).message}`,
+      success: false,
+    };
   }
 
   setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
-  return interactive
-    ? `Task #${issue.number} ${existingPR ? 're-submitted' : 'submitted'}.\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`
-    : `Task #${issue.number} ${existingPR ? 're-submitted' : 'submitted'}.\nReview:\n${review}\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`;
+  return {
+    message: interactive
+      ? `Task #${issue.number} ${existingPR ? 're-submitted' : 'submitted'}.\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`
+      : `Task #${issue.number} ${existingPR ? 're-submitted' : 'submitted'}.\nReview:\n${review}\nCommit: "${commitMessage.trim()}"\nPR: ${prUrl}`,
+    success: true,
+  };
 }
 
 function formatSubmitResult(result: string, notices: string[]): string {
@@ -476,6 +566,7 @@ export const definition = {
 
 export async function run(_input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const currentBranch = await getCurrentBranch();
+  const previousTaskState = getConfig().taskState;
   const [username, currentIssueNumber] = await Promise.all([
     getAuthenticatedUser(config),
     resolveIssueNumberFromBranch(config, currentBranch),
@@ -493,20 +584,32 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
 
   let branch: string;
   let notices: string[];
+  let restore: SubmitRestoreContext | undefined;
   try {
-    ({ branch, notices } = await prepareTaskContext(config, selectedTask, username, currentBranch, true));
+    ({ branch, notices, restore } = await prepareTaskContext(
+      config,
+      selectedTask,
+      username,
+      currentBranch,
+      true,
+      undefined,
+      previousTaskState,
+    ));
   } catch (err) {
     return (err as Error).message;
   }
 
-  return formatSubmitResult(
-    await performSubmit(config, selectedTask, branch, username, true),
-    notices,
-  );
+  const outcome = await performSubmit(config, selectedTask, branch, username, true);
+  const allNotices = outcome.success && restore
+    ? notices.concat(await restorePreviousContext(restore))
+    : notices;
+
+  return formatSubmitResult(outcome.message, allNotices);
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const currentBranch = await getCurrentBranch();
+  const previousTaskState = getConfig().taskState;
   const username = await getAuthenticatedUser(config);
   const requestedIssueNumber = input['issue_number'] as number | undefined;
   const carryCurrentWork = input['carry_current_work'] as boolean | undefined;
@@ -528,30 +631,34 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   let branch: string;
   let notices: string[];
+  let restore: SubmitRestoreContext | undefined;
   try {
-    ({ branch, notices } = await prepareTaskContext(
+    ({ branch, notices, restore } = await prepareTaskContext(
       config,
       issue,
       username,
       currentBranch,
       false,
       carryCurrentWork,
+      previousTaskState,
     ));
   } catch (err) {
     return (err as Error).message;
   }
 
-  return formatSubmitResult(
-    await performSubmit(
-      config,
-      issue,
-      branch,
-      username,
-      false,
-      input['commit_message'] as string | undefined,
-    ),
-    notices,
+  const outcome = await performSubmit(
+    config,
+    issue,
+    branch,
+    username,
+    false,
+    input['commit_message'] as string | undefined,
   );
+  const allNotices = outcome.success && restore
+    ? notices.concat(await restorePreviousContext(restore))
+    : notices;
+
+  return formatSubmitResult(outcome.message, allNotices);
 }
 
 export const terminal = true;

@@ -115,6 +115,47 @@ export async function abortMergeOperation(): Promise<void> {
   }
 }
 
+async function countCommits(range: string): Promise<number> {
+  const count = await git.raw(['rev-list', '--count', range]);
+  return parseInt(count.trim(), 10);
+}
+
+export async function syncBranchWithRemote(
+  branchName: string
+): Promise<{ mode: 'noop' | 'fast-forward' | 'merge' }> {
+  try {
+    await git.fetch('origin', branchName);
+  } catch {
+    return { mode: 'noop' };
+  }
+
+  const remoteRef = `origin/${branchName}`;
+  const branches = await git.branch(['-a']);
+  if (!Object.prototype.hasOwnProperty.call(branches.branches, `remotes/${remoteRef}`)) {
+    return { mode: 'noop' };
+  }
+
+  const [localAhead, remoteAhead] = await Promise.all([
+    countCommits(`${remoteRef}..${branchName}`),
+    countCommits(`${branchName}..${remoteRef}`),
+  ]);
+
+  if (remoteAhead === 0) return { mode: 'noop' };
+
+  if (localAhead === 0) {
+    await git.merge(['--ff-only', remoteRef]);
+    return { mode: 'fast-forward' };
+  }
+
+  try {
+    await git.merge([remoteRef, '-m', `chore: sync ${branchName} after remote update`]);
+    return { mode: 'merge' };
+  } catch (err) {
+    await abortMergeOperation();
+    throw new Error(`Could not sync ${branchName} with ${remoteRef}: ${(err as Error).message}`);
+  }
+}
+
 export async function getDiffFromCommit(baseCommit: string): Promise<string> {
   const status = await git.status();
   const parts: string[] = [];

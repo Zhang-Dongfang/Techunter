@@ -35,5 +35,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+async function main(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch((err: Error) => {
+  console.error(`Fatal: ${err.message}`);
+  process.exit(1);
+});
