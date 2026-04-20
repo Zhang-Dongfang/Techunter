@@ -114,7 +114,7 @@ export async function runAgentLoop(
       '1. Call review to list tasks pending your approval.',
       '2. Call get_task to read full details of the task to review.',
       '3. Call get_comments to read the implementation guide and any discussion.',
-      '4. To approve: call close with the issue_number.',
+      '4. To approve: call accept with the issue_number.',
       '5. To reject: write a structured rejection comment and call reject.',
     ].join('\n'),
   };

@@ -5,6 +5,7 @@ import type { TechunterConfig } from '../../types.js';
 import { postComment, rejectTask, getAuthenticatedUser, getTask } from '../../lib/github.js';
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateRejectionComment } from './comment-generator.js';
+import { getStatus } from '../../lib/display.js';
 
 export const definition = {
   type: 'function',
@@ -24,6 +25,12 @@ export const definition = {
   },
 } as const;
 
+function ensureTaskIsInReview(issue: Awaited<ReturnType<typeof getTask>>): string | null {
+  const status = getStatus(issue);
+  if (status === 'in-review') return null;
+  return `Task #${issue.number} is not in review. Current status: ${status}.`;
+}
+
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const issueNumber = input['issue_number'] as number;
 
@@ -35,20 +42,25 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
   }
 
-  let feedback: string;
-  try {
-    feedback = await promptInput({
-      message: `What's wrong with #${issueNumber}? (brief description for the reviewer agent)`,
-    });
-  } catch {
-    return 'Cancelled.';
+  const reviewStatusError = ensureTaskIsInReview(issue);
+  if (reviewStatusError) return reviewStatusError;
+
+  let feedback = (input['feedback'] as string | undefined)?.trim();
+  if (!feedback) {
+    try {
+      feedback = await promptInput({
+        message: `What's wrong with #${issueNumber}? (brief description for the reviewer agent)`,
+      });
+    } catch {
+      return 'Cancelled.';
+    }
   }
   if (!feedback.trim()) return 'Cancelled.';
 
-  const divider = chalk.dim('─'.repeat(70));
+  const divider = chalk.dim('-'.repeat(70));
 
   for (;;) {
-    const spinner = ora('Generating rejection comment…').start();
+    const spinner = ora('Generating rejection comment...').start();
     let comment: string;
     try {
       comment = await generateRejectionComment(config, issueNumber, feedback);
@@ -59,7 +71,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
 
     console.log('\n' + divider);
-    console.log(chalk.bold(`  Rejection preview — issue #${issueNumber}`));
+    console.log(chalk.bold(`  Rejection preview - issue #${issueNumber}`));
     console.log(divider);
     console.log(renderMarkdown(comment));
     console.log(divider + '\n');
@@ -70,7 +82,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
         message: `Post rejection and mark #${issueNumber} as changes-needed?`,
         choices: [
           { name: 'Post & Reject', value: 'yes' },
-          { name: 'Revise — describe what to change', value: 'revise' },
+          { name: 'Revise - describe what to change', value: 'revise' },
           { name: 'Cancel', value: 'cancel' },
         ],
       });
@@ -86,11 +98,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       } catch {
         return 'Cancelled.';
       }
+      if (!feedback.trim()) return 'Cancelled.';
       continue;
     }
 
-    // decision === 'yes'
-    let spinner2 = ora(`Posting rejection comment on #${issueNumber}…`).start();
+    let spinner2 = ora(`Posting rejection comment on #${issueNumber}...`).start();
     try {
       await postComment(config, issueNumber, comment);
       spinner2.stop();
@@ -99,7 +111,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       return `Error posting comment: ${(err as Error).message}`;
     }
 
-    spinner2 = ora(`Marking #${issueNumber} as changes-needed…`).start();
+    spinner2 = ora(`Marking #${issueNumber} as changes-needed...`).start();
     try {
       await rejectTask(config, issueNumber);
       spinner2.stop();
@@ -124,6 +136,9 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
   }
 
+  const reviewStatusError = ensureTaskIsInReview(issue);
+  if (reviewStatusError) return reviewStatusError;
+
   let comment: string;
   try {
     comment = await generateRejectionComment(config, issueNumber, feedback);
@@ -145,4 +160,5 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   return `Task #${issueNumber} rejected.\n\nComment posted:\n${comment}`;
 }
+
 export const terminal = true;

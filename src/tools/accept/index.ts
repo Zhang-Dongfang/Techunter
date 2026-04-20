@@ -2,10 +2,17 @@ import chalk from 'chalk';
 import { select } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { getAuthenticatedUser, listTasksForReview, acceptTask, getTask, mergeWorkerIntoBase, upsertRepoFile } from '../../lib/github.js';
+import {
+  getAuthenticatedUser,
+  listTasksForReview,
+  acceptTask,
+  getTask,
+  mergeWorkerIntoBase,
+  upsertRepoFile,
+} from '../../lib/github.js';
 import { isTaskBranch } from '../../lib/git.js';
+import { getStatus } from '../../lib/display.js';
 import { generateWiki } from '../wiki/wiki-generator.js';
-
 
 export const definition = {
   type: 'function',
@@ -23,11 +30,59 @@ export const definition = {
   },
 } as const;
 
+function ensureTaskIsInReview(issue: Awaited<ReturnType<typeof getTask>>): string | null {
+  const status = getStatus(issue);
+  if (status === 'in-review') return null;
+  return `Task #${issue.number} is not in review. Current status: ${status}.`;
+}
+
+async function maybeMergeWorkerToBase(
+  config: TechunterConfig,
+  workerBranch: string,
+  interactive: boolean,
+): Promise<{ merged: boolean; targetBranch: string; warning?: string }> {
+  const baseBranch = config.baseBranch ?? 'main';
+
+  if (isTaskBranch(workerBranch) || workerBranch === baseBranch) {
+    return { merged: false, targetBranch: workerBranch };
+  }
+
+  if (interactive) {
+    let pushToBase: boolean;
+    try {
+      pushToBase = await select({
+        message: `Push ${chalk.cyan(workerBranch)} -> ${chalk.cyan(baseBranch)}?`,
+        choices: [
+          { name: `Yes, push to ${baseBranch}`, value: true },
+          { name: 'No, keep in worker branch', value: false },
+        ],
+      });
+    } catch {
+      pushToBase = false;
+    }
+
+    if (!pushToBase) {
+      return { merged: false, targetBranch: workerBranch };
+    }
+  }
+
+  try {
+    await mergeWorkerIntoBase(config, workerBranch, baseBranch);
+    return { merged: true, targetBranch: baseBranch };
+  } catch (err) {
+    return {
+      merged: false,
+      targetBranch: workerBranch,
+      warning: `Could not merge ${workerBranch} into ${baseBranch}: ${(err as Error).message}`,
+    };
+  }
+}
+
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   let issueNumber = input['issue_number'] as number | undefined;
 
   if (!issueNumber) {
-    const spinner = ora('Loading tasks for review…').start();
+    const spinner = ora('Loading tasks for review...').start();
     let tasks;
     let me: string;
     try {
@@ -45,7 +100,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       issueNumber = await select({
         message: 'Which task to accept?',
         choices: tasks.map((t) => ({
-          name: `#${t.number}  @${t.assignee ?? '—'}  ${t.title}`,
+          name: `#${t.number}  @${t.assignee ?? '-'}  ${t.title}`,
           value: t.number,
         })),
       });
@@ -54,7 +109,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
-  const spinner2 = ora('Verifying permissions…').start();
+  const spinner2 = ora('Verifying permissions...').start();
   let me2: string;
   let issue: Awaited<ReturnType<typeof getTask>>;
   try {
@@ -67,9 +122,13 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     spinner2.stop();
     return `Error: ${(err as Error).message}`;
   }
+
   if (issue.author && issue.author !== me2) {
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
+
+  const reviewStatusError = ensureTaskIsInReview(issue);
+  if (reviewStatusError) return reviewStatusError;
 
   let confirmed: boolean;
   try {
@@ -85,40 +144,21 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   }
   if (!confirmed) return 'Cancelled.';
 
-  const spinner = ora(`Merging PR for #${issueNumber}…`).start();
+  const spinner = ora(`Merging PR for #${issueNumber}...`).start();
   let result: Awaited<ReturnType<typeof acceptTask>>;
   try {
     result = await acceptTask(config, issueNumber);
-    spinner.succeed(`PR #${result.prNumber} merged → ${chalk.cyan(result.baseBranch)}`);
+    spinner.succeed(`PR #${result.prNumber} merged -> ${chalk.cyan(result.baseBranch)}`);
   } catch (err) {
     spinner.fail('Failed');
     return `Error: ${(err as Error).message}`;
   }
 
-  // Only offer push-to-main when PR target is a worker branch (not a task branch)
-  const mergedIntoTaskBranch = isTaskBranch(result.baseBranch);
-  if (!mergedIntoTaskBranch) {
-    const baseBranch = config.baseBranch ?? 'main';
-    let pushToMain: boolean;
-    try {
-      pushToMain = await select({
-        message: `Push ${chalk.cyan(result.baseBranch)} → ${chalk.cyan(baseBranch)}?`,
-        choices: [
-          { name: `Yes, push to ${baseBranch}`, value: true },
-          { name: 'No, keep in worker branch', value: false },
-        ],
-      });
-    } catch { pushToMain = false; }
-
-    if (pushToMain) {
-      const mergeSpinner = ora(`Merging ${result.baseBranch} → ${baseBranch}…`).start();
-      try {
-        await mergeWorkerIntoBase(config, result.baseBranch, baseBranch);
-        mergeSpinner.succeed(`Merged ${result.baseBranch} → ${baseBranch}`);
-      } catch (err) {
-        mergeSpinner.fail(`Could not merge to ${baseBranch}: ${(err as Error).message}`);
-      }
-    }
+  const baseMerge = await maybeMergeWorkerToBase(config, result.baseBranch, true);
+  if (baseMerge.warning) {
+    console.log(chalk.yellow(baseMerge.warning));
+  } else if (baseMerge.merged) {
+    console.log(chalk.green(`Merged ${result.baseBranch} -> ${baseMerge.targetBranch}`));
   }
 
   let updateWiki = false;
@@ -130,10 +170,12 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
         { name: 'No, skip', value: false },
       ],
     });
-  } catch { /* skip */ }
+  } catch {
+    // skip
+  }
 
   if (updateWiki) {
-    const wikiSpinner = ora('Regenerating TECHUNTER.md…').start();
+    const wikiSpinner = ora('Regenerating TECHUNTER.md...').start();
     try {
       const content = await generateWiki(config);
       await upsertRepoFile(config, 'TECHUNTER.md', content, 'docs: update TECHUNTER.md project overview');
@@ -143,11 +185,9 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
-  const mergeTarget = mergedIntoTaskBranch
-    ? `${result.baseBranch} (sub-task merged, no push to main)`
-    : result.baseBranch;
-
-  return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${mergeTarget}\nIssue closed.`;
+  const summary = `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged -> ${baseMerge.targetBranch}\nIssue closed.`;
+  if (!baseMerge.warning) return summary;
+  return `${summary}\nWarning: ${baseMerge.warning}`;
 }
 
 export async function execute(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
@@ -156,18 +196,27 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     getAuthenticatedUser(config),
     getTask(config, issueNumber),
   ]);
+
   if (issue.author && issue.author !== me) {
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
 
-  const spinner = ora(`Merging PR for #${issueNumber}…`).start();
+  const reviewStatusError = ensureTaskIsInReview(issue);
+  if (reviewStatusError) return reviewStatusError;
+
+  const spinner = ora(`Merging PR for #${issueNumber}...`).start();
   try {
     const result = await acceptTask(config, issueNumber);
     spinner.stop();
-    return `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged → ${result.baseBranch}\nIssue closed.`;
+
+    const baseMerge = await maybeMergeWorkerToBase(config, result.baseBranch, false);
+    const summary = `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged -> ${baseMerge.targetBranch}\nIssue closed.`;
+    if (!baseMerge.warning) return summary;
+    return `${summary}\nWarning: ${baseMerge.warning}`;
   } catch (err) {
     spinner.stop();
     return `Error: ${(err as Error).message}`;
   }
 }
+
 export const terminal = true;

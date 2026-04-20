@@ -84,6 +84,37 @@ export async function switchToBranchOrCreate(name: string): Promise<boolean> {
   }
 }
 
+export async function resolveBranchRef(name: string): Promise<string | null> {
+  const branches = await git.branch(['-a']);
+  if (Object.prototype.hasOwnProperty.call(branches.branches, name)) return name;
+  if (Object.prototype.hasOwnProperty.call(branches.branches, `remotes/origin/${name}`)) return `origin/${name}`;
+  return null;
+}
+
+export async function hasCommitsNotInBranch(sourceBranch: string, targetBranch: string): Promise<boolean> {
+  const count = await git.raw(['rev-list', '--count', `${targetBranch}..${sourceBranch}`]);
+  return parseInt(count.trim(), 10) > 0;
+}
+
+export async function squashMergeBranch(sourceBranch: string): Promise<void> {
+  await git.merge(['--squash', sourceBranch]);
+}
+
+export async function abortMergeOperation(): Promise<void> {
+  try {
+    await git.raw(['merge', '--abort']);
+    return;
+  } catch {
+    // Fall through to reset --merge, which also clears conflicted merge state.
+  }
+
+  try {
+    await git.raw(['reset', '--merge']);
+  } catch {
+    // Nothing to abort, or Git cannot cleanly abort here.
+  }
+}
+
 export async function getDiffFromCommit(baseCommit: string): Promise<string> {
   const status = await git.status();
   const parts: string[] = [];

@@ -2,6 +2,7 @@ import { Octokit } from '@octokit/rest';
 import type { TechunterConfig, GitHubIssue, TaskGuide } from '../types.js';
 import { fetch as undiciFetch } from 'undici';
 import { getHttpsProxyAgent, getUndiciProxyAgent } from './proxy.js';
+import { makeTaskBranchName } from './git.js';
 
 const LABEL_AVAILABLE = 'techunter:available';
 const LABEL_CLAIMED = 'techunter:claimed';
@@ -55,11 +56,40 @@ function parseIssue(issue: {
 
 const TECHUNTER_LABELS = new Set([LABEL_AVAILABLE, LABEL_CLAIMED, LABEL_IN_REVIEW, LABEL_CHANGES_NEEDED]);
 
+function getIssueLabels(labels?: Array<{ name?: string } | string>): string[] {
+  return (labels ?? []).map((label) => (typeof label === 'string' ? label : (label.name ?? '')));
+}
+
+function getTaskStatusFromLabels(labels?: Array<{ name?: string } | string>): string {
+  const issueLabels = getIssueLabels(labels);
+  if (issueLabels.includes(LABEL_CHANGES_NEEDED)) return 'changes-needed';
+  if (issueLabels.includes(LABEL_IN_REVIEW)) return 'in-review';
+  if (issueLabels.includes(LABEL_CLAIMED)) return 'claimed';
+  if (issueLabels.includes(LABEL_AVAILABLE)) return 'available';
+  return 'unknown';
+}
+
+function issueBodyClosesTask(body: string | null | undefined, issueNumber: number): boolean {
+  return new RegExp(`Closes #${issueNumber}\\b`, 'i').test(body ?? '');
+}
+
+async function listOpenPullRequests(config: TechunterConfig) {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  return octokit.paginate(octokit.pulls.list, { owner, repo, state: 'open', per_page: 100 });
+}
+
+async function listRepoBranches(config: TechunterConfig) {
+  const octokit = createOctokit(config.githubToken);
+  const { owner, repo } = config.github;
+  return octokit.paginate(octokit.repos.listBranches, { owner, repo, per_page: 100 });
+}
+
 export async function listTasks(config: TechunterConfig): Promise<GitHubIssue[]> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  const { data } = await octokit.issues.listForRepo({
+  const data = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
     state: 'open',
@@ -85,6 +115,8 @@ export async function getTask(config: TechunterConfig, number: number): Promise<
 
 const BASE_COMMIT_MARKER = '<!-- techunter-base:';
 const TARGET_BRANCH_MARKER = '<!-- techunter-target:';
+const BASE_COMMIT_REGEX = /\n*<!-- techunter-base:[a-f0-9]{7,40} -->/g;
+const TARGET_BRANCH_REGEX = /\n*<!-- techunter-target:[^\s>]+ -->/g;
 
 export function embedBaseCommit(body: string, sha: string): string {
   return `${body}\n\n${BASE_COMMIT_MARKER}${sha} -->`;
@@ -106,6 +138,22 @@ export function extractTargetBranch(body: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+export function stripTaskMetadata(body: string | null): string {
+  if (!body) return '';
+  return body.replace(BASE_COMMIT_REGEX, '').replace(TARGET_BRANCH_REGEX, '').trimEnd();
+}
+
+function withTaskMetadata(
+  body: string,
+  baseCommit: string | null,
+  targetBranch: string | null
+): string {
+  let nextBody = stripTaskMetadata(body);
+  if (baseCommit) nextBody = embedBaseCommit(nextBody, baseCommit);
+  if (targetBranch) nextBody = embedTargetBranch(nextBody, targetBranch);
+  return nextBody;
+}
+
 export async function createTask(
   config: TechunterConfig,
   title: string,
@@ -118,9 +166,7 @@ export async function createTask(
 
   await ensureLabels(config);
 
-  let finalBody = body ?? '';
-  if (baseCommit) finalBody = embedBaseCommit(finalBody, baseCommit);
-  if (targetBranch) finalBody = embedTargetBranch(finalBody, targetBranch);
+  const finalBody = withTaskMetadata(body ?? '', baseCommit ?? null, targetBranch ?? null);
 
   const { data } = await octokit.issues.create({
     owner,
@@ -133,9 +179,9 @@ export async function createTask(
   return parseIssue(data);
 }
 
-export async function mergeWorkerIntoBase(
+export async function mergeBranchIntoBase(
   config: TechunterConfig,
-  workerBranch: string,
+  headBranch: string,
   baseBranch: string
 ): Promise<void> {
   const octokit = createOctokit(config.githubToken);
@@ -145,17 +191,25 @@ export async function mergeWorkerIntoBase(
       owner,
       repo,
       base: baseBranch,
-      head: workerBranch,
-      commit_message: `chore: merge ${workerBranch} into ${baseBranch}`,
+      head: headBranch,
+      commit_message: `chore: merge ${headBranch} into ${baseBranch}`,
     });
   } catch (err: unknown) {
     if ((err as { status?: number }).status === 409) {
       throw new Error(
-        `Merge conflict: ${workerBranch} cannot be merged into ${baseBranch} cleanly. Resolve conflicts manually.`
+        `Merge conflict: ${headBranch} cannot be merged into ${baseBranch} cleanly. Resolve conflicts manually.`
       );
     }
     throw err;
   }
+}
+
+export async function mergeWorkerIntoBase(
+  config: TechunterConfig,
+  workerBranch: string,
+  baseBranch: string
+): Promise<void> {
+  await mergeBranchIntoBase(config, workerBranch, baseBranch);
 }
 
 export async function claimTask(
@@ -165,6 +219,17 @@ export async function claimTask(
 ): Promise<void> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
+
+  const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  const issueLabels = getIssueLabels(issue.labels as Array<{ name?: string } | string>);
+  const currentStatus = getTaskStatusFromLabels(issue.labels as Array<{ name?: string } | string>);
+
+  if (!issueLabels.includes(LABEL_AVAILABLE)) {
+    throw new Error(`Task #${number} is not available to claim (current status: ${currentStatus}).`);
+  }
+  if (issue.assignee?.login && issue.assignee.login !== username) {
+    throw new Error(`Task #${number} is already assigned to @${issue.assignee.login}.`);
+  }
 
   await octokit.issues.update({
     owner,
@@ -401,12 +466,12 @@ export async function listMyTasks(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  const { data } = await octokit.issues.listForRepo({
+  const data = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
     assignee: username,
     state: 'open',
-    per_page: 50,
+    per_page: 100,
   });
 
   return data
@@ -425,13 +490,13 @@ export async function listTasksForReview(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  const { data } = await octokit.issues.listForRepo({
+  const data = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
     creator: username,
     labels: LABEL_IN_REVIEW,
     state: 'open',
-    per_page: 50,
+    per_page: 100,
   });
 
   return data.map(parseIssue).sort((a, b) => a.number - b.number);
@@ -464,7 +529,7 @@ export async function ensureLabels(config: TechunterConfig): Promise<void> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
-  const { data: existing } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
+  const existing = await octokit.paginate(octokit.issues.listLabelsForRepo, { owner, repo, per_page: 100 });
   const existingNames = new Set(existing.map((l) => l.name));
 
   await Promise.all(
@@ -485,7 +550,13 @@ export async function editTask(
 ): Promise<void> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
-  await octokit.issues.update({ owner, repo, issue_number: number, title, body });
+  const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  const finalBody = withTaskMetadata(
+    body,
+    extractBaseCommit(issue.body ?? null),
+    extractTargetBranch(issue.body ?? null)
+  );
+  await octokit.issues.update({ owner, repo, issue_number: number, title, body: finalBody });
 }
 
 export async function upsertRepoFile(
@@ -541,15 +612,24 @@ export async function getDefaultBranch(config: TechunterConfig): Promise<string>
 }
 
 export async function getTaskBranch(config: TechunterConfig, issueNumber: number): Promise<string | null> {
-  const octokit = createOctokit(config.githubToken);
-  const { owner, repo } = config.github;
-  // First try open PRs
-  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) => new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? ''));
-  if (pr) return pr.head.ref;
-  // Fall back to remote branches matching task-{issueNumber}-*
-  const { data: branches } = await octokit.repos.listBranches({ owner, repo, per_page: 100 });
-  const taskBranch = branches.find((b) => new RegExp(`^task-${issueNumber}-`).test(b.name));
+  const issue = await getTask(config, issueNumber);
+  const prs = await listOpenPullRequests(config);
+  const expectedBranch = issue.assignee ? makeTaskBranchName(issueNumber, issue.assignee) : null;
+
+  if (expectedBranch) {
+    const matchingPR = prs.find((pr) => pr.head.ref === expectedBranch && issueBodyClosesTask(pr.body, issueNumber));
+    if (matchingPR) return matchingPR.head.ref;
+  }
+
+  const matchingPR = prs.find((pr) => issueBodyClosesTask(pr.body, issueNumber));
+  if (matchingPR) return matchingPR.head.ref;
+
+  const branches = await listRepoBranches(config);
+  if (expectedBranch && branches.some((branch) => branch.name === expectedBranch)) {
+    return expectedBranch;
+  }
+
+  const taskBranch = branches.find((branch) => new RegExp(`^task-${issueNumber}-`).test(branch.name));
   return taskBranch?.name ?? null;
 }
 
@@ -573,28 +653,29 @@ export async function moveTask(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
   const { data } = await octokit.issues.get({ owner, repo, issue_number: issueNumber });
-  let body = data.body ?? '';
-  // Strip existing markers, then re-embed updated values
-  body = body.replace(/\n*<!-- techunter-base:[a-f0-9]{7,40} -->/g, '');
-  body = body.replace(/\n*<!-- techunter-target:[^\s>]+ -->/g, '');
-  body = embedBaseCommit(body, newBaseCommit);
-  body = embedTargetBranch(body, newTargetBranch);
+  const body = withTaskMetadata(data.body ?? '', newBaseCommit, newTargetBranch);
   await octokit.issues.update({ owner, repo, issue_number: issueNumber, body });
 }
 
 
 export async function getTaskPR(
   config: TechunterConfig,
-  issueNumber: number
-): Promise<{ number: number; url: string; body: string; baseBranch: string } | null> {
-  const octokit = createOctokit(config.githubToken);
-  const { owner, repo } = config.github;
-  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) =>
-    new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? '')
+  issueNumber: number,
+  headBranch?: string
+): Promise<{ number: number; url: string; body: string; baseBranch: string; headBranch: string } | null> {
+  const prs = await listOpenPullRequests(config);
+  const pr = prs.find((candidate) =>
+    issueBodyClosesTask(candidate.body, issueNumber) &&
+    (!headBranch || candidate.head.ref === headBranch)
   );
   if (!pr) return null;
-  return { number: pr.number, url: pr.html_url, body: pr.body ?? '', baseBranch: pr.base.ref };
+  return {
+    number: pr.number,
+    url: pr.html_url,
+    body: pr.body ?? '',
+    baseBranch: pr.base.ref,
+    headBranch: pr.head.ref,
+  };
 }
 
 export async function getOpenSubtasks(
@@ -603,7 +684,7 @@ export async function getOpenSubtasks(
 ): Promise<number[]> {
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
-  const { data } = await octokit.issues.listForRepo({
+  const data = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
     state: 'open',
@@ -619,10 +700,8 @@ export async function getIssueNumberFromBranch(
   config: TechunterConfig,
   branch: string
 ): Promise<{ issueNumber: number; prUrl: string } | null> {
-  const octokit = createOctokit(config.githubToken);
-  const { owner, repo } = config.github;
-  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) => p.head.ref === branch);
+  const prs = await listOpenPullRequests(config);
+  const pr = prs.find((candidate) => candidate.head.ref === branch);
   if (!pr) return null;
   const match = (pr.body ?? '').match(/Closes #(\d+)/i);
   if (!match) return null;
@@ -648,14 +727,19 @@ export async function acceptTask(
   config: TechunterConfig,
   issueNumber: number
 ): Promise<{ prNumber: number; prUrl: string; sha: string; baseBranch: string }> {
+  const issue = await getTask(config, issueNumber);
+  const expectedHeadBranch = issue.assignee ? makeTaskBranchName(issueNumber, issue.assignee) : undefined;
+  const pr = await getTaskPR(config, issueNumber, expectedHeadBranch);
+  if (!pr) {
+    throw new Error(
+      expectedHeadBranch
+        ? `No open PR found for task #${issueNumber} from branch ${expectedHeadBranch}.`
+        : `No open PR found for task #${issueNumber}.`
+    );
+  }
+
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
-
-  const { data: prs } = await octokit.pulls.list({ owner, repo, state: 'open', per_page: 100 });
-  const pr = prs.find((p) =>
-    new RegExp(`Closes #${issueNumber}\\b`, 'i').test(p.body ?? '')
-  );
-  if (!pr) throw new Error(`No open PR found for task #${issueNumber}`);
 
   try {
     const { data: merge } = await octokit.pulls.merge({
@@ -665,7 +749,7 @@ export async function acceptTask(
       merge_method: 'merge',
     });
     await closeTask(config, issueNumber);
-    return { prNumber: pr.number, prUrl: pr.html_url, sha: merge.sha ?? '', baseBranch: pr.base.ref };
+    return { prNumber: pr.number, prUrl: pr.url, sha: merge.sha ?? '', baseBranch: pr.baseBranch };
   } catch (err: unknown) {
     if ((err as { status?: number }).status === 405) {
       throw new Error(

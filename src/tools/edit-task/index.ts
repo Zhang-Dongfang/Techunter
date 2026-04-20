@@ -1,7 +1,7 @@
 import { select, input as promptInput } from '@inquirer/prompts';
 import ora from 'ora';
 import type { TechunterConfig } from '../../types.js';
-import { listTasks, getTask, editTask } from '../../lib/github.js';
+import { listTasks, getTask, editTask, stripTaskMetadata } from '../../lib/github.js';
 import { getStatus } from '../../lib/display.js';
 
 export const definition = {
@@ -51,6 +51,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
 
   let title: string;
   let body: string;
+  const editableBody = stripTaskMetadata(issue.body ?? '');
   try {
     title = await promptInput({
       message: 'Title:',
@@ -58,13 +59,13 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     });
     body = await promptInput({
       message: 'Description:',
-      default: issue.body ?? '',
+      default: editableBody,
     });
   } catch {
     return 'Cancelled.';
   }
 
-  if (title.trim() === issue.title && body.trim() === (issue.body ?? '')) {
+  if (title.trim() === issue.title && body.trim() === editableBody) {
     return 'No changes made.';
   }
 

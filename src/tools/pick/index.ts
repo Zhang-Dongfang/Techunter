@@ -8,7 +8,6 @@ import {
   claimTask,
   listComments,
   getAuthenticatedUser,
-  listMyTasks,
 } from '../../lib/github.js';
 import {
   makeTaskBranchName,
@@ -143,19 +142,6 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   if (action === 'claim') {
     try {
       const me = await getAuthenticatedUser(config);
-
-      // WIP limit: block if user already has an active claimed/changes-needed task
-      const myTasks = await listMyTasks(config, me);
-      const activeTask = myTasks.find((t) => {
-        const labels = t.labels;
-        return labels.includes('techunter:claimed') || labels.includes('techunter:changes-needed');
-      });
-      if (activeTask) {
-        return (
-          `You already have an active task: #${activeTask.number} "${activeTask.title}"\n` +
-          `Finish or submit it before claiming a new one.`
-        );
-      }
 
       // Check for uncommitted changes before switching branches
       let stashed = false;
@@ -299,15 +285,12 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
   }
 
   if (action === 'claim') {
-    const { getAuthenticatedUser, listMyTasks } = await import('../../lib/github.js');
+    const { getAuthenticatedUser } = await import('../../lib/github.js');
     const me = await getAuthenticatedUser(config);
+    const status = getStatus(issue);
 
-    const myTasks = await listMyTasks(config, me);
-    const activeTask = myTasks.find((t) => {
-      return t.labels.includes('techunter:claimed') || t.labels.includes('techunter:changes-needed');
-    });
-    if (activeTask) {
-      return `You already have an active task: #${activeTask.number} "${activeTask.title}". Finish it before claiming a new one.`;
+    if (status !== 'available') {
+      return `Task #${issueNumber} is not available to claim (current status: ${status}).`;
     }
 
     if (await hasUncommittedChanges()) {

@@ -10,7 +10,7 @@ import {
   getBranchHeadSha,
   moveTask,
 } from '../../lib/github.js';
-import { getStatus } from '../../lib/display.js';
+import { getParentIssueNumber, getStatus } from '../../lib/display.js';
 
 export const definition = {
   type: 'function',
@@ -30,13 +30,37 @@ export const definition = {
   },
 } as const;
 
+function getDescendantTaskNumbers(
+  tasks: Awaited<ReturnType<typeof listTasks>>,
+  issueNumber: number
+): Set<number> {
+  const childrenOf = new Map<number, number[]>();
+
+  for (const task of tasks) {
+    const parentIssueNumber = getParentIssueNumber(task);
+    if (parentIssueNumber === null) continue;
+    if (!childrenOf.has(parentIssueNumber)) childrenOf.set(parentIssueNumber, []);
+    childrenOf.get(parentIssueNumber)!.push(task.number);
+  }
+
+  const descendants = new Set<number>();
+  const queue = [...(childrenOf.get(issueNumber) ?? [])];
+  while (queue.length > 0) {
+    const childIssueNumber = queue.shift()!;
+    if (descendants.has(childIssueNumber)) continue;
+    descendants.add(childIssueNumber);
+    queue.push(...(childrenOf.get(childIssueNumber) ?? []));
+  }
+
+  return descendants;
+}
+
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const me = await getAuthenticatedUser(config);
   const allTasks = await listTasks(config);
 
-  // Select task to move
   let issueNumber = input['issue_number'] as number | undefined;
-  let taskToMove;
+  let taskToMove: Awaited<ReturnType<typeof getTask>>;
 
   if (issueNumber) {
     try {
@@ -45,7 +69,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       return `Error loading task #${issueNumber}: ${(err as Error).message}`;
     }
     if (taskToMove.author !== me) {
-      return `Task #${issueNumber} was not authored by you — you can only move your own tasks.`;
+      return `Task #${issueNumber} was not authored by you - you can only move your own tasks.`;
     }
   } else {
     const myTasks = allTasks.filter((t) => t.author === me);
@@ -64,14 +88,16 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     taskToMove = myTasks.find((t) => t.number === issueNumber)!;
   }
 
-  // Collect candidate parent tasks (open tasks that have a known remote branch, excluding self)
-  const candidates = allTasks.filter((t) => t.number !== taskToMove.number);
+  const descendantTaskNumbers = getDescendantTaskNumbers(allTasks, taskToMove.number);
+  const candidates = allTasks.filter((t) =>
+    t.number !== taskToMove.number && !descendantTaskNumbers.has(t.number)
+  );
 
-  const resolveSpinner = ora('Finding parent task branches…').start();
+  const resolveSpinner = ora('Finding parent task branches...').start();
   const parents: { task: (typeof candidates)[0]; branch: string }[] = [];
-  for (const t of candidates) {
-    const branch = await getTaskBranch(config, t.number);
-    if (branch) parents.push({ task: t, branch });
+  for (const task of candidates) {
+    const branch = await getTaskBranch(config, task.number);
+    if (branch) parents.push({ task, branch });
   }
   resolveSpinner.stop();
 
@@ -79,11 +105,17 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     return 'No other tasks with known branches are available as a parent.';
   }
 
-  // Select parent task
   let parentIssueNumber = input['parent_issue_number'] as number | undefined;
   let chosen: (typeof parents)[0];
 
   if (parentIssueNumber) {
+    if (parentIssueNumber === taskToMove.number) {
+      return `Task #${taskToMove.number} cannot be moved under itself.`;
+    }
+    if (descendantTaskNumbers.has(parentIssueNumber)) {
+      return `Task #${taskToMove.number} cannot be moved under #${parentIssueNumber} because that would create a cycle.`;
+    }
+
     const found = parents.find((p) => p.task.number === parentIssueNumber);
     if (!found) {
       return `Task #${parentIssueNumber} is not available as a parent (no branch found or not open).`;
@@ -94,7 +126,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       const selectedBranch = await select({
         message: `Move #${taskToMove.number} under which task?`,
         choices: parents.map((p) => ({
-          name: `#${p.task.number}  [${getStatus(p.task)}]  ${p.task.title}  ${chalk.dim('→ ' + p.branch)}`,
+          name: `#${p.task.number}  [${getStatus(p.task)}]  ${p.task.title}  ${chalk.dim('->' + p.branch)}`,
           value: p.branch,
         })),
       });
@@ -104,13 +136,12 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
 
-  // Get current HEAD of the chosen parent branch
   const sha = await getBranchHeadSha(config, chosen.branch);
   if (!sha) {
-    return `Could not resolve HEAD of branch ${chosen.branch} — does it exist on the remote?`;
+    return `Could not resolve HEAD of branch ${chosen.branch} - does it exist on the remote?`;
   }
 
-  const spinner = ora(`Moving #${taskToMove.number} under #${chosen.task.number}…`).start();
+  const spinner = ora(`Moving #${taskToMove.number} under #${chosen.task.number}...`).start();
   try {
     await moveTask(config, taskToMove.number, chosen.branch, sha);
     spinner.succeed(
@@ -129,9 +160,21 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
   const issueNumber = input['issue_number'] as number;
   const parentIssueNumber = input['parent_issue_number'] as number;
 
-  const task = await getTask(config, issueNumber);
+  const [task, allTasks] = await Promise.all([
+    getTask(config, issueNumber),
+    listTasks(config),
+  ]);
+
   if (task.author !== me) {
-    return `Task #${issueNumber} was not authored by you — you can only move your own tasks.`;
+    return `Task #${issueNumber} was not authored by you - you can only move your own tasks.`;
+  }
+  if (parentIssueNumber === issueNumber) {
+    return `Task #${issueNumber} cannot be moved under itself.`;
+  }
+
+  const descendantTaskNumbers = getDescendantTaskNumbers(allTasks, issueNumber);
+  if (descendantTaskNumbers.has(parentIssueNumber)) {
+    return `Task #${issueNumber} cannot be moved under #${parentIssueNumber} because that would create a cycle.`;
   }
 
   const branch = await getTaskBranch(config, parentIssueNumber);
