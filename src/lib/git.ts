@@ -256,6 +256,7 @@ export async function stageAllAndCommit(message: string): Promise<void> {
     console.log(chalk.dim('  Working tree clean — no new commit created, pushing existing commits.'));
   }
   const branch = (await git.branch()).current;
+  await syncBranchWithRemote(branch);
   await git.push('origin', branch, ['--set-upstream']);
 }
 

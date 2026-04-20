@@ -219,9 +219,7 @@ async function prepareTaskContext(
       stashRestoredOnTarget = true;
       notices.push(`Restored your unsaved work on ${switchedBranch}.`);
     } else if (stashed) {
-      notices.push(
-        `Saved your unsaved work from ${currentBranch}. Return there later and run \`git stash pop\` to restore it.`
-      );
+      notices.push(`Saved your unsaved work from ${currentBranch} while preparing #${issue.number}.`);
     }
 
     return {
@@ -430,7 +428,7 @@ async function performSubmit(
     spinner?.stop();
   } catch (err) {
     spinner?.stop();
-    return { message: `Commit failed: ${(err as Error).message}`, success: false };
+    return { message: `Push failed: ${(err as Error).message}`, success: false };
   }
 
   if (isSelfSubmit) {
