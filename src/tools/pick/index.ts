@@ -1,39 +1,36 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { select } from '@inquirer/prompts';
-import type { TechunterConfig } from '../../types.js';
+import type { GitHubIssue, TaskTransitionPlanOptions, TechunterConfig, TaskState } from '../../types.js';
 import {
-  listTasks,
-  getTask,
   claimTask,
-  listComments,
   getAuthenticatedUser,
+  getTask,
+  listComments,
+  listTasks,
 } from '../../lib/github.js';
 import {
-  makeTaskBranchName,
-  checkoutFromCommit,
-  switchToBranchOrCreate,
-  pushBranch,
-  getCurrentCommit,
   getCurrentBranch,
-  hasUncommittedChanges,
-  stash,
-  stashPop,
+  getCurrentCommit,
+  makeTaskBranchName,
+  pushBranch,
 } from '../../lib/git.js';
-import { extractBaseCommit, extractTargetBranch } from '../../lib/github.js';
-import { setConfig } from '../../lib/config.js';
-import { renderMarkdown } from '../../lib/markdown.js';
+import { extractBaseCommit } from '../../lib/github.js';
+import { getConfig, setConfig } from '../../lib/config.js';
 import { getStatus, colorStatus, printTaskDetail } from '../../lib/display.js';
 import { launchClaudeCode } from '../../lib/launch.js';
-import { run as runSubmit } from '../submit/index.js';
+import { renderMarkdown } from '../../lib/markdown.js';
+import { formatPlannerNotice, recommendTaskTransition } from '../../lib/task-orchestrator.js';
+import { applyTaskTransition, summarizeTaskTransitionPlan } from '../../lib/task-transition.js';
 import { run as runClose } from '../close/index.js';
+import { run as runSubmit } from '../submit/index.js';
 
 export const definition = {
   type: 'function',
   function: {
     name: 'pick',
     description:
-      'Browse the task list and act on a specific task (claim, submit, close, or view). ' +
+      'Browse the task list and act on a specific task (claim, switch-fix, submit, close, or view). ' +
       'Equivalent to /pick. Use when the user wants to explore or take action on a task.',
     parameters: {
       type: 'object',
@@ -41,14 +38,124 @@ export const definition = {
         issue_number: { type: 'number', description: 'Issue number to act on.' },
         action: {
           type: 'string',
-          enum: ['claim', 'view'],
-          description: '"claim" to assign yourself and create a branch; "view" to return task details.',
+          enum: ['claim', 'view', 'switch-fix', 'submit', 'close'],
+          description:
+            '"claim" to assign yourself and create a branch; "switch-fix" to enter a changes-needed task branch; ' +
+            '"submit"/"close" to delegate to those tools; "view" to return task details.',
         },
       },
       required: ['issue_number', 'action'],
     },
   },
 } as const;
+
+function formatNotices(notices: string[]): string {
+  return notices.length > 0 ? `${notices.map((notice) => `Note: ${notice}`).join('\n')}\n\n` : '';
+}
+
+function buildResumeStack(previousTaskState: TaskState | undefined, transition: Awaited<ReturnType<typeof applyTaskTransition>>): TaskState['resumeStack'] {
+  const existing = previousTaskState?.resumeStack ?? [];
+  if (!transition.deferredRestore) {
+    return existing.length > 0 ? existing : undefined;
+  }
+
+  return [
+    ...existing,
+    {
+      originalBranch: transition.deferredRestore.originalBranch,
+      restoreStash: transition.deferredRestore.restoreStash,
+      taskStateSnapshot: previousTaskState
+        ? {
+          activeIssueNumber: previousTaskState.activeIssueNumber,
+          baseCommit: previousTaskState.baseCommit,
+          activeBranch: previousTaskState.activeBranch,
+        }
+        : undefined,
+    },
+  ];
+}
+
+async function transitionToTaskContext(
+  config: TechunterConfig,
+  issue: GitHubIssue,
+  taskBranch: string,
+  goal: 'claim' | 'switch-fix',
+  options: TaskTransitionPlanOptions = {},
+): Promise<{ baseCommit: string; notices: string[] }> {
+  const previousTaskState = getConfig().taskState;
+  const currentBranch = await getCurrentBranch();
+  const { decision, plan, planSource } = await recommendTaskTransition(
+    config,
+    issue,
+    currentBranch,
+    taskBranch,
+    previousTaskState,
+    'switch',
+    options,
+    goal,
+  );
+  const transition = await applyTaskTransition(issue, plan);
+  const notices = [
+    formatPlannerNotice(decision, 'chose'),
+    `Plan (${planSource}): ${summarizeTaskTransitionPlan(plan)}`,
+    ...transition.notices,
+  ];
+
+  if (transition.restore?.restoreStash) {
+    notices.push(`Your previous work was stashed and remains on ${transition.restore.originalBranch} until you restore it.`);
+  }
+
+  const baseCommit = extractBaseCommit(issue.body) ?? await getCurrentCommit();
+  setConfig({
+    taskState: {
+      activeIssueNumber: issue.number,
+      baseCommit,
+      activeBranch: taskBranch,
+      resumeStack: buildResumeStack(previousTaskState, transition),
+    },
+  });
+  return { baseCommit, notices };
+}
+
+async function claimAndSwitchTask(
+  config: TechunterConfig,
+  issue: GitHubIssue,
+  username: string,
+): Promise<{ baseCommit: string; notices: string[]; taskBranch: string }> {
+  await claimTask(config, issue.number, username);
+  const taskBranch = makeTaskBranchName(issue.number, username);
+  const { baseCommit, notices } = await transitionToTaskContext(
+    config,
+    issue,
+    taskBranch,
+    'claim',
+    { returnToOriginalBranch: false, restoreStashOnTarget: false },
+  );
+  try {
+    await pushBranch(taskBranch);
+  } catch {
+    notices.push(`Could not push ${taskBranch} yet. It will be pushed on submit.`);
+  }
+  return { baseCommit, notices, taskBranch };
+}
+
+async function switchToFixTask(
+  config: TechunterConfig,
+  issue: GitHubIssue,
+  username: string,
+): Promise<{ baseCommit: string; notices: string[]; taskBranch: string }> {
+  const taskBranch = issue.assignee
+    ? makeTaskBranchName(issue.number, issue.assignee)
+    : makeTaskBranchName(issue.number, username);
+  const { baseCommit, notices } = await transitionToTaskContext(
+    config,
+    issue,
+    taskBranch,
+    'switch-fix',
+    { returnToOriginalBranch: false, restoreStashOnTarget: false },
+  );
+  return { baseCommit, notices, taskBranch };
+}
 
 export async function run(input: Record<string, unknown>, config: TechunterConfig): Promise<string> {
   const preselected = input['issue_number'] as number | undefined;
@@ -67,9 +174,9 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     try {
       chosenNumber = await select({
         message: 'Select a task:',
-        choices: tasks.map((t) => ({
-          name: `#${String(t.number).padEnd(4)} ${colorStatus(getStatus(t))} ${t.title}`,
-          value: t.number,
+        choices: tasks.map((task) => ({
+          name: `#${String(task.number).padEnd(4)} ${colorStatus(getStatus(task))} ${task.title}`,
+          value: task.number,
         })),
       });
     } catch {
@@ -87,23 +194,22 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   printTaskDetail(issue);
 
   const status = getStatus(issue);
-
   if (status === 'changes-needed') {
     try {
       const comments = await listComments(config, issue.number, 1);
       if (comments.length > 0) {
-        const c = comments[0];
-        const divider = chalk.dim('─'.repeat(70));
+        const comment = comments[0];
+        const divider = chalk.dim('-'.repeat(70));
         console.log(
           chalk.red.bold('  Latest rejection feedback') +
-          chalk.dim(` — @${c.author} · ${c.createdAt.slice(0, 10)}`)
+          chalk.dim(` - @${comment.author} - ${comment.createdAt.slice(0, 10)}`),
         );
         console.log(divider);
-        console.log(renderMarkdown(c.body));
+        console.log(renderMarkdown(comment.body));
         console.log(divider + '\n');
       }
     } catch {
-      // silently skip
+      // Ignore comment rendering failures.
     }
   }
 
@@ -115,11 +221,10 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     actions.push({ name: 'Submit this task', value: 'submit' });
   }
   if (status === 'changes-needed') {
-    const { getAuthenticatedUser } = await import('../../lib/github.js');
-    const me = await getAuthenticatedUser(config);
+    const username = await getAuthenticatedUser(config);
     const taskBranch = issue.assignee
       ? makeTaskBranchName(issue.number, issue.assignee)
-      : makeTaskBranchName(issue.number, me);
+      : makeTaskBranchName(issue.number, username);
     const currentBranch = await getCurrentBranch();
     if (currentBranch === taskBranch) {
       actions.push({ name: 'Submit this task (fixes done)', value: 'submit' });
@@ -138,68 +243,19 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   }
 
   if (action === 'none') return `Viewed task #${issue.number}.`;
+  if (action === 'submit') return runSubmit({ issue_number: issue.number }, config);
+  if (action === 'close') return runClose({ issue_number: issue.number }, config);
 
   if (action === 'claim') {
+    let spinner: ReturnType<typeof ora> | undefined;
     try {
-      const me = await getAuthenticatedUser(config);
-
-      // Check for uncommitted changes before switching branches
-      let stashed = false;
-      if (await hasUncommittedChanges()) {
-        let choice: string;
-        try {
-          choice = await select({
-            message: 'You have uncommitted changes. What would you like to do?',
-            choices: [
-              { name: 'Stash changes and switch branch (restore with: git stash pop)', value: 'stash' },
-              { name: 'Cancel', value: 'cancel' },
-            ],
-          });
-        } catch { choice = 'cancel'; }
-        if (choice === 'cancel') return 'Cancelled.';
-        await stash(`tch: before claiming #${issue.number}`);
-        stashed = true;
-        console.log(chalk.dim('  Changes stashed. Run `git stash pop` after you finish this task to restore them.'));
-      }
-
-      let spinner = ora(`Claiming #${issue.number}…`).start();
-      await claimTask(config, issue.number, me);
+      const username = await getAuthenticatedUser(config);
+      spinner = ora(`Claiming #${issue.number}...`).start();
+      const { baseCommit, notices, taskBranch } = await claimAndSwitchTask(config, issue, username);
       spinner.stop();
-
-      const taskBranch = makeTaskBranchName(issue.number, me);
-      const taskBase = extractBaseCommit(issue.body);
-      spinner = ora(`Creating branch ${taskBranch}${taskBase ? ` from ${taskBase.slice(0, 7)}` : ''}…`).start();
-      try {
-        if (taskBase) {
-          await checkoutFromCommit(taskBranch, taskBase);
-        } else {
-          await switchToBranchOrCreate(taskBranch);
-        }
-        spinner.stop();
-        spinner = ora('Pushing task branch…').start();
-        try {
-          await pushBranch(taskBranch);
-          spinner.stop();
-        } catch {
-          spinner.warn('Could not push task branch — will push on submit');
-        }
-      } catch (err) {
-        spinner.warn(`Could not switch to ${taskBranch}`);
-        if (stashed) {
-          try {
-            await stashPop();
-            console.log(chalk.dim('  Restored stashed changes.'));
-          } catch {
-            console.log(chalk.yellow('  Warning: could not restore stash automatically. Run `git stash pop` manually.'));
-          }
-        }
-        throw err;
-      }
-
-      const baseCommit = await getCurrentCommit();
-      setConfig({ taskState: { activeIssueNumber: issue.number, baseCommit, activeBranch: taskBranch } });
       console.log(chalk.green(`\n  Claimed! Branch: ${taskBranch}  (base: ${baseCommit.slice(0, 7)})\n`));
-      let openClaude: boolean;
+
+      let openClaude = false;
       try {
         openClaude = await select({
           message: 'Open Claude Code for this task?',
@@ -208,61 +264,34 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
             { name: 'No, return to tch', value: false },
           ],
         });
-      } catch { openClaude = false; }
+      } catch {
+        openClaude = false;
+      }
       if (openClaude) await launchClaudeCode(issue, taskBranch);
-      return `Task #${issue.number} claimed. Branch: ${taskBranch}`;
+      return `${formatNotices(notices)}Task #${issue.number} claimed. Branch: ${taskBranch}`;
     } catch (err) {
+      spinner?.stop();
       return `Error claiming task: ${(err as Error).message}`;
     }
   }
 
   if (action === 'switch-fix') {
-    const { getAuthenticatedUser } = await import('../../lib/github.js');
-    const me = await getAuthenticatedUser(config);
-    const taskBranch = issue.assignee
-      ? makeTaskBranchName(issue.number, issue.assignee)
-      : makeTaskBranchName(issue.number, me);
-
-    let stashed = false;
-    if (await hasUncommittedChanges()) {
-      let choice: string;
-      try {
-        choice = await select({
-          message: 'You have uncommitted changes. What would you like to do?',
-          choices: [
-            { name: 'Stash changes and switch branch (restore with: git stash pop)', value: 'stash' },
-            { name: 'Cancel', value: 'cancel' },
-          ],
-        });
-      } catch { choice = 'cancel'; }
-      if (choice === 'cancel') return 'Cancelled.';
-      await stash(`tch: before switching to ${taskBranch}`);
-      stashed = true;
-      console.log(chalk.dim('  Changes stashed. Run `git stash pop` to restore them later.'));
-    }
-
-    const spinner = ora(`Switching to ${taskBranch}…`).start();
+    let spinner: ReturnType<typeof ora> | undefined;
     try {
-      await switchToBranchOrCreate(taskBranch);
+      const username = await getAuthenticatedUser(config);
+      const taskBranch = issue.assignee
+        ? makeTaskBranchName(issue.number, issue.assignee)
+        : makeTaskBranchName(issue.number, username);
+      spinner = ora(`Switching to ${taskBranch}...`).start();
+      const { notices } = await switchToFixTask(config, issue, username);
       spinner.stop();
+      console.log(chalk.green(`\n  Switched to ${taskBranch}. Fix the issues then run /submit.\n`));
+      return `${formatNotices(notices)}Switched to ${taskBranch} for task #${issue.number}.`;
     } catch (err) {
-      spinner.warn(`Could not switch to ${taskBranch}: ${(err as Error).message}`);
-      if (stashed) {
-        try { await stashPop(); console.log(chalk.dim('  Restored stashed changes.')); }
-        catch { console.log(chalk.yellow('  Run `git stash pop` manually to restore your changes.')); }
-      }
+      spinner?.stop();
       return `Error: ${(err as Error).message}`;
     }
-
-    // Use original base commit from issue body so getDiffFromCommit shows all changes since claiming
-    const baseCommit = extractBaseCommit(issue.body) ?? await getCurrentCommit();
-    setConfig({ taskState: { activeIssueNumber: issue.number, baseCommit, activeBranch: taskBranch } });
-    console.log(chalk.green(`\n  Switched to ${taskBranch}. Fix the issues then run /submit.\n`));
-    return `Switched to ${taskBranch} for task #${issue.number}.`;
   }
-
-  if (action === 'submit') return runSubmit({}, config);
-  if (action === 'close') return runClose({ issue_number: issue.number }, config);
 
   return 'Cancelled.';
 }
@@ -280,45 +309,44 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
   if (action === 'view') {
     const status = getStatus(issue);
-    const assignee = issue.assignee ? `@${issue.assignee}` : '—';
+    const assignee = issue.assignee ? `@${issue.assignee}` : '-';
     return [`#${issue.number}  [${status}]  ${assignee}  ${issue.title}`, issue.body ?? ''].join('\n\n');
   }
 
-  if (action === 'claim') {
-    const { getAuthenticatedUser } = await import('../../lib/github.js');
-    const me = await getAuthenticatedUser(config);
-    const status = getStatus(issue);
+  if (action === 'submit') return runSubmit({ issue_number: issue.number }, config);
+  if (action === 'close') return runClose({ issue_number: issue.number }, config);
 
+  if (action === 'claim') {
+    const username = await getAuthenticatedUser(config);
+    const status = getStatus(issue);
     if (status !== 'available') {
       return `Task #${issueNumber} is not available to claim (current status: ${status}).`;
     }
 
-    if (await hasUncommittedChanges()) {
-      return 'Cannot claim: you have uncommitted changes. Commit or stash them first (git stash).';
-    }
-
     try {
-      await claimTask(config, issueNumber, me);
+      const { baseCommit, notices, taskBranch } = await claimAndSwitchTask(config, issue, username);
+      return `${formatNotices(notices)}Task #${issueNumber} claimed. Branch: ${taskBranch} (base commit: ${baseCommit.slice(0, 7)})`;
     } catch (err) {
       return `Error claiming task: ${(err as Error).message}`;
     }
+  }
 
-    const taskBranch = makeTaskBranchName(issue.number, me);
-    const taskBase = extractBaseCommit(issue.body);
+  if (action === 'switch-fix') {
+    const status = getStatus(issue);
+    if (status !== 'changes-needed') {
+      return `Task #${issueNumber} is not in changes-needed (current status: ${status}).`;
+    }
+
     try {
-      if (taskBase) {
-        await checkoutFromCommit(taskBranch, taskBase);
-      } else {
-        await switchToBranchOrCreate(taskBranch);
-      }
-    } catch { /* ignore */ }
-    try { await pushBranch(taskBranch); } catch { /* push on submit */ }
-    const baseCommit = await getCurrentCommit();
-    setConfig({ taskState: { activeIssueNumber: issueNumber, baseCommit, activeBranch: taskBranch } });
-
-    return `Task #${issueNumber} claimed. Branch: ${taskBranch} (base commit: ${baseCommit.slice(0, 7)})`;
+      const username = await getAuthenticatedUser(config);
+      const { notices, taskBranch } = await switchToFixTask(config, issue, username);
+      return `${formatNotices(notices)}Switched to ${taskBranch} for task #${issue.number}.`;
+    } catch (err) {
+      return `Error: ${(err as Error).message}`;
+    }
   }
 
   return `Unknown action: ${action}`;
 }
+
 export const terminal = true;

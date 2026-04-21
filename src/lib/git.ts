@@ -248,6 +248,13 @@ export async function getDiff(baseBranch?: string): Promise<string> {
 }
 
 export async function stageAllAndCommit(message: string): Promise<void> {
+  const branch = (await git.branch()).current;
+  await stageAndCommitIfNeeded(message);
+  await syncBranchWithRemote(branch);
+  await pushCurrentBranch(branch);
+}
+
+export async function stageAndCommitIfNeeded(message: string): Promise<void> {
   const status = await git.status();
   if (!status.isClean()) {
     await git.add('.');
@@ -255,8 +262,9 @@ export async function stageAllAndCommit(message: string): Promise<void> {
   } else {
     console.log(chalk.dim('  Working tree clean — no new commit created, pushing existing commits.'));
   }
-  const branch = (await git.branch()).current;
-  await syncBranchWithRemote(branch);
+}
+
+export async function pushCurrentBranch(branch: string): Promise<void> {
   await git.push('origin', branch, ['--set-upstream']);
 }
 
@@ -308,6 +316,18 @@ export async function stash(message: string): Promise<void> {
 
 export async function stashPop(): Promise<void> {
   await git.stash(['pop']);
+}
+
+export async function listStashes(): Promise<Array<{ ref: string; message: string }>> {
+  const raw = await git.raw(['stash', 'list', '--format=%gd%x09%gs']);
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [ref, ...rest] = line.split('\t');
+      return { ref, message: rest.join('\t') };
+    });
 }
 
 export async function getCurrentRepoRoot(): Promise<string> {

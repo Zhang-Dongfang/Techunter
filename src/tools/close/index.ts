@@ -8,7 +8,14 @@ import { getStatus } from '../../lib/display.js';
 function clearActiveTaskIfMatches(issueNumber: number): void {
   const taskState = getConfig().taskState;
   if (taskState?.activeIssueNumber !== issueNumber) return;
-  setConfig({ taskState: { activeIssueNumber: undefined, baseCommit: undefined, activeBranch: undefined } });
+  setConfig({
+    taskState: {
+      activeIssueNumber: undefined,
+      baseCommit: undefined,
+      activeBranch: undefined,
+      resumeStack: undefined,
+    },
+  });
 }
 
 function getCloseError(issue: Awaited<ReturnType<typeof getTask>>, username: string): string | null {

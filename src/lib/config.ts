@@ -17,6 +17,15 @@ const configSchema = z.object({
     activeIssueNumber: z.number().optional(),
     baseCommit: z.string().optional(),
     activeBranch: z.string().optional(),
+    resumeStack: z.array(z.object({
+      originalBranch: z.string(),
+      restoreStash: z.boolean(),
+      taskStateSnapshot: z.object({
+        activeIssueNumber: z.number().optional(),
+        baseCommit: z.string().optional(),
+        activeBranch: z.string().optional(),
+      }).optional(),
+    })).optional(),
   }).optional(),
 });
 
