@@ -287,7 +287,9 @@ async function finalizePostSubmitContext(
   ];
 
   if (decision.action === 'restore' && selectedContext) {
-    const restored = await restoreTaskTransitionContext(selectedContext);
+    const restored = await restoreTaskTransitionContext(selectedContext, {
+      syncBranch: decision.syncBeforeRestore ?? true,
+    });
     return notices.concat(restored);
   }
 

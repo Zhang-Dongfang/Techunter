@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import type { TaskResumeContext, TaskResumeDecision, TaskState, TechunterConfig } from '../types.js';
+import type { TaskResumeContext, TaskResumeDecision, TaskState, TaskTransitionRestoreContext, TechunterConfig } from '../types.js';
 import { createClient, getModel } from './client.js';
 import { listStashes } from './git.js';
 
 const decisionSchema = z.object({
   action: z.enum(['restore', 'stay']),
   candidateIndex: z.number().int().min(0).optional(),
+  syncBeforeRestore: z.boolean().optional(),
   reason: z.string().min(1),
   confidence: z.enum(['low', 'medium', 'high']),
 });
@@ -55,11 +56,24 @@ export function buildFallbackTaskResumeDecision(candidates: TaskResumeContext[])
   return {
     action: 'restore',
     candidateIndex: restorable >= 0 ? restorable : 0,
+    syncBeforeRestore: true,
     reason: restorable >= 0
       ? 'A deferred parent context has stashed work waiting to be restored.'
       : 'A deferred parent context exists, so returning there is the safest completion state.',
     confidence: 'high',
     source: 'heuristic',
+  };
+}
+
+function materializeResumeContext(candidate: TaskResumeContext): TaskTransitionRestoreContext {
+  return {
+    originalBranch: candidate.originalBranch,
+    restoreStash: candidate.restoreStash,
+    previousTaskState: candidate.taskStateSnapshot
+      ? {
+        ...candidate.taskStateSnapshot,
+      }
+      : undefined,
   };
 }
 
@@ -69,12 +83,22 @@ export async function planPostSubmitResume(
     issueNumber: number;
     currentBranch: string;
     taskState: TaskState | undefined;
-    immediateRestore?: TaskResumeContext;
+    immediateRestore?: TaskTransitionRestoreContext;
   },
-): Promise<{ decision: TaskResumeDecision; selectedContext?: TaskResumeContext }> {
+): Promise<{ decision: TaskResumeDecision; selectedContext?: TaskTransitionRestoreContext }> {
   const deferredCandidates = buildResumeCandidates(options.taskState, options.issueNumber);
   const candidates = options.immediateRestore
-    ? [options.immediateRestore, ...deferredCandidates]
+    ? [{
+      originalBranch: options.immediateRestore.originalBranch,
+      restoreStash: options.immediateRestore.restoreStash,
+      taskStateSnapshot: options.immediateRestore.previousTaskState
+        ? {
+          activeIssueNumber: options.immediateRestore.previousTaskState.activeIssueNumber,
+          baseCommit: options.immediateRestore.previousTaskState.baseCommit,
+          activeBranch: options.immediateRestore.previousTaskState.activeBranch,
+        }
+        : undefined,
+    }, ...deferredCandidates]
     : deferredCandidates;
   const fallback = buildFallbackTaskResumeDecision(candidates);
   if (candidates.length === 0) {
@@ -97,7 +121,8 @@ export async function planPostSubmitResume(
     'You are deciding the best post-submit repository state for Techunter.',
     'Prefer restoring the most relevant deferred parent context when it contains stashed work or unfinished parent-task state.',
     'Choose "stay" only when staying on the current branch is clearly safer than restoring any deferred parent context.',
-    'Respond with JSON only: {"action":"restore|stay","candidateIndex":0,"reason":"...","confidence":"low|medium|high"}',
+    'When action is "restore", also decide whether Techunter should sync the branch with origin before restoring stashed work.',
+    'Respond with JSON only: {"action":"restore|stay","candidateIndex":0,"syncBeforeRestore":true,"reason":"...","confidence":"low|medium|high"}',
   ].join('\n');
 
   const user = [
@@ -134,7 +159,7 @@ export async function planPostSubmitResume(
       return {
         decision: fallback,
         selectedContext: fallback.action === 'restore' && fallback.candidateIndex !== undefined
-          ? candidates[fallback.candidateIndex]
+          ? materializeResumeContext(candidates[fallback.candidateIndex])
           : undefined,
       };
     }
@@ -144,7 +169,7 @@ export async function planPostSubmitResume(
       return {
         decision: fallback,
         selectedContext: fallback.action === 'restore' && fallback.candidateIndex !== undefined
-          ? candidates[fallback.candidateIndex]
+          ? materializeResumeContext(candidates[fallback.candidateIndex])
           : undefined,
       };
     }
@@ -156,7 +181,7 @@ export async function planPostSubmitResume(
         return {
           decision: fallback,
           selectedContext: fallback.action === 'restore' && fallback.candidateIndex !== undefined
-            ? candidates[fallback.candidateIndex]
+            ? materializeResumeContext(candidates[fallback.candidateIndex])
             : undefined,
         };
       }
@@ -165,17 +190,19 @@ export async function planPostSubmitResume(
         decision: {
           action: 'restore',
           candidateIndex: index,
+          syncBeforeRestore: parsed.data.syncBeforeRestore ?? true,
           reason: parsed.data.reason,
           confidence: parsed.data.confidence,
           source: 'agent',
         },
-        selectedContext,
+        selectedContext: materializeResumeContext(selectedContext),
       };
     }
 
     return {
       decision: {
         action: 'stay',
+        syncBeforeRestore: undefined,
         reason: parsed.data.reason,
         confidence: parsed.data.confidence,
         source: 'agent',
@@ -185,7 +212,7 @@ export async function planPostSubmitResume(
     return {
       decision: fallback,
       selectedContext: fallback.action === 'restore' && fallback.candidateIndex !== undefined
-        ? candidates[fallback.candidateIndex]
+        ? materializeResumeContext(candidates[fallback.candidateIndex])
         : undefined,
     };
   }

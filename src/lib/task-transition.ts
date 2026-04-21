@@ -273,8 +273,10 @@ export async function applyTaskTransition(
 
 export async function restoreTaskTransitionContext(
   context: TaskTransitionRestoreContext,
+  options: { syncBranch?: boolean } = {},
 ): Promise<string[]> {
   const notices: string[] = [];
+  const syncBranch = options.syncBranch ?? true;
 
   try {
     await switchToBranchOrCreate(context.originalBranch);
@@ -287,29 +289,33 @@ export async function restoreTaskTransitionContext(
     return notices;
   }
 
-  try {
-    const syncResult = await syncBranchWithRemote(context.originalBranch);
-    if (syncResult.mode === 'fast-forward') {
-      notices.push(`Fast-forwarded ${context.originalBranch} to the latest origin/${context.originalBranch}.`);
-    } else if (syncResult.mode === 'merge') {
-      notices.push(
-        `Merged the latest origin/${context.originalBranch} into ${context.originalBranch} before restoring your work.`,
-      );
+  if (syncBranch) {
+    try {
+      const syncResult = await syncBranchWithRemote(context.originalBranch);
+      if (syncResult.mode === 'fast-forward') {
+        notices.push(`Fast-forwarded ${context.originalBranch} to the latest origin/${context.originalBranch}.`);
+      } else if (syncResult.mode === 'merge') {
+        notices.push(
+          `Merged the latest origin/${context.originalBranch} into ${context.originalBranch} before restoring your work.`,
+        );
+      }
+    } catch (err) {
+      notices.push(`Could not sync ${context.originalBranch} with origin/${context.originalBranch}: ${(err as Error).message}`);
+      if (context.restoreStash) {
+        notices.push('Your stashed work was not restored because the branch needs manual sync first.');
+      }
+      setConfig({
+        taskState: context.previousTaskState ?? {
+          activeIssueNumber: undefined,
+          baseCommit: undefined,
+          activeBranch: undefined,
+          resumeStack: undefined,
+        },
+      });
+      return notices;
     }
-  } catch (err) {
-    notices.push(`Could not sync ${context.originalBranch} with origin/${context.originalBranch}: ${(err as Error).message}`);
-    if (context.restoreStash) {
-      notices.push('Your stashed work was not restored because the branch needs manual sync first.');
-    }
-    setConfig({
-      taskState: context.previousTaskState ?? {
-        activeIssueNumber: undefined,
-        baseCommit: undefined,
-        activeBranch: undefined,
-        resumeStack: undefined,
-      },
-    });
-    return notices;
+  } else {
+    notices.push(`Skipped syncing ${context.originalBranch} with origin/${context.originalBranch} before restoring your work.`);
   }
 
   if (context.restoreStash) {

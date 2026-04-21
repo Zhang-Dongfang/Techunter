@@ -27,6 +27,7 @@ export interface TaskResumeContext {
 export interface TaskResumeDecision {
   action: 'restore' | 'stay';
   candidateIndex?: number;
+  syncBeforeRestore?: boolean;
   reason: string;
   confidence: 'low' | 'medium' | 'high';
   source: 'heuristic' | 'agent';
