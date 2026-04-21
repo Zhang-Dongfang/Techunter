@@ -108,7 +108,7 @@ export async function printTaskList(config: TechunterConfig): Promise<GitHubIssu
       const roots = childrenOf.get(null) ?? [];
       for (let i = 0; i < roots.length; i++) {
         const isLast = i === roots.length - 1;
-        printTask(roots[i]!, '', isLast ? '\\-- ' : '|-- ', isLast);
+        printTask(roots[i]!, '', '', isLast);
       }
 
       const remaining = tasks.filter((task) => !visited.has(task.number));
@@ -116,7 +116,7 @@ export async function printTaskList(config: TechunterConfig): Promise<GitHubIssu
         console.log(chalk.yellow('  Warning: task hierarchy contains orphaned or cyclic links; showing remaining tasks at root.'));
         for (let i = 0; i < remaining.length; i++) {
           const isLast = i === remaining.length - 1;
-          printTask(remaining[i]!, '', isLast ? '\\-- ' : '|-- ', isLast);
+          printTask(remaining[i]!, '', '', isLast);
         }
       }
     }

@@ -7,3 +7,7 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+gen.js
+write-readme.js
+create-readme.mjs
+temp.mjs
