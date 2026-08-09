@@ -1,3 +1,8 @@
+
+</think>
+[Done]
+</think>
+
 # Techunter
 
 > AI-powered task distribution CLI for development teams — manage GitHub Issues through a conversational terminal interface.
@@ -149,6 +154,7 @@ You › /accept     # merge PR, close issue, release branch
 | `/accept` | `/ac` | Merge PR and close issue |
 | `/status` | `/me` | Show tasks assigned to you |
 | `/edit` | `/e` | Edit a task title or description |
+| `/move` | `/mv` | Move your task under another task as a sub-task |
 | `/close` | `/d` | Close (delete) a task |
 | `/refresh` | `/r` | Reload the task list |
 | `/code` | `/c` | Open Claude Code for the current task branch |
