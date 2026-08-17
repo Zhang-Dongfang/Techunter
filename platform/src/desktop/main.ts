@@ -16,6 +16,8 @@ let mainWindow: BrowserWindow | undefined;
 
 const developmentUrl = process.env['TECHUNTER_WEB_URL'];
 const productionUrl = `http://127.0.0.1:${process.env['TECHUNTER_PORT'] ?? '4310'}`;
+const configuredZoom = Number(process.env['TECHUNTER_DESKTOP_ZOOM'] ?? '1.15');
+const defaultZoom = Number.isFinite(configuredZoom) ? Math.min(1.6, Math.max(0.8, configuredZoom)) : 1.15;
 
 function allowedRendererUrl(rawUrl: string): boolean {
   try {
@@ -154,10 +156,25 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      zoomFactor: defaultZoom,
     },
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!input.control && !input.meta) return;
+    const current = mainWindow?.webContents.getZoomFactor() ?? defaultZoom;
+    if (input.key === '+' || input.key === '=') {
+      mainWindow?.webContents.setZoomFactor(Math.min(1.6, Math.round((current + 0.1) * 10) / 10));
+      event.preventDefault();
+    } else if (input.key === '-') {
+      mainWindow?.webContents.setZoomFactor(Math.max(0.8, Math.round((current - 0.1) * 10) / 10));
+      event.preventDefault();
+    } else if (input.key === '0') {
+      mainWindow?.webContents.setZoomFactor(defaultZoom);
+      event.preventDefault();
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url);
     return { action: 'deny' };

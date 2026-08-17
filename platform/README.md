@@ -40,6 +40,8 @@ npm run desktop
 
 Electron 生产模式会在本机启动 `127.0.0.1:4310` 服务并加载构建后的 Web UI。桌面命令台以当前操作系统账号运行，不对命令做白名单限制；它只通过窄 IPC 暴露给 Techunter 自身页面，网页仍保持 `contextIsolation`、禁用 Node 集成并启用 sandbox。
 
+桌面端默认使用 115% 缩放。可用 `Ctrl +`、`Ctrl -` 调整，`Ctrl 0` 恢复默认；也可以通过 `TECHUNTER_DESKTOP_ZOOM=1.25` 修改启动默认值。
+
 ## 企业内网部署
 
 第一阶段建议继续以 GitHub 为代码与审查事实源：Techunter 管任务状态、文件范围、工作包、Agent 结果和贡献点；GitHub 管仓库、Issue、分支、PR 和最终合并。这样无需在第一版重造代码托管、权限和审计系统。

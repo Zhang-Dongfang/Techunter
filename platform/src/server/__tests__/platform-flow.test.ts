@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { Submission, Task, Workspace } from '../../shared/contracts.js';
 import { AgentService } from '../agent-service.js';
 import { buildApp } from '../app.js';
-import { Database } from '../database.js';
+import { Database, ensureUser } from '../database.js';
+import { LedgerService } from '../ledger.js';
 
 const cleanupPaths: string[] = [];
 
@@ -25,6 +26,18 @@ function cookieFrom(headers: Record<string, unknown>): string {
 }
 
 describe('Techunter internal pilot flow', () => {
+  it('provisions contribution accounts for every new user', () => {
+    const database = new Database(':memory:');
+    try {
+      const userId = ensureUser(database, { login: 'oauth.hunter', name: 'OAuth 猎人' });
+      const ledger = new LedgerService(database);
+      expect(ledger.balance('user', userId)).toBe(0);
+      expect(ledger.balance('user', userId, 'reserved')).toBe(0);
+    } finally {
+      database.close();
+    }
+  });
+
   it('keeps child-task analysis inside the parent-visible file set', async () => {
     const repository = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-scope-'));
     cleanupPaths.push(repository);

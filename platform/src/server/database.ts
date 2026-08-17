@@ -18,6 +18,7 @@ export class Database {
     this.raw = new DatabaseSync(filename);
     this.raw.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     this.migrate();
+    this.provisionMissingUserAccounts();
   }
 
   private migrate(): void {
@@ -162,6 +163,14 @@ export class Database {
     `);
   }
 
+  private provisionMissingUserAccounts(): void {
+    const users = this.raw.prepare('SELECT id, name FROM users').all() as Array<{ id: string; name: string }>;
+    for (const user of users) {
+      ensureAccount(this, 'user', user.id, 'available', user.name);
+      ensureAccount(this, 'user', user.id, 'reserved', `${user.name}冻结`);
+    }
+  }
+
   transaction<T>(fn: () => T): T {
     this.raw.exec('BEGIN IMMEDIATE');
     try {
@@ -193,12 +202,16 @@ export function ensureUser(
   if (existing) {
     database.raw.prepare('UPDATE users SET name = ?, avatar_url = ? WHERE id = ?')
       .run(input.name, input.avatarUrl ?? null, existing.id);
+    ensureAccount(database, 'user', existing.id, 'available', input.name);
+    ensureAccount(database, 'user', existing.id, 'reserved', `${input.name}冻结`);
     return existing.id;
   }
   const id = randomUUID();
   database.raw.prepare(
     'INSERT INTO users (id, login, name, avatar_url, role, created_at) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(id, input.login, input.name, input.avatarUrl ?? null, input.role ?? 'member', new Date().toISOString());
+  ensureAccount(database, 'user', id, 'available', input.name);
+  ensureAccount(database, 'user', id, 'reserved', `${input.name}冻结`);
   return id;
 }
 
