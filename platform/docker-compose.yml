@@ -1,0 +1,30 @@
+services:
+  techunter:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4310:4310"
+    environment:
+      TECHUNTER_HOST: 0.0.0.0
+      TECHUNTER_PORT: 4310
+      TECHUNTER_DATA_DIR: /app/.data
+      TECHUNTER_PUBLIC_URL: ${TECHUNTER_PUBLIC_URL:-http://127.0.0.1:4310}
+      TECHUNTER_WEB_URL: ${TECHUNTER_WEB_URL:-http://127.0.0.1:4310}
+      TECHUNTER_DEMO_MODE: ${TECHUNTER_DEMO_MODE:-true}
+      TECHUNTER_DEMO_REPO_PATH: /repository
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_ALLOWED_ORG: ${GITHUB_ALLOWED_ORG:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID:-}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://openrouter.ai/api/v1}
+      AI_MODEL: ${AI_MODEL:-z-ai/glm-5}
+    volumes:
+      - techunter-data:/app/.data
+      - ../:/repository:ro
+
+volumes:
+  techunter-data:

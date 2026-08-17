@@ -10,9 +10,15 @@ import {
   mergeWorkerIntoBase,
   upsertRepoFile,
 } from '../../lib/github.js';
-import { isTaskBranch } from '../../lib/git.js';
+import { isTaskBranch, makeTaskBranchName, makeWorkerBranchName } from '../../lib/git.js';
 import { getStatus } from '../../lib/display.js';
 import { generateWiki } from '../wiki/wiki-generator.js';
+import { formatCleanupSuggestions } from '../../lib/conflict-advisor.js';
+import { resolveAcceptConflict } from '../../lib/conflict-resolver.js';
+
+function isConflictError(message: string): boolean {
+  return message.includes('conflict') || message.includes('mergeable') || message.includes('409');
+}
 
 export const definition = {
   type: 'function',
@@ -144,6 +150,9 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
   }
   if (!confirmed) return 'Cancelled.';
 
+  const taskBranch = makeTaskBranchName(issueNumber, issue.assignee ?? me2);
+  const expectedWorkerBranch = makeWorkerBranchName(issue.author ?? me2);
+
   const spinner = ora(`Merging PR for #${issueNumber}...`).start();
   let result: Awaited<ReturnType<typeof acceptTask>>;
   try {
@@ -151,7 +160,49 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     spinner.succeed(`PR #${result.prNumber} merged -> ${chalk.cyan(result.baseBranch)}`);
   } catch (err) {
     spinner.fail('Failed');
-    return `Error: ${(err as Error).message}`;
+    const errorMsg = (err as Error).message;
+
+    if (isConflictError(errorMsg)) {
+      let shouldAutoResolve: boolean;
+      try {
+        shouldAutoResolve = await select({
+          message: 'Merge conflict detected. Auto-resolve interactively?',
+          choices: [
+            { name: 'Yes — analyze each conflict, auto-merge or let me choose', value: true },
+            { name: 'No — I will resolve manually', value: false },
+          ],
+        });
+      } catch {
+        return 'Cancelled.';
+      }
+
+      if (!shouldAutoResolve) {
+        return [
+          `Merge conflict: ${taskBranch} → ${expectedWorkerBranch}`,
+          'Resolve locally and re-run /accept:',
+          '```bash',
+          `git fetch origin && git checkout ${taskBranch}`,
+          `git merge origin/${expectedWorkerBranch}`,
+          '# fix conflicts, then:',
+          `git add . && git commit && git push origin ${taskBranch}`,
+          '```',
+        ].join('\n');
+      }
+
+      const resolved = await resolveAcceptConflict(config, taskBranch, expectedWorkerBranch, issue.title);
+      if (!resolved) return 'Conflict resolution cancelled.';
+
+      const retrySpinner = ora(`Retrying merge for #${issueNumber}...`).start();
+      try {
+        result = await acceptTask(config, issueNumber);
+        retrySpinner.succeed(`PR #${result.prNumber} merged -> ${chalk.cyan(result.baseBranch)}`);
+      } catch (retryErr) {
+        retrySpinner.fail('Still failed after resolving');
+        return `Error: ${(retryErr as Error).message}`;
+      }
+    } else {
+      return `Error: ${errorMsg}`;
+    }
   }
 
   const baseMerge = await maybeMergeWorkerToBase(config, result.baseBranch, true);
@@ -184,6 +235,8 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       wikiSpinner.fail(`Wiki update failed: ${(err as Error).message}`);
     }
   }
+
+  console.log('\n' + chalk.dim(formatCleanupSuggestions(taskBranch, result.baseBranch, baseMerge.merged)) + '\n');
 
   const summary = `Task #${issueNumber} accepted.\nPR #${result.prNumber} merged -> ${baseMerge.targetBranch}\nIssue closed.`;
   if (!baseMerge.warning) return summary;

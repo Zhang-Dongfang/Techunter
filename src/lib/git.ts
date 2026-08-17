@@ -151,8 +151,15 @@ export async function syncBranchWithRemote(
     await git.merge([remoteRef, '-m', `chore: sync ${branchName} after remote update`]);
     return { mode: 'merge' };
   } catch (err) {
+    let conflictSuffix = '';
+    try {
+      const { files } = await getConflictInfo();
+      if (files.length > 0) {
+        conflictSuffix = `\nConflicting files: ${files.join(', ')}\nResolve conflicts, commit, and push before retrying /submit.`;
+      }
+    } catch { /* ignore */ }
     await abortMergeOperation();
-    throw new Error(`Could not sync ${branchName} with ${remoteRef}: ${(err as Error).message}`);
+    throw new Error(`Could not sync ${branchName} with ${remoteRef}: ${(err as Error).message}${conflictSuffix}`);
   }
 }
 
@@ -302,6 +309,18 @@ export async function resetOrCreateBranch(branchName: string, sha: string): Prom
     await git.reset(['--hard', sha]);
   } else {
     await git.checkoutBranch(branchName, sha);
+  }
+}
+
+export async function getConflictInfo(): Promise<{ files: string[]; diff: string }> {
+  const status = await git.status();
+  const files = status.conflicted;
+  if (files.length === 0) return { files: [], diff: '' };
+  try {
+    const diff = await git.diff(['--diff-filter=U']);
+    return { files, diff: diff.slice(0, 8000) };
+  } catch {
+    return { files, diff: '' };
   }
 }
 

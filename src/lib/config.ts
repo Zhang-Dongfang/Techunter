@@ -9,6 +9,13 @@ const configSchema = z.object({
   githubToken: z.string().min(1),
   githubClientId: z.string().optional(),
   baseBranch: z.string().optional(),
+  assetVcs: z.object({
+    type: z.literal('svn'),
+    url: z.string(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    lockPaths: z.array(z.string()),
+  }).optional(),
   github: z.object({
     owner: z.string().min(1),
     repo: z.string().min(1),
@@ -71,6 +78,9 @@ export function setConfig(partial: Partial<TechunterConfig>): void {
   }
   if (partial.baseBranch !== undefined) {
     current['baseBranch'] = partial.baseBranch;
+  }
+  if (partial.assetVcs !== undefined) {
+    current['assetVcs'] = partial.assetVcs;
   }
   if (partial.taskState !== undefined) {
     current['taskState'] = {

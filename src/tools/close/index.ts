@@ -1,9 +1,24 @@
 import { select } from '@inquirer/prompts';
+import chalk from 'chalk';
 import ora from 'ora';
-import type { TechunterConfig } from '../../types.js';
+import type { TechunterConfig, AssetVcsConfig } from '../../types.js';
 import { listTasks, closeTask, getTask, getAuthenticatedUser } from '../../lib/github.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { getStatus } from '../../lib/display.js';
+import { svnUnlock } from '../../lib/svn.js';
+
+async function unlockSvnAssets(assetVcs: AssetVcsConfig, interactive: boolean): Promise<void> {
+  const spinner = interactive ? ora('Unlocking SVN assets...').start() : undefined;
+  try {
+    await svnUnlock(assetVcs.lockPaths, assetVcs);
+    spinner?.succeed('SVN assets unlocked.');
+  } catch (err) {
+    spinner?.warn(`SVN unlock failed: ${(err as Error).message}`);
+    if (interactive) {
+      console.log(chalk.dim(`  To unlock manually: svn unlock ${assetVcs.lockPaths.join(' ')}`));
+    }
+  }
+}
 
 function clearActiveTaskIfMatches(issueNumber: number): void {
   const taskState = getConfig().taskState;
@@ -112,6 +127,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     await closeTask(config, issueNumber);
     clearActiveTaskIfMatches(issueNumber);
     spinner.stop();
+    if (config.assetVcs) await unlockSvnAssets(config.assetVcs, true);
     return `Task #${issueNumber} closed.`;
   } catch (err) {
     spinner.stop();
@@ -134,6 +150,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     await closeTask(config, issueNumber);
     clearActiveTaskIfMatches(issueNumber);
     spinner.stop();
+    if (config.assetVcs) await unlockSvnAssets(config.assetVcs, false);
     return `Task #${issueNumber} closed.`;
   } catch (err) {
     spinner.stop();

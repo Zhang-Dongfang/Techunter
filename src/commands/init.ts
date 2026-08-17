@@ -7,7 +7,8 @@ import { setConfig, getConfigPath } from '../lib/config.js';
 import { ensureLabels, upsertRepoFile } from '../lib/github.js';
 import { getRemoteUrl, parseOwnerRepo } from '../lib/git.js';
 import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../lib/client.js';
-import type { TechunterConfig } from '../types.js';
+import { detectSvnInfo } from '../lib/svn.js';
+import type { TechunterConfig, AssetVcsConfig } from '../types.js';
 import { generateWiki } from '../tools/wiki/wiki-generator.js';
 
 async function getGitHubTokenViaPAT(): Promise<{ token: string; clientId?: undefined }> {
@@ -148,6 +149,66 @@ export async function initCommand(): Promise<void> {
     });
   }
 
+  // SVN asset VCS — auto-detect then prompt
+  let assetVcs: AssetVcsConfig | undefined;
+  const ASSET_PROBE_PATHS = ['.', 'Assets', 'Art', 'Content'];
+  let svnInfo: Awaited<ReturnType<typeof detectSvnInfo>> = null;
+  let svnDetectedPath = '';
+  for (const p of ASSET_PROBE_PATHS) {
+    svnInfo = await detectSvnInfo(p);
+    if (svnInfo) { svnDetectedPath = p; break; }
+  }
+
+  let configureSvn = false;
+  if (svnInfo) {
+    console.log(chalk.dim(`\nDetected SVN repository: ${svnInfo.url} (in ${svnDetectedPath || '.'})\n`));
+    configureSvn = await select({
+      message: 'Configure SVN asset locking for binary files (e.g. .psd, .fbx)?',
+      choices: [
+        { name: 'Yes', value: true },
+        { name: 'No, skip', value: false },
+      ],
+    }).catch(() => false);
+  } else {
+    configureSvn = await select({
+      message: 'Does your team use SVN for binary assets? (optional)',
+      choices: [
+        { name: 'No, skip', value: false },
+        { name: 'Yes, set up SVN locking', value: true },
+      ],
+    }).catch(() => false);
+  }
+
+  if (configureSvn) {
+    const svnUrl = svnInfo?.url
+      ? (await input({ message: 'SVN repository URL:', default: svnInfo.url })).trim()
+      : (await input({ message: 'SVN repository URL:' })).trim();
+
+    const defaultUser = svnInfo?.username ?? '';
+    const svnUsername = (await input({
+      message: 'SVN username (leave blank to use stored credentials):',
+      default: defaultUser,
+    })).trim();
+
+    const svnPasswordRaw = await password({
+      message: 'SVN password (leave blank to use stored credentials):',
+      mask: '*',
+    });
+
+    const lockPathsRaw = await input({
+      message: 'Paths to lock (comma-separated, relative to working copy):',
+      default: svnDetectedPath && svnDetectedPath !== '.' ? svnDetectedPath : 'Assets',
+    });
+
+    assetVcs = {
+      type: 'svn',
+      url: svnUrl,
+      ...(svnUsername ? { username: svnUsername } : {}),
+      ...(svnPasswordRaw.trim() ? { password: svnPasswordRaw.trim() } : {}),
+      lockPaths: lockPathsRaw.split(',').map((s) => s.trim()).filter(Boolean),
+    };
+  }
+
   const config: TechunterConfig = {
     githubToken,
     githubClientId,
@@ -158,6 +219,7 @@ export async function initCommand(): Promise<void> {
       owner: owner.trim(),
       repo: repo.trim(),
     },
+    ...(assetVcs ? { assetVcs } : {}),
   };
 
   setConfig(config);

@@ -1,3 +1,11 @@
+export interface AssetVcsConfig {
+  type: 'svn';
+  url: string;
+  username?: string;
+  password?: string;
+  lockPaths: string[];
+}
+
 export interface TechunterConfig {
   aiApiKey: string;
   aiBaseUrl?: string;
@@ -9,6 +17,7 @@ export interface TechunterConfig {
     repo: string;
   };
   baseBranch?: string;
+  assetVcs?: AssetVcsConfig;
   taskState?: TaskState;
 }
 

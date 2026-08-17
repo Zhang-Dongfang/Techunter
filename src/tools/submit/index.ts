@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { select, input as promptInput } from '@inquirer/prompts';
+import { svnCommit } from '../../lib/svn.js';
 import type {
   TechunterConfig,
   GitHubIssue,
@@ -203,6 +204,41 @@ async function performSubmit(
       if (!commitMessage.trim()) return { message: 'Submit cancelled.', success: false };
     } else {
       commitMessage = `complete: ${issue.title}`;
+    }
+  }
+
+  // SVN: commit binary assets before git operations
+  if (config.assetVcs) {
+    const svnSpinner = interactive ? ora('Committing SVN assets...').start() : undefined;
+    try {
+      const svnRev = await svnCommit(
+        config.assetVcs.lockPaths,
+        `[task-${issue.number}] ${commitMessage.trim()}`,
+        config.assetVcs,
+      );
+      if (svnRev) {
+        svnSpinner?.succeed(`SVN assets committed: ${svnRev}`);
+        review = review ? `${review}\n\n---\nSVN asset commit: ${svnRev}` : `SVN asset commit: ${svnRev}`;
+      } else {
+        svnSpinner?.succeed('SVN: no asset changes to commit.');
+      }
+    } catch (err) {
+      svnSpinner?.warn(`SVN commit failed: ${(err as Error).message}`);
+      if (interactive) {
+        let continueAnyway: boolean;
+        try {
+          continueAnyway = await select({
+            message: 'SVN asset commit failed. Continue with Git submit anyway?',
+            choices: [
+              { name: 'Yes, continue', value: true },
+              { name: 'No, abort', value: false },
+            ],
+          });
+        } catch {
+          continueAnyway = false;
+        }
+        if (!continueAnyway) return { message: 'Submit aborted due to SVN failure.', success: false };
+      }
     }
   }
 

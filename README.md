@@ -2,6 +2,8 @@
 
 > AI-powered task distribution CLI for development teams — manage GitHub Issues through a conversational terminal interface.
 
+> Web + Electron 企业内部试点版已加入 [`platform/`](platform/README.md)：包含贡献点任务市场、Agent 任务分析与交付审查、最小文件工作包、子任务、GitHub Issue/PR 同步和本机命令台。
+
 ```
     ╔═══════════════╗
 ◆═══╬   TECHUNTER   ╬═══▶

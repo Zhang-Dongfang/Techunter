@@ -4,6 +4,7 @@ dist/
 *.d.ts.map
 .env
 .env.local
+.data/
 *.log
 .DS_Store
 Thumbs.db

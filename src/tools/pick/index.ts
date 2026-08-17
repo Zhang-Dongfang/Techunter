@@ -1,7 +1,8 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { select } from '@inquirer/prompts';
-import type { GitHubIssue, TaskTransitionPlanOptions, TechunterConfig, TaskState } from '../../types.js';
+import type { GitHubIssue, TaskTransitionPlanOptions, TechunterConfig, TaskState, AssetVcsConfig } from '../../types.js';
+import { svnLock } from '../../lib/svn.js';
 import {
   claimTask,
   getAuthenticatedUser,
@@ -51,6 +52,19 @@ export const definition = {
 
 function formatNotices(notices: string[]): string {
   return notices.length > 0 ? `${notices.map((notice) => `Note: ${notice}`).join('\n')}\n\n` : '';
+}
+
+async function lockSvnAssets(assetVcs: AssetVcsConfig, interactive: boolean): Promise<string[]> {
+  const notices: string[] = [];
+  const spinner = interactive ? ora('Locking SVN assets...').start() : undefined;
+  try {
+    await svnLock(assetVcs.lockPaths, assetVcs);
+    spinner?.succeed(`SVN assets locked: ${assetVcs.lockPaths.join(', ')}`);
+  } catch (err) {
+    spinner?.warn(`Could not lock SVN assets: ${(err as Error).message}`);
+    notices.push(`SVN lock failed — run manually: svn lock ${assetVcs.lockPaths.join(' ')}`);
+  }
+  return notices;
 }
 
 function buildResumeStack(previousTaskState: TaskState | undefined, transition: Awaited<ReturnType<typeof applyTaskTransition>>): TaskState['resumeStack'] {
@@ -255,6 +269,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       spinner.stop();
       console.log(chalk.green(`\n  Claimed! Branch: ${taskBranch}  (base: ${baseCommit.slice(0, 7)})\n`));
 
+      if (config.assetVcs) {
+        const svnNotices = await lockSvnAssets(config.assetVcs, true);
+        notices.push(...svnNotices);
+      }
+
       let openClaude = false;
       try {
         openClaude = await select({
@@ -286,6 +305,12 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
       const { notices } = await switchToFixTask(config, issue, username);
       spinner.stop();
       console.log(chalk.green(`\n  Switched to ${taskBranch}. Fix the issues then run /submit.\n`));
+
+      if (config.assetVcs) {
+        const svnNotices = await lockSvnAssets(config.assetVcs, true);
+        notices.push(...svnNotices);
+      }
+
       return `${formatNotices(notices)}Switched to ${taskBranch} for task #${issue.number}.`;
     } catch (err) {
       spinner?.stop();
@@ -325,6 +350,10 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
 
     try {
       const { baseCommit, notices, taskBranch } = await claimAndSwitchTask(config, issue, username);
+      if (config.assetVcs) {
+        const svnNotices = await lockSvnAssets(config.assetVcs, false);
+        notices.push(...svnNotices);
+      }
       return `${formatNotices(notices)}Task #${issueNumber} claimed. Branch: ${taskBranch} (base commit: ${baseCommit.slice(0, 7)})`;
     } catch (err) {
       return `Error claiming task: ${(err as Error).message}`;
@@ -340,6 +369,10 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     try {
       const username = await getAuthenticatedUser(config);
       const { notices, taskBranch } = await switchToFixTask(config, issue, username);
+      if (config.assetVcs) {
+        const svnNotices = await lockSvnAssets(config.assetVcs, false);
+        notices.push(...svnNotices);
+      }
       return `${formatNotices(notices)}Switched to ${taskBranch} for task #${issue.number}.`;
     } catch (err) {
       return `Error: ${(err as Error).message}`;
