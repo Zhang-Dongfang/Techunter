@@ -4,7 +4,7 @@ Techunter Desktop 是中央任务市场的本机执行器。项目、任务、�
 
 ## 本机职责
 
-- 加载中央 API 提供的 Techunter Web UI；
+- 在本机加载随 Electron 打包的 Techunter UI；
 - 为每台设备维护稳定的 `deviceId`；
 - 项目不存在时自动从 GitHub clone，存在时验证 remote 并 fetch；
 - 按任务冻结的 `baseSha` 创建独立 git worktree；
@@ -29,19 +29,21 @@ npm run dev
 - Web：<http://127.0.0.1:5173>
 - Electron 自动等待二者就绪后打开。
 
-生产 Desktop 只需要：
+生产 Desktop 在本机 `127.0.0.1:4311` 提供打包后的 UI，只需要配置中央 API 地址：
 
 ```dotenv
 TECHUNTER_API_URL=https://techunter-api.example.com
-TECHUNTER_WEB_URL=https://techunter-api.example.com
+TECHUNTER_UI_PORT=4311
 CONEXUS_API_URL=https://conexus-production.up.railway.app
 ```
+
+Railway API 的 `TECHUNTER_WEB_ORIGINS` 必须包含 `http://127.0.0.1:4311`。`TECHUNTER_RENDERER_URL` 只供开发时指向 Vite，生产环境不要设置。
 
 GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据只用于 git 传输，remote 在 clone/fetch 后恢复为无凭据 URL。
 
 ## 安全边界
 
-渲染页保持 `contextIsolation`、禁用 Node integration 并启用 sandbox。只有配置的 Techunter Web origin 能调用 preload。源码、依赖缓存、构建产物和本机绝对路径不进入 Supabase。
+渲染页保持 `contextIsolation`、禁用 Node integration 并启用 sandbox。只有本机 Desktop UI origin 能调用 preload。源码、依赖缓存、构建产物和本机绝对路径不进入 Supabase。
 
 ## 验证
 

@@ -70,13 +70,13 @@ To add a CLI tool, create `apps/cli/src/tools/{name}/index.ts`, register it in `
 
 ```text
 apps/api/src/              Fastify API, Supabase, GitHub, Conexus, task/ledger services
-apps/desktop/src/web/      React renderer served by the central API
+apps/desktop/src/web/      React renderer bundled and served locally by Electron
 apps/desktop/src/desktop/  Electron main process and narrow preload bridge
 apps/desktop/src/worker/   Local clone/fetch/worktree/setup/diff Agent
 infra/supabase/            Isolated techunter schema and atomic database functions
 ```
 
-The Railway API is the only shared business service and the only component allowed to hold `SUPABASE_SERVICE_ROLE_KEY`. Browser and Electron code call the API and never query Supabase directly. `AgentService` delegates task analysis and review to `@techunter/core`; it must not introduce a second heuristic Agent implementation.
+The Railway API is the only shared business service and the only component allowed to hold `SUPABASE_SERVICE_ROLE_KEY`. It does not serve the UI. The Electron renderer calls the API and never queries Supabase directly. `AgentService` delegates task analysis and review to `@techunter/core`; it must not introduce a second heuristic Agent implementation.
 
 The local Agent owns machine-specific repositories and worktrees. It must verify Git remotes, check out the frozen task base SHA, keep credentials out of persisted remotes, execute native-host setup commands, and reject submitted files outside `editablePaths`. Never add project-image or Docker-provider branches back to the environment contract.
 

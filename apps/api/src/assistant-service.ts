@@ -53,7 +53,12 @@ export class AssistantService {
   async chat(input: AssistantInput): Promise<AgentChatResponse> {
     const value = config();
     const credential = value.ai.accessMode === 'conexus' ? input.modelCredential : value.ai.apiKey;
-    if (!credential) throw httpError('Techunter Agent 授权已过期，请重新登录。', 401);
+    if (!credential || (value.ai.accessMode === 'conexus' && !input.modelAudience)) {
+      throw httpError(
+        value.ai.accessMode === 'conexus' ? 'Techunter Agent 授权已过期，请重新登录。' : 'Task Agent 未配置。',
+        value.ai.accessMode === 'conexus' ? 401 : 503,
+      );
+    }
     const projects = await this.tasks.projects();
     const project = projects.find((candidate) => candidate.id === input.projectId) ?? projects[0];
     if (!project) throw httpError('当前还没有项目，请先从 GitHub 导入。', 400);
@@ -69,8 +74,8 @@ export class AssistantService {
           aiAccessMode: value.ai.accessMode,
           aiBaseUrl: value.ai.baseUrl,
           aiModel: value.ai.model,
-          aiAudience: input.modelAudience ?? value.ai.audience,
-          aiPublicationSlug: value.conexus.publicationSlug,
+          ...(input.modelAudience ? { aiAudience: input.modelAudience } : {}),
+          ...(value.ai.accessMode === 'conexus' ? { aiPublicationSlug: value.conexus.publicationSlug } : {}),
         },
         systemPrompt: [
           'You are Techunter, an AI task-market assistant backed by the shared control plane.',

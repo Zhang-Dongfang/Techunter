@@ -27,8 +27,14 @@ export class ApiError extends Error {
   }
 }
 
+const apiBaseUrl = (window.techunterDesktop?.apiBaseUrl || import.meta.env.VITE_TECHUNTER_API_URL || '').replace(/\/+$/, '');
+
+function endpoint(path: string): string {
+  return apiBaseUrl ? new URL(path, `${apiBaseUrl}/`).toString() : path;
+}
+
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(endpoint(url), {
     ...init,
     credentials: 'include',
     headers: {
@@ -53,7 +59,7 @@ export const api = {
       audience,
     }),
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
-  connectGitHubUrl: '/api/auth/github',
+  connectGitHubUrl: endpoint('/api/auth/github'),
   dashboard: () => request<DashboardResponse>('/api/dashboard'),
   tasks: (query = '') => request<{ tasks: TaskSummary[] }>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),

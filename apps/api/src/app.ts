@@ -1,12 +1,9 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import fastifyStatic from '@fastify/static';
 import rawBody from 'fastify-raw-body';
 import { z, ZodError } from 'zod';
 import { AgentService } from './agent-service.js';
@@ -184,13 +181,6 @@ export async function buildApp() {
     return reply.code(statusCode).send({ error: caught.message || '服务器内部错误。', ...(code ? { code } : {}) });
   });
 
-  const webRoot = path.resolve(process.cwd(), process.env['TECHUNTER_WEB_ROOT'] ?? 'apps/api/public');
-  if (fs.existsSync(webRoot)) {
-    await app.register(fastifyStatic, { root: webRoot, prefix: '/' });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.method === 'GET' && !request.url.startsWith('/api/')) return reply.sendFile('index.html');
-      return reply.code(404).send({ error: '接口不存在。' });
-    });
-  }
+  app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: '接口不存在。' }));
   return app;
 }

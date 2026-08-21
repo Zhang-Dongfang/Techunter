@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import {
   DEFAULT_CONEXUS_API_URL,
-  DEFAULT_CONEXUS_AUDIENCE,
   DEFAULT_CONEXUS_BASE_URL,
   DEFAULT_CONEXUS_PUBLICATION_SLUG,
   DEFAULT_MODEL,
@@ -33,7 +32,6 @@ const schema = z.object({
   AI_API_KEY: optional,
   AI_BASE_URL: z.string().url().default(DEFAULT_CONEXUS_BASE_URL),
   AI_MODEL: optional,
-  AI_AUDIENCE: z.string().default(DEFAULT_CONEXUS_AUDIENCE),
 });
 
 export type ApiConfig = ReturnType<typeof parseConfig>;
@@ -68,7 +66,6 @@ export function parseConfig(environment: NodeJS.ProcessEnv) {
       apiKey: value.AI_API_KEY ?? '',
       baseUrl: value.AI_BASE_URL,
       model: value.AI_MODEL ?? (value.AI_ACCESS_MODE === 'direct' ? DEFAULT_MODEL : ''),
-      audience: value.AI_AUDIENCE,
     },
   };
 }

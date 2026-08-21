@@ -8,6 +8,7 @@ export interface LocalWorkspaceResult {
 }
 
 export interface DesktopAgentApi {
+  apiBaseUrl: string;
   identity(): Promise<{ deviceId: string; deviceLabel: string }>;
   provision(input: { project: Project; task: Task; accessToken?: string }): Promise<LocalWorkspaceResult>;
   locate(taskId: string): Promise<{ path: string | null }>;

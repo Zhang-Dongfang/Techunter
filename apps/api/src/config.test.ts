@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseConfig } from './config.js';
 
-test('central API requires Supabase and keeps Techunter Web origins explicit', () => {
+test('central API requires Supabase and keeps Desktop renderer origins explicit', () => {
   const value = parseConfig({
     SUPABASE_URL: 'https://example.supabase.co',
     SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-long-enough',

@@ -1,6 +1,6 @@
 # Techunter / 科技猎人
 
-> AI 驱动的任务分发与协作平台。CLI 与 Web/Electron 是两个并列应用，共用同一套 Agent、仓库读取和任务约定。
+> AI 驱动的任务分发与协作平台。CLI 与 Electron Desktop 是两个并列应用，共用同一套 Agent、仓库读取和任务约定。
 
 - [`apps/cli`](apps/cli)：终端 REPL 与 MCP 服务
 - [`apps/api`](apps/api)：Railway 中央控制面，连接 Supabase、Conexus 与 GitHub
@@ -242,7 +242,7 @@ packages/core
   └─ task and GitHub conventions
        ↑                         ↑
 apps/cli                 apps/api                    apps/desktop
-  ├─ terminal + MCP        ├─ Railway Fastify API      ├─ React Web UI
+  ├─ terminal + MCP        ├─ Railway Fastify API      ├─ React local UI
   └─ CLI workflows         ├─ Supabase.techunter       └─ Electron 本机 Agent
                            └─ GitHub / Conexus
 ```

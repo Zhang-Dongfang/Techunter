@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -21,20 +22,85 @@ type TerminalSession = {
 
 const terminalSessions = new Map<string, TerminalSession>();
 let mainWindow: BrowserWindow | undefined;
+let localUiServer: Server | undefined;
+let rendererOrigin = '';
 
-const configuredWebUrl = process.env['TECHUNTER_WEB_URL'] || process.env['TECHUNTER_API_URL'];
+const configuredApiUrl = (process.env['TECHUNTER_API_URL'] || 'http://127.0.0.1:4310').replace(/\/+$/, '');
+const configuredRendererUrl = process.env['TECHUNTER_RENDERER_URL']?.replace(/\/+$/, '');
+const configuredUiPort = Number(process.env['TECHUNTER_UI_PORT'] ?? '4311');
 const configuredZoom = Number(process.env['TECHUNTER_DESKTOP_ZOOM'] ?? '1.15');
 const defaultZoom = Number.isFinite(configuredZoom) ? Math.min(1.6, Math.max(0.8, configuredZoom)) : 1.15;
 
 function allowedRendererUrl(rawUrl: string): boolean {
   try {
-    const url = new URL(rawUrl);
-    if (!configuredWebUrl) return false;
-    const allowed = new URL(configuredWebUrl);
-    return url.origin === allowed.origin;
+    return Boolean(rendererOrigin) && new URL(rawUrl).origin === rendererOrigin;
   } catch {
     return false;
   }
+}
+
+const contentTypes: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+};
+
+function startBundledUi(): Promise<string> {
+  if (localUiServer?.listening) return Promise.resolve(`http://127.0.0.1:${configuredUiPort}`);
+  const root = path.resolve(__dirname, '../web');
+  if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`未找到 Desktop UI 构建产物：${root}。请先运行 npm run build:web。`);
+  }
+  if (!Number.isInteger(configuredUiPort) || configuredUiPort < 1 || configuredUiPort > 65_535) {
+    throw new Error('TECHUNTER_UI_PORT 必须是有效端口。');
+  }
+
+  localUiServer = createServer((request, response) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405).end();
+      return;
+    }
+    try {
+      const pathname = decodeURIComponent(new URL(request.url ?? '/', `http://127.0.0.1:${configuredUiPort}`).pathname);
+      const requestedPath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+      const filePath = path.resolve(root, requestedPath);
+      const relativePath = path.relative(root, filePath);
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        response.writeHead(403).end();
+        return;
+      }
+      const stat = fs.statSync(filePath, { throwIfNoEntry: false });
+      if (!stat?.isFile()) {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        'Content-Type': contentTypes[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+        'Content-Length': stat.size,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      if (request.method === 'HEAD') response.end();
+      else fs.createReadStream(filePath).pipe(response);
+    } catch {
+      response.writeHead(400).end();
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    localUiServer?.once('error', reject);
+    localUiServer?.listen(configuredUiPort, '127.0.0.1', () => {
+      localUiServer?.removeListener('error', reject);
+      resolve(`http://127.0.0.1:${configuredUiPort}`);
+    });
+  });
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
@@ -137,6 +203,8 @@ function registerLocalAgentIpc(): void {
 }
 
 async function createWindow(): Promise<void> {
+  const rendererUrl = configuredRendererUrl || await startBundledUi();
+  rendererOrigin = new URL(rendererUrl).origin;
   const preloadPath = path.join(__dirname, 'preload.cjs');
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -175,7 +243,11 @@ async function createWindow(): Promise<void> {
     try {
       const target = new URL(url);
       const conexusOrigin = new URL(process.env['CONEXUS_API_URL'] ?? DEFAULT_CONEXUS_API_URL).origin;
-      if (target.origin === conexusOrigin && target.pathname === '/v1/auth/web') {
+      const apiOrigin = new URL(configuredApiUrl).origin;
+      if (
+        (target.origin === conexusOrigin && target.pathname === '/v1/auth/web') ||
+        (target.origin === apiOrigin && target.pathname === '/api/auth/github')
+      ) {
         return {
           action: 'allow',
           overrideBrowserWindowOptions: {
@@ -196,12 +268,26 @@ async function createWindow(): Promise<void> {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url);
     return { action: 'deny' };
   });
+  mainWindow.webContents.on('did-create-window', (childWindow, details) => {
+    try {
+      const initialUrl = new URL(details.url);
+      const apiOrigin = new URL(configuredApiUrl).origin;
+      if (initialUrl.origin !== apiOrigin || initialUrl.pathname !== '/api/auth/github') return;
+      childWindow.webContents.on('will-navigate', (event, url) => {
+        if (!allowedRendererUrl(url)) return;
+        event.preventDefault();
+        childWindow.close();
+        mainWindow?.webContents.reload();
+      });
+    } catch {
+      // The window-open policy already rejects malformed URLs.
+    }
+  });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!allowedRendererUrl(url)) event.preventDefault();
   });
 
-  if (!configuredWebUrl) throw new Error('未配置 TECHUNTER_WEB_URL（中央 Techunter API/Web 地址）。');
-  await mainWindow.loadURL(configuredWebUrl);
+  await mainWindow.loadURL(rendererUrl);
 }
 
 const hasLock = app.requestSingleInstanceLock();
@@ -234,4 +320,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   for (const session of terminalSessions.values()) session.process.kill();
   terminalSessions.clear();
+  localUiServer?.close();
+  localUiServer = undefined;
 });

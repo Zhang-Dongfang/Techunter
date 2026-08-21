@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopAgentApi } from '../shared/desktop-contracts';
 
 const desktopApi: DesktopAgentApi = {
+  apiBaseUrl: process.env['TECHUNTER_API_URL']?.replace(/\/+$/, '') || 'http://127.0.0.1:4310',
   platform: process.platform,
   identity() {
     return ipcRenderer.invoke('agent:identity');

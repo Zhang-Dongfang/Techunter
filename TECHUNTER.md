@@ -36,7 +36,7 @@ Electron Local Agent
 └─ dependency setup / diff collection
 ```
 
-`apps/api` 是唯一中央业务服务。浏览器和 Electron 都不持有 Supabase service-role key。Supabase 不保存源码、本机绝对路径、依赖缓存或构建产物。
+`apps/api` 是唯一中央业务服务，只提供 API，不托管 UI。Electron 本地渲染器不持有 Supabase service-role key。Supabase 不保存源码、本机绝对路径、依赖缓存或构建产物。
 
 ## 仓库结构
 

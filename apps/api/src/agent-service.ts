@@ -42,11 +42,11 @@ export class AgentService {
   }
 
   async analyze(input: AnalyzeInput): Promise<TaskSpec> {
-    const credential = this.requireCredential(input.modelCredential);
+    const aiConfig = this.aiConfig(input.modelCredential, input.modelAudience);
     const checkout = await this.github.materialize(input.project, input.githubCredential);
     try {
       return await analyzeTaskWithAgent({
-        config: this.aiConfig(credential, input.modelAudience),
+        config: aiConfig,
         title: input.title,
         description: input.description,
         repository: {
@@ -63,9 +63,8 @@ export class AgentService {
   }
 
   review(input: ReviewInput): Promise<DeliveryReview> {
-    const credential = this.requireCredential(input.modelCredential);
     return reviewDeliveryWithAgent({
-      config: this.aiConfig(credential, input.modelAudience),
+      config: this.aiConfig(input.modelCredential, input.modelAudience),
       title: input.title,
       description: input.description,
       acceptanceCriteria: input.acceptanceCriteria,
@@ -75,22 +74,25 @@ export class AgentService {
     });
   }
 
-  private aiConfig(credential: string, audience?: string) {
+  private aiConfig(modelCredential?: string, modelAudience?: string) {
     const value = config();
+    if (value.ai.accessMode === 'conexus') {
+      if (!modelCredential || !modelAudience) throw httpError('Conexus 授权已过期，请重新登录。', 401);
+      return {
+        aiApiKey: modelCredential,
+        aiAccessMode: value.ai.accessMode,
+        aiBaseUrl: value.ai.baseUrl,
+        aiModel: value.ai.model,
+        aiAudience: modelAudience,
+        aiPublicationSlug: value.conexus.publicationSlug,
+      };
+    }
+    if (!value.ai.apiKey) throw httpError('Task Agent 未配置。', 503);
     return {
-      aiApiKey: credential,
+      aiApiKey: value.ai.apiKey,
       aiAccessMode: value.ai.accessMode,
       aiBaseUrl: value.ai.baseUrl,
       aiModel: value.ai.model,
-      aiAudience: audience ?? value.ai.audience,
-      aiPublicationSlug: value.conexus.publicationSlug,
     };
-  }
-
-  private requireCredential(modelCredential?: string): string {
-    const value = config().ai;
-    const credential = value.accessMode === 'conexus' ? modelCredential : value.apiKey;
-    if (credential) return credential;
-    throw httpError(value.accessMode === 'conexus' ? 'Conexus 授权已过期，请重新登录。' : 'Task Agent 未配置。', value.accessMode === 'conexus' ? 401 : 503);
   }
 }
