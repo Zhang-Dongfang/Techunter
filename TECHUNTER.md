@@ -1,178 +1,77 @@
-# Techunter
+# Techunter / 科技猎人
 
-> AI-powered task distribution CLI for development teams that manages GitHub Issues through a conversational terminal interface and MCP tools.
+Techunter 是 AI 驱动的共享任务市场。Railway 中央 API 和 Supabase `techunter` schema 保存所有用户共同看到的项目、任务、认领、提交、审核和贡献点；Electron Desktop 是本机源码与环境执行 Agent。
 
-## What Is This?
+## 产品流程
 
-Techunter is a TypeScript/Node.js CLI that turns GitHub Issues into an AI-assisted team workflow. Instead of bouncing between GitHub, git, a terminal, and an AI chat window, developers can stay inside `tch` and create tasks, claim work, review diffs, submit pull requests, and approve or reject changes. The project’s core idea is that task management should be tightly coupled to the codebase and repository state, not handled as a separate browser-only process.
+1. 用户使用 Conexus 账号登录，再连接自己的 GitHub 账号。
+2. 用户从有读取权限的 GitHub 仓库中导入项目。项目以稳定的 GitHub repository ID 去重，所有 Techunter 用户都能看到共享项目目录。
+3. 发布者创建任务；中央 Task Agent 从 GitHub 临时 archive 读取代码证据，生成摘要、验收标准、文件范围和原生宿主机环境计划。
+4. 发布时创建 GitHub Issue 并冻结项目贡献点。
+5. 执行者原子认领任务。Desktop Agent 在本机没有项目时自动 clone，已有缓存时验证 remote 并 fetch，然后从任务 `baseSha` 创建独立 worktree。
+6. Desktop Agent 执行仓库声明或 Agent 推导的 setup commands，不使用预制项目镜像。
+7. 提交时本机只收集 `editablePaths` 内的改动，中央 Review Agent 生成预审结果并创建 PR。
+8. 维护者合并验收后，Supabase 原子结算贡献点。
 
-The primary users are software teams already using GitHub Issues and pull requests. A repo collaborator can run `tch init` once to connect GitHub and an OpenAI-compatible model provider, then use the REPL in `src/index.ts` for both slash commands and natural-language requests. Team leads can create richer implementation-ready tasks with `/new`; individual developers can claim work with `/pick`; reviewers can inspect and merge work with `/review`, `/accept`, and `/reject`.
-
-A distinguishing feature is that Techunter does not just store tasks — it actively orchestrates git and GitHub operations. It creates and enforces `techunter:*` labels, manages per-user worker branches like `worker-{github-username}`, generates task guides by scanning the repository, reviews diffs before submission, and opens PRs automatically. It also ships an MCP server (`tch-mcp`) in `src/mcp.ts`, exposing the tool layer to external MCP-compatible clients.
-
-Architecturally, the project combines two interaction styles: direct command flows and tool-driven agent flows. Slash commands call interactive `run()` functions in `src/tools/*`, while freeform text goes through `runAgentLoop()` in `src/lib/agent.ts`, where the LLM selects from registered tools in `src/tools/registry.ts`. That split lets the product keep predictable UX for critical workflows while still supporting conversational task handling.
-
-## Quick Start
-
-1. **Install dependencies and build the CLI**
-   ```bash
-   npm install
-   npm run build
-   ```
-   For local global usage during development:
-   ```bash
-   npm link
-   ```
-   This exposes `tch`, `techunter`, and `tch-mcp` from the `bin` section in `package.json`.
-
-2. **Make sure you are inside a git repository with a GitHub `origin` remote**
-   Techunter auto-detects the repository using `getRemoteUrl()` and `parseOwnerRepo()` in `src/lib/git.ts`. If no remote is found, setup will ask for owner/repo manually.
-
-3. **Run the setup wizard**
-   ```bash
-   tch init
-   ```
-   The wizard in `src/commands/init.ts` will prompt for:
-   - GitHub auth via OAuth device flow or PAT
-   - AI provider: OpenRouter by default (`https://openrouter.ai/api/v1`, model `z-ai/glm-5`)
-   - API key
-   - Repository owner/name if auto-detection fails
-
-4. **Verify configuration and label setup**
-   During init, Techunter stores config through `conf` in `src/lib/config.ts` and calls `ensureLabels()` from `src/lib/github.ts` to create:
-   - `techunter:available`
-   - `techunter:claimed`
-   - `techunter:in-review`
-   - `techunter:changes-needed`
-
-5. **Start the REPL**
-   ```bash
-   tch
-   ```
-   On startup, the CLI prints the banner, current model, and detected repo, then shows the task list and your assigned tasks.
-
-6. **Try a full workflow**
-   ```text
-   /new     -> create an issue with an AI-generated implementation guide
-   /pick    -> claim a task and switch/create your worker branch
-   /submit  -> review changes, commit, push, and create a PR
-   /review  -> inspect tasks awaiting approval
-   /accept  -> merge and close approved work
-   ```
-
-## Architecture
-
-Techunter is structured around a thin CLI shell, a shared service layer, and a tool registry consumed by both the REPL agent and the MCP server.
-
-- **Entry points**
-  - `src/index.ts`: main CLI entrypoint for `tch` / `techunter`
-  - `src/mcp.ts`: stdio MCP server for `tch-mcp`
-- **Command layer**
-  - Interactive workflows live in `src/tools/*/index.ts`
-  - Setup/config flows live in `src/commands/*.ts`
-- **Service layer**
-  - `src/lib/github.ts`: all Octokit-based GitHub operations
-  - `src/lib/git.ts`: branching, diffs, commit/push, repo detection
-  - `src/lib/client.ts`: OpenAI-compatible client creation and model selection
-  - `src/lib/config.ts`: persisted local config and task state
-- **Agent layer**
-  - `src/lib/agent.ts`: main natural-language loop using tool calls
-  - `src/lib/sub-agent.ts`: helper loop for specialized sub-agents
-  - `src/tools/registry.ts`: central list of all available tools
-
-Request/data flow looks like this:
+## 架构
 
 ```text
-tch
- └─ src/index.ts
-    ├─ slash command like /pick or /submit
-    │   └─ calls tool run() directly for interactive terminal UX
-    └─ natural language input
-        └─ runAgentLoop() in src/lib/agent.ts
-            ├─ builds tool list from src/tools/registry.ts
-            ├─ sends system prompt + history to LLM
-            ├─ executes selected tools
-            └─ returns final assistant response
+apps/cli                    apps/desktop
+  terminal / MCP             React Web + Electron
+       │                           │
+       └──────── HTTPS ────────────┤
+                                   ▼
+                         apps/api (Railway)
+                         ├─ Conexus account/model gateway
+                         ├─ GitHub OAuth/App/Webhook
+                         └─ Supabase service-role access
+                                   │
+                                   ▼
+                         Supabase.techunter
+
+Electron Local Agent
+├─ repositories/<project-id>
+├─ workspaces/<task-id>
+├─ clone / fetch / worktree
+└─ dependency setup / diff collection
 ```
 
-There is a second, smaller tool-execution path for specialized generation tasks. `new-task/guide-generator.ts`, `submit/reviewer.ts`, `reject/comment-generator.ts`, and `wiki/wiki-generator.ts` all use `runSubAgentLoop()` with a restricted tool set. For example, the wiki generator can only use `list_files`, `grep_code`, and `run_command`, which keeps these sub-agents focused and easier to reason about.
+`apps/api` 是唯一中央业务服务。浏览器和 Electron 都不持有 Supabase service-role key。Supabase 不保存源码、本机绝对路径、依赖缓存或构建产物。
 
-A notable design decision is the separation between **command tools** and **low-level reasoning tools**. Command tools like `pick`, `new_task`, `submit`, and `accept` represent stable product workflows and are marked `terminal = true` so the agent exits after the action. Low-level tools like `list_files`, `grep_code`, `run_command`, `get_task`, and `get_diff` support reasoning and analysis. This prevents the LLM from improvising critical operational flows that should stay deterministic.
+## 仓库结构
 
-GitHub task state is encoded in labels, while local in-progress state is stored in config. When a developer claims a task, `src/tools/pick/index.ts` updates GitHub labels and assignee, switches to or creates a worker branch, records `taskState.activeIssueNumber`, and captures a base commit. Later, `src/tools/submit/index.ts` uses that stored base commit to compute a focused diff with `getDiffFromCommit()` before generating review output and creating the PR.
+```text
+Techunter/
+├─ apps/
+│  ├─ api/                  Railway Fastify control plane
+│  ├─ cli/                  techunter / tch / tch-mcp
+│  └─ desktop/              React UI、Electron 和本机 Agent
+├─ infra/
+│  ├─ railway/              API 部署配置
+│  └─ supabase/             techunter schema migrations
+└─ packages/core/           共享 Agent、仓库工具、任务约定与 API contracts
+```
 
-## Key Files
+## 数据边界
 
-| File / Directory | Purpose |
-|---|---|
-| `package.json` | Project metadata, CLI binaries (`techunter`, `tch`, `tch-mcp`), scripts, and runtime dependencies. |
-| `README.md` | User-facing overview of installation, command workflow, task lifecycle, branch naming, and MCP usage. |
-| `CLAUDE.md` | Maintainer/developer architecture notes, tool taxonomy, build constraints, and key file map. |
-| `src/index.ts` | Main CLI REPL: startup, config bootstrapping, repo auto-detection, slash command dispatch, and agent handoff. |
-| `src/mcp.ts` | MCP server entrypoint exposing registered tools over stdio, excluding `ask_user`. |
-| `src/tools/registry.ts` | Central registry that assembles command tools and low-level tools into `toolModules[]`. |
-| `src/lib/agent.ts` | Natural-language agent loop with tool-calling, message history trimming, and terminal tool handling. |
-| `src/lib/sub-agent.ts` | Shared helper for constrained sub-agents used by guide generation, review, rejection, and wiki generation. |
-| `src/lib/github.ts` | GitHub integration layer: issues, labels, comments, PRs, repo file updates, acceptance, and collaborator checks. |
-| `src/lib/git.ts` | Git integration layer: branch switching, worker branch naming, diff generation, syncing with base, and commit/push. |
-| `src/lib/config.ts` | `conf`-backed local configuration store and schema validation for auth, model settings, repo, and task state. |
-| `src/commands/init.ts` | First-run setup wizard for GitHub auth, model/provider configuration, and optional `TECHUNTER.md` generation. |
-| `src/tools/new-task/index.ts` | `/new` workflow: validates permissions, generates a guide, optionally edits/revises it, and creates the GitHub Issue. |
-| `src/tools/submit/index.ts` | `/submit` workflow: loads active task, reviews changes, commits/pushes, creates PR, and marks the task in review. |
-| `src/tools/wiki/index.ts` | `/wiki` workflow: generates or refreshes `TECHUNTER.md` and commits it back to the repository. |
+Supabase `techunter` schema 包含 users、sessions、projects、tasks、claims、workspaces、submissions、point_accounts、point_transfers、audit_events 和 github_deliveries。所有表启用 RLS，但不向 `anon` 或 `authenticated` 授权；只有 Railway API 使用 `service_role`。
 
-## Development Workflow
+任务认领、预算冻结和结算由 PostgreSQL functions 完成，不能用客户端读后写替代。原 SQLite 数据只允许通过一次性迁移脚本导入；正式运行不双写、不回退。
 
-Common day-to-day commands:
+## 本地环境
 
-- **Run locally without building**
-  ```bash
-  npm run dev
-  ```
-  This executes `tsx src/index.ts`.
+Desktop 保存稳定的 device ID，并在 Electron userData 下维护受管仓库缓存和任务 worktree。中央 API 会在确认用户仓库权限后提供短期 GitHub App installation token；未安装 App 时使用该用户已连接的 OAuth 授权，本机 `tch init` token 只作后备。带凭据 remote 会在 clone/fetch 后恢复为普通 URL。
 
-- **Build distributable output**
-  ```bash
-  npm run build
-  ```
-  `tsup.config.ts` builds `src/index.ts` and `src/mcp.ts` into ESM output under `dist/`.
+Task Agent 的环境结构只包含 `setupCommands`、`testCommands` 和 `networkAllowlist`。不再存在 image 字段或 Docker provider。没有 setup commands 时，本机 Agent 根据 pnpm/yarn/npm、uv/pip、Cargo 或 Go 锁文件自动探测。
 
-- **Type-check**
-  ```bash
-  npm run typecheck
-  ```
-  This project currently has no test suite; `CLAUDE.md` explicitly says end-to-end verification is done manually. I also confirmed `npm run typecheck` succeeds in this repository.
+## 开发与部署
 
-- **Install globally for local CLI testing**
-  ```bash
-  npm link
-  ```
+```powershell
+npm install
+npm run dev
+npm run typecheck
+npm test
+npm run build
+```
 
-A typical feature workflow:
-
-1. Start from the relevant tool or library module. Most behavior is organized by workflow under `src/tools/{name}/index.ts`.
-2. If the feature is a new user action, add a new tool module exporting `definition`, `execute`, optionally `run`, and `terminal`.
-3. Register it in `src/tools/registry.ts`.
-4. If it should be available as a slash command, add it to `SLASH_NAMES`, `COMMANDS`, and the command switch in `src/index.ts`.
-5. Put shared GitHub or git operations in `src/lib/github.ts` or `src/lib/git.ts` instead of duplicating logic in tools.
-6. Run:
-   ```bash
-   npm run typecheck
-   npm run build
-   ```
-7. Verify manually in a real git repository with a GitHub remote by running:
-   ```bash
-   tch init
-   tch
-   ```
-
-A few implementation details worth knowing while contributing:
-
-- The project is **ESM-only** (`"type": "module"` in `package.json`).
-- Source imports use `.js` extensions even in TypeScript.
-- `tsup` keeps dependencies external rather than bundling them.
-- Interactive prompts use `@inquirer/prompts`.
-- Persistent config includes both credentials and per-task local state such as `activeIssueNumber` and `baseCommit`.
-
----
-*Maintained by Techunter — run `tch wiki` to regenerate*
+Supabase 和 Railway 部署步骤分别见 `infra/supabase/README.md` 与 `apps/api/README.md`。

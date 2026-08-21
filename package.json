@@ -1,67 +1,30 @@
 {
-  "name": "techunter",
-  "version": "1.2.3",
-  "description": "AI-powered task distribution CLI for development teams",
-  "author": "Techunter Contributors",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Zhang-Dongfang/Techunter.git"
-  },
-  "homepage": "https://github.com/Zhang-Dongfang/Techunter#readme",
-  "bugs": {
-    "url": "https://github.com/Zhang-Dongfang/Techunter/issues"
-  },
-  "type": "module",
-  "files": [
-    "dist"
+  "name": "techunter-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Techunter CLI and desktop applications",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
   ],
-  "bin": {
-    "techunter": "dist/index.cjs",
-    "tch": "dist/index.cjs",
-    "tch-mcp": "dist/mcp.cjs"
-  },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run typecheck",
-    "release": "npm version patch && npm publish && git push --follow-tags"
-  },
-  "dependencies": {},
-  "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@octokit/auth-oauth-device": "^8.0.3",
-    "@octokit/rest": "^21.0.2",
-    "@types/marked-terminal": "^6.1.1",
-    "@types/node": "^22.10.7",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "conf": "^13.0.1",
-    "globby": "^14.0.2",
-    "https-proxy-agent": "^8.0.0",
-    "ignore": "^6.0.2",
-    "inquirer": "^12.3.2",
-    "marked": "^15.0.12",
-    "marked-terminal": "^7.3.0",
-    "open": "^11.0.0",
-    "openai": "^4.104.0",
-    "ora": "^8.1.1",
-    "simple-git": "^3.27.0",
-    "tsup": "^8.3.5",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
-    "undici": "^7.23.0",
-    "zod": "^3.24.1"
+    "dev": "concurrently -k -n api,desktop -c blue,yellow \"npm:dev:api\" \"npm:dev:desktop\"",
+    "dev:api": "npm run dev --workspace @techunter/api",
+    "dev:desktop": "npm run dev --workspace @techunter/desktop",
+    "dev:cli": "tsx apps/cli/src/index.ts",
+    "build": "npm run build --workspace @techunter/core && npm run build --workspace techunter && npm run build --workspace @techunter/api && npm run build --workspace @techunter/desktop",
+    "typecheck": "npm run typecheck --workspace @techunter/core && npm run typecheck --workspace techunter && npm run typecheck --workspace @techunter/api && npm run typecheck --workspace @techunter/desktop",
+    "test": "npm run test --workspace @techunter/api && npm run test --workspace @techunter/desktop",
+    "start": "npm run start --workspace @techunter/api"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
-  "keywords": [
-    "cli",
-    "ai",
-    "github",
-    "tasks",
-    "developer-tools"
-  ]
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.21.0"
+  },
+  "overrides": {
+    "esbuild": "^0.28.2"
+  }
 }
