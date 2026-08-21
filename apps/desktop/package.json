@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "concurrently -k -n web,desktop -c magenta,yellow \"npm:dev:web\" \"npm:dev:desktop\"",
     "dev:web": "vite --host 0.0.0.0",
-    "dev:desktop": "node scripts/wait-for-dev.mjs && tsup && cross-env TECHUNTER_RENDERER_URL=http://127.0.0.1:5173 TECHUNTER_API_URL=http://127.0.0.1:4310 electron .",
+    "dev:desktop": "node scripts/wait-for-dev.mjs && tsup && cross-env TECHUNTER_RENDERER_URL=http://127.0.0.1:5173 electron .",
     "build": "npm run typecheck && npm run build:web && tsup",
     "build:web": "vite build",
     "desktop": "electron .",

@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n api,desktop -c blue,yellow \"npm:dev:api\" \"npm:dev:desktop\"",
+    "dev": "npm run dev:desktop",
     "dev:api": "npm run dev --workspace @techunter/api",
     "dev:desktop": "npm run dev --workspace @techunter/desktop",
     "dev:cli": "tsx apps/cli/src/index.ts",
@@ -21,7 +21,6 @@
     "node": ">=24.0.0"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1",
     "tsx": "^4.21.0"
   },
   "overrides": {

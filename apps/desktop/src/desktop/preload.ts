@@ -5,6 +5,12 @@ import type { DesktopAgentApi } from '../shared/desktop-contracts';
 const desktopApi: DesktopAgentApi = {
   apiBaseUrl: process.env['TECHUNTER_API_URL']?.replace(/\/+$/, '') || 'http://127.0.0.1:4310',
   platform: process.platform,
+  authorizeConexus(input) {
+    return ipcRenderer.invoke('auth:conexus', input);
+  },
+  openAuthenticationUrl(url) {
+    return ipcRenderer.invoke('auth:open-url', url);
+  },
   identity() {
     return ipcRenderer.invoke('agent:identity');
   },

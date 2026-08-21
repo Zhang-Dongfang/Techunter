@@ -1,4 +1,4 @@
-import type { PackageFile, Project, Task } from '@techunter/core';
+import type { ConexusAccountAuthorization, PackageFile, Project, Task } from '@techunter/core';
 
 export interface LocalWorkspaceResult {
   taskId: string;
@@ -9,6 +9,8 @@ export interface LocalWorkspaceResult {
 
 export interface DesktopAgentApi {
   apiBaseUrl: string;
+  authorizeConexus(input: { apiUrl: string; publicationSlug: string; displayName: string }): Promise<ConexusAccountAuthorization>;
+  openAuthenticationUrl(url: string): Promise<void>;
   identity(): Promise<{ deviceId: string; deviceLabel: string }>;
   provision(input: { project: Project; task: Task; accessToken?: string }): Promise<LocalWorkspaceResult>;
   locate(taskId: string): Promise<{ path: string | null }>;

@@ -6,6 +6,7 @@ import { ConexusAccountService } from './conexus-account-service.js';
 import { decryptCredential, encryptCredential } from './credential-vault.js';
 import { database, dataOrThrow } from './database.js';
 import { httpError } from './errors.js';
+import { issueGitHubOAuthState, verifyGitHubOAuthState } from './github-oauth-state.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -34,15 +35,17 @@ function mapUser(row: Row): User {
   };
 }
 
-async function session(token: string | undefined): Promise<{ row: Row; user: User } | null> {
-  if (!token) return null;
-  const tokenHash = hashToken(token);
+async function sessionByTokenHash(tokenHash: string): Promise<{ row: Row; user: User } | null> {
   const result = await database().from('sessions').select('*').eq('token_hash', tokenHash).gt('expires_at', new Date().toISOString()).maybeSingle();
   if (result.error) throw new Error(result.error.message);
   if (!result.data) return null;
   const userResult = await database().from('users').select('*').eq('id', result.data.user_id).single();
   if (userResult.error) throw new Error(userResult.error.message);
   return { row: { ...result.data, token_hash: tokenHash }, user: mapUser(userResult.data as Row) };
+}
+
+async function session(token: string | undefined): Promise<{ row: Row; user: User } | null> {
+  return token ? sessionByTokenHash(hashToken(token)) : null;
 }
 
 function setSessionCookie(reply: FastifyReply, token: string, expiresAt: string): void {
@@ -64,6 +67,10 @@ function allowedAudience(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function githubAuthorizationCompletePage(): string {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub 已连接</title><style>body{min-height:100vh;margin:0;display:grid;place-items:center;background:#0b0d10;color:#f5f7fa;font:14px system-ui}.card{max-width:420px;padding:32px;border:1px solid #30343b;border-radius:16px;background:#17191d;text-align:center}h1{font-size:20px}p{color:#aeb4bf;line-height:1.6}</style></head><body><main class="card"><h1>GitHub 已连接</h1><p>可以关闭这个页面并返回 Techunter。</p></main></body></html>`;
 }
 
 async function ensureUser(authorization: Awaited<ReturnType<ConexusAccountService['introspect']>>): Promise<User> {
@@ -145,26 +152,31 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
 
   app.get('/api/auth/me', async (request) => ({ user: request.currentUser }));
 
-  app.get('/api/auth/github', async (request, reply) => {
-    const current = await session(request.cookies['techunter_session']);
-    if (!current) throw httpError('请先登录 Conexus，再连接 GitHub。', 401);
+  app.post('/api/auth/github', async (request) => {
     const github = config().github;
-    if (!github.clientId) throw httpError('未配置 GitHub OAuth。', 503);
-    const state = randomBytes(24).toString('base64url');
-    reply.setCookie('github_oauth_state', state, { httpOnly: true, sameSite: 'lax', secure: config().publicUrl.startsWith('https://'), path: '/', maxAge: 600 });
+    if (!github.clientId || !github.clientSecret) throw httpError('未配置 GitHub OAuth。', 503);
+    if (!request.sessionTokenHash) throw httpError('请先登录 Conexus，再连接 GitHub。', 401);
+    const state = issueGitHubOAuthState(request.sessionTokenHash, config().credentialEncryptionKey);
     const url = new URL('https://github.com/login/oauth/authorize');
     url.searchParams.set('client_id', github.clientId);
     url.searchParams.set('redirect_uri', `${config().publicUrl}/api/auth/github/callback`);
     url.searchParams.set('scope', 'repo read:user read:org');
     url.searchParams.set('state', state);
-    return reply.redirect(url.toString());
+    return { authorizationUrl: url.toString() };
   });
 
   app.get('/api/auth/github/callback', async (request, reply) => {
-    const current = await session(request.cookies['techunter_session']);
+    const query = request.query as { code?: string; state?: string; error?: string; error_description?: string };
+    if (query.error) throw httpError(query.error_description || 'GitHub 授权已取消。', 400);
+    if (!query.code || !query.state) throw httpError('GitHub 登录状态校验失败。', 400);
+    let sessionTokenHash = '';
+    try {
+      sessionTokenHash = verifyGitHubOAuthState(query.state, config().credentialEncryptionKey).sessionTokenHash;
+    } catch (error) {
+      throw httpError((error as Error).message, 400);
+    }
+    const current = await sessionByTokenHash(sessionTokenHash);
     if (!current) throw httpError('Techunter 登录已失效，请重新登录 Conexus。', 401);
-    const query = request.query as { code?: string; state?: string };
-    if (!query.code || !query.state || query.state !== request.cookies['github_oauth_state']) throw httpError('GitHub 登录状态校验失败。', 400);
     const github = config().github;
     const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
@@ -188,8 +200,7 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
     ]);
     if (userUpdate.error) throw new Error(userUpdate.error.message);
     if (sessionUpdate.error) throw new Error(sessionUpdate.error.message);
-    reply.clearCookie('github_oauth_state', { path: '/' });
-    return reply.redirect(config().webOrigins[0] ?? config().publicUrl);
+    return reply.type('text/html; charset=utf-8').send(githubAuthorizationCompletePage());
   });
 
   app.post('/api/auth/logout', async (request, reply) => {

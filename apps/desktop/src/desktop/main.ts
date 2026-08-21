@@ -5,8 +5,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
-import { DEFAULT_CONEXUS_API_URL } from '@techunter/core';
 import { LocalAgent } from '../worker/local-agent';
+import { authorizeConexusInBrowser, type ConexusBrowserAuthInput } from './browser-auth';
 
 try {
   const envPath = path.resolve(process.cwd(), '.env');
@@ -202,6 +202,28 @@ function registerLocalAgentIpc(): void {
   });
 }
 
+function registerAuthenticationIpc(): void {
+  ipcMain.handle('auth:conexus', (event, rawInput: unknown) => {
+    assertTrustedSender(event);
+    if (!rawInput || typeof rawInput !== 'object') throw new Error('Conexus 浏览器登录参数无效。');
+    const input = rawInput as Record<string, unknown>;
+    if (
+      typeof input['apiUrl'] !== 'string' || typeof input['publicationSlug'] !== 'string' ||
+      typeof input['displayName'] !== 'string'
+    ) throw new Error('Conexus 浏览器登录参数无效。');
+    return authorizeConexusInBrowser(input as unknown as ConexusBrowserAuthInput, rendererOrigin, (url) => shell.openExternal(url));
+  });
+  ipcMain.handle('auth:open-url', async (event, rawUrl: unknown) => {
+    assertTrustedSender(event);
+    if (typeof rawUrl !== 'string') throw new Error('浏览器授权地址无效。');
+    const url = new URL(rawUrl);
+    if (url.origin !== 'https://github.com' || url.pathname !== '/login/oauth/authorize') {
+      throw new Error('拒绝打开非 GitHub OAuth 地址。');
+    }
+    await shell.openExternal(url.toString());
+  });
+}
+
 async function createWindow(): Promise<void> {
   const rendererUrl = configuredRendererUrl || await startBundledUi();
   rendererOrigin = new URL(rendererUrl).origin;
@@ -240,48 +262,8 @@ async function createWindow(): Promise<void> {
     }
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const target = new URL(url);
-      const conexusOrigin = new URL(process.env['CONEXUS_API_URL'] ?? DEFAULT_CONEXUS_API_URL).origin;
-      const apiOrigin = new URL(configuredApiUrl).origin;
-      if (
-        (target.origin === conexusOrigin && target.pathname === '/v1/auth/web') ||
-        (target.origin === apiOrigin && target.pathname === '/api/auth/github')
-      ) {
-        return {
-          action: 'allow',
-          overrideBrowserWindowOptions: {
-            width: 480,
-            height: 720,
-            autoHideMenuBar: true,
-            webPreferences: {
-              contextIsolation: true,
-              nodeIntegration: false,
-              sandbox: true,
-            },
-          },
-        };
-      }
-    } catch {
-      // Non-URL targets are denied below.
-    }
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url);
     return { action: 'deny' };
-  });
-  mainWindow.webContents.on('did-create-window', (childWindow, details) => {
-    try {
-      const initialUrl = new URL(details.url);
-      const apiOrigin = new URL(configuredApiUrl).origin;
-      if (initialUrl.origin !== apiOrigin || initialUrl.pathname !== '/api/auth/github') return;
-      childWindow.webContents.on('will-navigate', (event, url) => {
-        if (!allowedRendererUrl(url)) return;
-        event.preventDefault();
-        childWindow.close();
-        mainWindow?.webContents.reload();
-      });
-    } catch {
-      // The window-open policy already rejects malformed URLs.
-    }
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!allowedRendererUrl(url)) event.preventDefault();
@@ -302,6 +284,7 @@ if (!hasLock) {
   app.whenReady().then(async () => {
     registerTerminalIpc();
     registerLocalAgentIpc();
+    registerAuthenticationIpc();
     await createWindow();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();

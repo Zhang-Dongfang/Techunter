@@ -215,19 +215,20 @@ tch-mcp
 
 ## Development
 
-首次启动共享控制面前：
+本地 Desktop 连接已经部署的中央 API：
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item apps/desktop/.env.example apps/desktop/.env
 npm install
-npm run dev          # 启动 API、Web 和 Electron 桌面端
+npm run dev          # 启动本地 UI 和 Electron，连接 TECHUNTER_API_URL
+npm run dev:api      # 仅在调试中央 API 时启动，需要根目录 .env
 npm run dev:cli      # 在当前仓库启动 CLI
 npm run typecheck    # 检查全部 workspace
 npm test             # 运行中央 API 与本机 Agent 测试
 npm run build        # 构建 core、CLI、Railway API 和 desktop
 ```
 
-还需要先应用 `infra/supabase` 迁移；完整顺序见 [`apps/api/README.md`](apps/api/README.md)。
+中央 API 首次部署前需要应用 `infra/supabase` 迁移；完整顺序见 [`apps/api/README.md`](apps/api/README.md)。
 
 To verify end-to-end: build and run `tch init` in a directory with a GitHub remote.
 

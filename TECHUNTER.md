@@ -4,7 +4,7 @@ Techunter 是 AI 驱动的共享任务市场。Railway 中央 API 和 Supabase `
 
 ## 产品流程
 
-1. 用户使用 Conexus 账号登录，再连接自己的 GitHub 账号。
+1. 用户在系统浏览器中使用 Conexus 账号登录，再通过 GitHub OAuth 连接自己的 GitHub 账号；浏览器会复用已有会话。
 2. 用户从有读取权限的 GitHub 仓库中导入项目。项目以稳定的 GitHub repository ID 去重，所有 Techunter 用户都能看到共享项目目录。
 3. 发布者创建任务；中央 Task Agent 从 GitHub 临时 archive 读取代码证据，生成摘要、验收标准、文件范围和原生宿主机环境计划。
 4. 发布时创建 GitHub Issue 并冻结项目贡献点。
