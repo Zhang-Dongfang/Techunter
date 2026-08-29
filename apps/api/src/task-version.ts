@@ -1,7 +1,7 @@
 import { makeTaskBranchName } from '@techunter/core';
 
 export interface ProjectVersionSource {
-  defaultBranch: string;
+  sourceBranch: string;
   headSha: string;
 }
 
@@ -15,7 +15,7 @@ export async function resolveTaskVersion(
   parent: ParentTaskVersionSource | null,
   latestBranchHead: (branch: string) => Promise<string>,
 ): Promise<{ baseSha: string; targetBranch: string }> {
-  if (!parent) return { baseSha: project.headSha, targetBranch: project.defaultBranch };
+  if (!parent) return { baseSha: project.headSha, targetBranch: project.sourceBranch };
   if (parent.githubIssueNumber === null || !parent.assignee?.githubLogin) {
     throw new Error('母任务还没有可同步的远程任务分支。');
   }

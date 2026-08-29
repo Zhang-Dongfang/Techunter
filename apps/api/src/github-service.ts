@@ -10,6 +10,7 @@ import {
   taskLabelDefinitions,
   taskLabels,
   withTaskMetadata,
+  type GitHubBranch,
   type GitHubRepositoryCandidate,
   type PackageFile,
   type Project,
@@ -51,7 +52,7 @@ export class GitHubService {
 
   async checkoutAuthorization(project: Project, userCredential: string): Promise<{ token: string; expiresAt: string | null }> {
     try {
-      await this.repository(project.githubRepositoryId, userCredential);
+      await this.repository(project.githubRepositoryId, userCredential, project.sourceBranch);
     } catch (error) {
       if ((error as { status?: number }).status === 404 && project.visibility !== 'public') {
         throw httpError('当前 GitHub 账号还不是该私有仓库的合作者。', 403, 'GITHUB_COLLABORATOR_REQUIRED');
@@ -142,11 +143,18 @@ export class GitHubService {
     }));
   }
 
-  async repository(repositoryId: number, userCredential: string): Promise<GitHubRepositoryCandidate & { headSha: string }> {
+  async repository(repositoryId: number, userCredential: string, sourceBranch?: string): Promise<GitHubRepositoryCandidate & { headSha: string }> {
     const octokit = await this.client(userCredential);
     const response = await octokit.request('GET /repositories/{repository_id}', { repository_id: repositoryId });
     const repo = response.data;
-    const head = await octokit.git.getRef({ owner: repo.owner.login, repo: repo.name, ref: `heads/${repo.default_branch}` });
+    const branch = sourceBranch?.trim() || repo.default_branch;
+    let head;
+    try {
+      head = await octokit.git.getRef({ owner: repo.owner.login, repo: repo.name, ref: `heads/${branch}` });
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) throw httpError(`GitHub 分支不存在：${branch}`, 404, 'GITHUB_BRANCH_NOT_FOUND');
+      throw error;
+    }
     return {
       githubRepositoryId: repo.id,
       name: repo.name,
@@ -168,6 +176,23 @@ export class GitHubService {
     };
   }
 
+  async listBranches(repositoryId: number, userCredential: string): Promise<GitHubBranch[]> {
+    const octokit = await this.client(userCredential);
+    const response = await octokit.request('GET /repositories/{repository_id}', { repository_id: repositoryId });
+    const repo = response.data;
+    const branches = await octokit.paginate(octokit.repos.listBranches, {
+      owner: repo.owner.login,
+      repo: repo.name,
+      per_page: 100,
+    });
+    return branches.map((branch) => ({
+      name: branch.name,
+      sha: branch.commit.sha,
+      protected: branch.protected,
+      isDefault: branch.name === repo.default_branch,
+    })).sort((left, right) => Number(right.isDefault) - Number(left.isDefault) || left.name.localeCompare(right.name));
+  }
+
   async materialize(project: Project, userCredential?: string): Promise<{ root: string; cleanup(): Promise<void> }> {
     const octokit = await this.client(userCredential);
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-repo-'));
@@ -178,7 +203,7 @@ export class GitHubService {
       const response = await octokit.request('GET /repos/{owner}/{repo}/tarball/{ref}', {
         owner: project.repoOwner,
         repo: project.repoName,
-        ref: project.headSha || project.defaultBranch,
+        ref: project.headSha || project.sourceBranch || project.defaultBranch,
       });
       const payload = response.data instanceof ArrayBuffer
         ? Buffer.from(response.data)
@@ -266,7 +291,7 @@ export class GitHubService {
   async publishSubmission(task: Task, project: Project, files: PackageFile[], review: DeliveryReview, userCredential?: string): Promise<string | null> {
     if (files.length === 0) return null;
     const octokit = await this.client(userCredential);
-    const baseBranch = task.targetBranch || project.defaultBranch;
+    const baseBranch = task.targetBranch || project.sourceBranch || project.defaultBranch;
     const branch = task.githubIssueNumber && task.assignee?.githubLogin
       ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin)
       : `task-${task.id.slice(0, 8)}`;

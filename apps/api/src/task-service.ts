@@ -1,6 +1,7 @@
 import { minimatch } from 'minimatch';
 import {
   type DashboardResponse,
+  type GitHubBranch,
   type GitHubRepositoryCandidate,
   type LedgerEntry,
   type PackageFile,
@@ -76,6 +77,7 @@ export class TaskService {
       clone_url: repository.cloneUrl,
       html_url: repository.htmlUrl,
       default_branch: repository.defaultBranch,
+      source_branch: repository.defaultBranch,
       visibility: repository.visibility,
       head_sha: repository.headSha,
       imported_by: actor.id,
@@ -99,7 +101,7 @@ export class TaskService {
 
   async syncProject(projectId: string, actor: User, githubCredential: string): Promise<Project> {
     const current = await this.getProject(projectId);
-    const repository = await this.github.repository(current.githubRepositoryId, githubCredential);
+    const repository = await this.github.repository(current.githubRepositoryId, githubCredential, current.sourceBranch);
     const update = await database().from('projects').update({
       name: repository.name,
       description: repository.description,
@@ -108,11 +110,46 @@ export class TaskService {
       clone_url: repository.cloneUrl,
       html_url: repository.htmlUrl,
       default_branch: repository.defaultBranch,
+      source_branch: current.sourceBranch,
       visibility: repository.visibility,
       head_sha: repository.headSha,
     }).eq('id', projectId).select('*').single();
     if (update.error) throw new Error(update.error.message);
-    await this.audit(actor.id, 'project.synced', 'project', projectId, { headSha: repository.headSha });
+    await this.audit(actor.id, 'project.synced', 'project', projectId, { sourceBranch: current.sourceBranch, headSha: repository.headSha });
+    return this.projectFromRow(update.data as Row);
+  }
+
+  async projectBranches(projectId: string, githubCredential: string): Promise<{ branches: GitHubBranch[]; sourceBranch: string }> {
+    const project = await this.getProject(projectId);
+    return {
+      branches: await this.github.listBranches(project.githubRepositoryId, githubCredential),
+      sourceBranch: project.sourceBranch,
+    };
+  }
+
+  async switchProjectBranch(projectId: string, sourceBranch: string, actor: User, githubCredential: string): Promise<Project> {
+    const current = await this.getProject(projectId);
+    const branch = sourceBranch.trim();
+    const repository = await this.github.repository(current.githubRepositoryId, githubCredential, branch);
+    if (!repository.permissions.pull) throw httpError('当前 GitHub 账号没有读取该仓库的权限。', 403);
+    const update = await database().from('projects').update({
+      name: repository.name,
+      description: repository.description,
+      repo_owner: repository.owner,
+      repo_name: repository.name,
+      clone_url: repository.cloneUrl,
+      html_url: repository.htmlUrl,
+      default_branch: repository.defaultBranch,
+      source_branch: branch,
+      visibility: repository.visibility,
+      head_sha: repository.headSha,
+    }).eq('id', projectId).select('*').single();
+    if (update.error) throw new Error(update.error.message);
+    await this.audit(actor.id, 'project.branch_switched', 'project', projectId, {
+      previousBranch: current.sourceBranch,
+      sourceBranch: branch,
+      headSha: repository.headSha,
+    });
     return this.projectFromRow(update.data as Row);
   }
 
@@ -459,7 +496,7 @@ export class TaskService {
     return result.data as Row;
   }
 
-  private async getProject(id: string): Promise<Project> {
+  async getProject(id: string): Promise<Project> {
     const result = await database().from('projects').select('*').eq('id', id).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     if (!result.data) throw httpError('项目不存在。', 404);
@@ -477,6 +514,7 @@ export class TaskService {
       cloneUrl: String(row['clone_url']),
       htmlUrl: String(row['html_url']),
       defaultBranch: String(row['default_branch']),
+      sourceBranch: String(row['source_branch'] ?? row['default_branch']),
       visibility: row['visibility'] as Project['visibility'],
       headSha: String(row['head_sha']),
       availablePoints: await this.balance('project', String(row['id'])),

@@ -4,6 +4,7 @@ import type {
   ConexusAccountAuthorization,
   ConexusAuthConfig,
   DashboardResponse,
+  GitHubBranch,
   LedgerEntry,
   Project,
   Submission,
@@ -83,6 +84,11 @@ export const api = {
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   githubRepositories: () => request<{ repositories: GitHubRepositoryCandidate[] }>('/api/github/repositories'),
   importProject: (githubRepositoryId: number) => post<Project>('/api/projects/import', { githubRepositoryId }),
+  projectBranches: (projectId: string) => request<{ branches: GitHubBranch[]; sourceBranch: string }>(`/api/projects/${projectId}/branches`),
+  switchProjectBranch: (projectId: string, sourceBranch: string) => request<Project>(`/api/projects/${projectId}/branch`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sourceBranch }),
+  }),
   checkoutAuthorization: (projectId: string) => request<{ token: string; expiresAt: string | null }>(`/api/projects/${projectId}/checkout-authorization`),
   requestProjectCollaboration: (projectId: string) => post<{ status: 'invited' | 'already_collaborator'; actionUrl: string }>(`/api/projects/${projectId}/collaboration-request`),
   createTask: (body: { projectId: string; title: string; description: string; parentTaskId?: string | null }) =>

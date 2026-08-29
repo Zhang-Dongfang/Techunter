@@ -24,6 +24,7 @@ const createTaskBody = z.object({
 });
 const publishBody = z.object({ rewardPoints: z.number().int().min(1).max(100_000).optional() });
 const importProjectBody = z.object({ githubRepositoryId: z.number().int().positive() });
+const switchProjectBranchBody = z.object({ sourceBranch: z.string().trim().min(1).max(255) });
 const workspaceBody = z.object({ deviceId: z.string().trim().min(8).max(200), deviceLabel: z.string().trim().min(1).max(200) });
 const workspaceUpdateBody = z.object({
   status: z.enum(['provisioning', 'running', 'failed']),
@@ -102,11 +103,19 @@ export async function buildApp() {
     const repository = await github.repository(importProjectBody.parse(request.body).githubRepositoryId, request.githubCredential);
     return reply.code(201).send(await tasks.importProject(repository, request.currentUser));
   });
+  app.get('/api/projects/:id/branches', async (request) => {
+    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    return tasks.projectBranches(idParams.parse(request.params).id, request.githubCredential);
+  });
+  app.patch('/api/projects/:id/branch', async (request) => {
+    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    assertRole(request, ['admin', 'maintainer']);
+    const projectId = idParams.parse(request.params).id;
+    return tasks.switchProjectBranch(projectId, switchProjectBranchBody.parse(request.body).sourceBranch, request.currentUser, request.githubCredential);
+  });
   app.get('/api/projects/:id/checkout-authorization', async (request) => {
     if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    const projectId = idParams.parse(request.params).id;
-    const project = (await tasks.projects()).find((candidate) => candidate.id === projectId);
-    if (!project) throw httpError('项目不存在。', 404);
+    const project = await tasks.getProject(idParams.parse(request.params).id);
     return github.checkoutAuthorization(project, request.githubCredential);
   });
   app.post('/api/projects/:id/collaboration-request', async (request) => {

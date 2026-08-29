@@ -42,6 +42,7 @@ create table techunter.projects (
   clone_url text not null,
   html_url text not null,
   default_branch text not null default 'main',
+  source_branch text not null default 'main',
   visibility techunter.repository_visibility not null default 'private',
   head_sha text not null default '',
   imported_by uuid references techunter.users(id) on delete set null,

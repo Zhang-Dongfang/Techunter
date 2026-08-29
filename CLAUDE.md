@@ -91,6 +91,7 @@ Electron intentionally allows arbitrary local shell commands from the trusted Te
 - Contribution-point transfers are ledger entries with idempotency keys, never balance-only mutations.
 - Atomic claim, reserve, and settlement behavior belongs in Supabase functions, not read-then-write API code.
 - `projects` never stores a local path; local paths are device-owned state and never enter Supabase.
+- `Project.sourceBranch` selects the GitHub branch used for future task analysis and checkout. Switching it must not rewrite an existing task's frozen `baseSha` or `targetBranch`; `defaultBranch` remains repository metadata.
 - Parent/child task visibility may only narrow, never broaden.
 - Agent output is advisory; deterministic scope, ledger, repository, and permission checks remain authoritative.
 

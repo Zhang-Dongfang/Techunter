@@ -52,12 +52,20 @@ export interface Project {
   cloneUrl: string;
   htmlUrl: string;
   defaultBranch: string;
+  sourceBranch: string;
   visibility: 'public' | 'private' | 'internal';
   headSha: string;
   availablePoints: number;
   importedBy: User | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GitHubBranch {
+  name: string;
+  sha: string;
+  protected: boolean;
+  isDefault: boolean;
 }
 
 export interface GitHubRepositoryCandidate {

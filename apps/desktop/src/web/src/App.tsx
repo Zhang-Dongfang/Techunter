@@ -36,7 +36,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import type { DashboardResponse, GitHubRepositoryCandidate, LedgerEntry, Project, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
+import type { DashboardResponse, GitHubBranch, GitHubRepositoryCandidate, LedgerEntry, Project, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
 import { AgentDock } from './AgentDock';
 import { ApiError, api } from './api';
 import { ConexusLogin } from './ConexusLogin';
@@ -483,6 +483,10 @@ export function App() {
   const [projectSyncing, setProjectSyncing] = useState(false);
   const [projectSyncNotice, setProjectSyncNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [collaborationProject, setCollaborationProject] = useState<Project | null>(null);
+  const [projectBranches, setProjectBranches] = useState<GitHubBranch[]>([]);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [branchSwitching, setBranchSwitching] = useState(false);
+  const [branchError, setBranchError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -521,6 +525,30 @@ export function App() {
     window.addEventListener('techunter:conexus-authorization-required', authorizationRequired);
     return () => window.removeEventListener('techunter:conexus-authorization-required', authorizationRequired);
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setProjectBranches([]);
+    setBranchError('');
+    setBranchLoading(false);
+    if (!selectedProjectId || !dashboard?.runtime.githubConnected) return () => { cancelled = true; };
+    setBranchLoading(true);
+    api.projectBranches(selectedProjectId).then((result) => {
+      if (cancelled) return;
+      setProjectBranches(result.branches);
+      setDashboard((current) => current ? {
+        ...current,
+        projects: current.projects.map((project) => project.id === selectedProjectId
+          ? { ...project, sourceBranch: result.sourceBranch }
+          : project),
+      } : current);
+    }).catch((caught) => {
+      if (!cancelled) setBranchError((caught as Error).message);
+    }).finally(() => {
+      if (!cancelled) setBranchLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedProjectId, dashboard?.runtime.githubConnected]);
 
   useEffect(() => {
     if (view === 'points') api.points().then((result) => setPointsData({ available: result.available, entries: result.entries })).catch((caught) => setError((caught as Error).message));
@@ -665,6 +693,25 @@ export function App() {
     }
   }
 
+  async function switchProjectBranch(sourceBranch: string) {
+    if (!selectedProjectId || branchSwitching) return;
+    setBranchSwitching(true);
+    setBranchError('');
+    try {
+      const updated = await api.switchProjectBranch(selectedProjectId, sourceBranch);
+      setDashboard((current) => current ? {
+        ...current,
+        projects: current.projects.map((project) => project.id === updated.id ? updated : project),
+      } : current);
+      setSelectedTask(null);
+      setProjectSyncNotice({ tone: 'success', text: `任务源码分支已切换至 ${updated.sourceBranch}，后续任务将使用新的提交基线。` });
+    } catch (caught) {
+      setBranchError((caught as Error).message);
+    } finally {
+      setBranchSwitching(false);
+    }
+  }
+
   const visibleTasks = useMemo(() => {
     if (!dashboard) return [];
     const normalizedSearch = search.trim().toLowerCase();
@@ -706,6 +753,11 @@ export function App() {
   const taskView: TaskView | null = view === 'points' ? null : view;
   const viewCopy = taskView ? TASK_VIEW_COPY[taskView] : null;
   const viewFilters = taskView ? TASK_VIEW_FILTERS[taskView] : [];
+  const activeSourceBranch = selectedProject?.sourceBranch || selectedProject?.defaultBranch || '';
+  const branchOptions = selectedProject && !projectBranches.some((branch) => branch.name === activeSourceBranch)
+    ? [{ name: activeSourceBranch, sha: selectedProject.headSha, protected: false, isDefault: activeSourceBranch === selectedProject.defaultBranch }, ...projectBranches]
+    : projectBranches;
+  const canSwitchProjectBranch = ['admin', 'maintainer'].includes(dashboard.me.role);
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -734,7 +786,15 @@ export function App() {
             {projectEntries.length ? <div className="project-directory-grid">{projectEntries.map(({ project, tasks }) => <ProjectDirectoryCard key={project.id} project={project} tasks={tasks} onOpen={() => { setSelectedProjectId(project.id); setSelectedTask(null); }} />)}</div> : <EmptyState icon={<FolderGit2 />} title={search || statusFilter !== 'all' ? '没有匹配的项目' : viewCopy.emptyTitle} description={search || statusFilter !== 'all' ? '调整搜索或筛选条件后重试。' : viewCopy.emptyDescription} />}
           </> : <>
             <button className="project-directory-back" onClick={() => { setSelectedProjectId(''); setSelectedTask(null); }}><ArrowLeft size={15} />返回项目目录</button>
-            <div className="project-context-head"><div className="project-context-icon"><FolderGit2 size={24} /></div><div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />{selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div><div className="project-context-actions">{projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>已同步到本机</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button>{taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}</> : <button className="button primary" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '同步仓库'}</button>}</div></div>
+            <div className="project-context-head">
+              <div className="project-context-icon"><FolderGit2 size={24} /></div>
+              <div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />默认分支 {selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div>
+              <div className="project-context-actions">
+                <div className="project-branch-control"><GitBranch size={16} /><div><label htmlFor="project-source-branch">任务源码分支</label><select id="project-source-branch" value={activeSourceBranch} disabled={!canSwitchProjectBranch || branchLoading || branchSwitching || !dashboard.runtime.githubConnected} onChange={(event) => { void switchProjectBranch(event.target.value); }}>{branchOptions.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}{branch.isDefault ? ' · 默认' : ''}</option>)}</select><small>{branchLoading ? '正在读取 GitHub 分支' : branchSwitching ? '正在切换并刷新基线' : `提交 ${selectedProject.headSha.slice(0, 8)}`}</small></div>{branchLoading || branchSwitching ? <Loader2 className="spin" size={14} /> : <ChevronDown size={14} />}</div>
+                {branchError && <span className="project-branch-error">{branchError}</span>}
+                {projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>已同步到本机</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button>{taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}</> : <button className="button primary" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '同步仓库'}</button>}
+              </div>
+            </div>
             {projectSyncNotice && <div className={cn('project-sync-notice', projectSyncNotice.tone)}>{projectSyncNotice.tone === 'success' ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{projectSyncNotice.text}</div>}
             <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{selectedProjectTasks.length} 个任务</div></div>
             {error && <div className="page-error"><XCircle size={17} />{error}</div>}

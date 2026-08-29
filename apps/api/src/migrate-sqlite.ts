@@ -55,7 +55,7 @@ try {
     await upsert('projects', [{
       id: project['id'], github_repository_id: repo.id, name: project['name'] || repo.name,
       description: project['description'] || repo.description || '', repo_owner: repo.full_name.split('/')[0], repo_name: repo.name,
-      clone_url: repo.clone_url, html_url: repo.html_url, default_branch: repo.default_branch,
+      clone_url: repo.clone_url, html_url: repo.html_url, default_branch: repo.default_branch, source_branch: repo.default_branch,
       visibility: repo.visibility === 'internal' ? 'internal' : repo.private ? 'private' : 'public',
       head_sha: repo.headSha, created_at: project['created_at'], updated_at: project['created_at'],
     }]);

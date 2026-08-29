@@ -4,12 +4,19 @@ import path from 'node:path';
 import test from 'node:test';
 
 test('Supabase migration owns the shared schema and atomic invariants', () => {
-  const migration = fs.readFileSync(path.resolve(process.cwd(), '../../infra/supabase/migrations/202608210001_techunter_schema.sql'), 'utf8');
+  const migrationRoot = path.resolve(process.cwd(), '../../infra/supabase/migrations');
+  const migration = fs.readdirSync(migrationRoot)
+    .filter((file) => file.endsWith('.sql'))
+    .sort()
+    .map((file) => fs.readFileSync(path.join(migrationRoot, file), 'utf8'))
+    .join('\n');
   assert.match(migration, /create schema if not exists techunter/i);
   assert.match(migration, /function techunter\.claim_task/i);
   assert.match(migration, /function techunter\.publish_task/i);
   assert.match(migration, /function techunter\.accept_task/i);
   assert.match(migration, /revoke all on schema techunter from public, anon, authenticated/i);
+  assert.match(migration, /source_branch text/i);
+  assert.match(migration, /set source_branch = default_branch/i);
   assert.doesNotMatch(migration, /local_repo_path|package_path/i);
 });
 

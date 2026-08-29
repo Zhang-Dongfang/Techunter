@@ -160,7 +160,7 @@ export class LocalAgent {
     await this.fetchProject(repositoryPath, project, accessToken, false);
 
     if (!fs.existsSync(workspacePath)) {
-      const base = task.baseSha || `origin/${project.defaultBranch}`;
+      const base = task.baseSha || `origin/${project.sourceBranch || project.defaultBranch}`;
       await execFileAsync('git', ['worktree', 'add', '-B', `techunter/${task.id}`, workspacePath, base], { cwd: repositoryPath, timeout: 5 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
     }
     const headSha = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspacePath, timeout: 10_000 })).stdout.trim();
