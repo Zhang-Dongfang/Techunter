@@ -109,6 +109,10 @@ export async function buildApp() {
     if (!project) throw httpError('项目不存在。', 404);
     return github.checkoutAuthorization(project, request.githubCredential);
   });
+  app.post('/api/projects/:id/collaboration-request', async (request) => {
+    if (!request.githubCredential) throw httpError('提交合作者申请前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    return tasks.requestProjectCollaboration(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
+  });
 
   app.get('/api/tasks', async (request) => {
     const query = request.query as { status?: string; mine?: string; search?: string };
@@ -119,7 +123,7 @@ export async function buildApp() {
     const body = createTaskBody.parse(request.body);
     if (!request.githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     await tasks.syncProject(body.projectId, request.currentUser, request.githubCredential);
-    return reply.code(201).send(await tasks.createDraft({ ...body, publisherId: request.currentUser.id }));
+    return reply.code(201).send(await tasks.createDraft({ ...body, publisherId: request.currentUser.id }, request.githubCredential));
   });
   app.post('/api/tasks/:id/analyze', async (request) => {
     if (config().ai.accessMode === 'conexus' && !request.modelAuthorization) {
@@ -140,7 +144,7 @@ export async function buildApp() {
     const body = createTaskBody.omit({ parentTaskId: true }).parse(request.body);
     if (!request.githubCredential) throw httpError('创建子任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     await tasks.syncProject(body.projectId, request.currentUser, request.githubCredential);
-    return reply.code(201).send(await tasks.createDraft({ ...body, parentTaskId: parentId, publisherId: request.currentUser.id }));
+    return reply.code(201).send(await tasks.createDraft({ ...body, parentTaskId: parentId, publisherId: request.currentUser.id }, request.githubCredential));
   });
   app.post('/api/tasks/:id/workspaces', async (request, reply) => reply.code(201).send(await tasks.createWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceBody.parse(request.body))));
   app.patch('/api/workspaces/:id', async (request) => tasks.updateWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceUpdateBody.parse(request.body)));

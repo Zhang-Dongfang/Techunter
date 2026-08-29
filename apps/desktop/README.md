@@ -6,7 +6,7 @@ Techunter Desktop 是中央任务市场的本机执行器。项目、任务、�
 
 - 在本机加载随 Electron 打包的 Techunter UI；
 - 为每台设备维护稳定的 `deviceId`；
-- 项目不存在时自动从 GitHub clone，存在时验证 remote 并 fetch；
+- 由用户选择本机父目录后同步项目：不存在时从 GitHub clone，存在时验证 remote 并 fetch；
 - 按任务冻结的 `baseSha` 创建独立 git worktree；
 - 执行 Task Agent 生成的原生宿主机 `setupCommands`，没有命令时根据锁文件自动探测；
 - 收集并校验 `editablePaths` 内的本地改动；
@@ -49,7 +49,7 @@ npm run package:win --workspace @techunter/desktop
 
 Railway API 的 `TECHUNTER_WEB_ORIGINS` 必须包含 `http://127.0.0.1:4311`。`TECHUNTER_RENDERER_URL` 只供开发时指向 Vite，生产环境不要设置。
 
-GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据只用于 git 传输，remote 在 clone/fetch 后恢复为无凭据 URL。
+GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据通过单次 Git 进程环境传入，不写入 remote。私有仓库会先确认当前 GitHub 用户已有访问权；没有访问权时必须先完成合作者申请并接受 GitHub 邀请。
 
 Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复用浏览器中的 github.com 会话；GitHub 连接按用户保存，不随单次 Techunter 登录结束。Techunter 登录会话最长 30 天、连续 7 天未使用会失效；短期 Conexus Run Ticket 到期只暂停模型功能，可复用官方 API 域保存的 HttpOnly 浏览器会话快速续期。
 

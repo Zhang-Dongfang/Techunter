@@ -12,7 +12,7 @@ Techunter 登录会话具有 30 天绝对期限和 7 天空闲期限。Conexus R
 2. 在 Railway 新建独立 `techunter-api` Service，配置 `infra/railway/api.json`。
 3. 从 `.env.example` 配置 Supabase、Conexus、GitHub 和凭据加密密钥。
 4. 把 `TECHUNTER_PUBLIC_URL` 设置为 API 的最终 HTTPS 地址；需要同时支持本地开发和生产 Desktop 时，把 `TECHUNTER_WEB_ORIGINS` 设置为 `http://127.0.0.1:4311,http://127.0.0.1:5173`。
-5. 把 GitHub OAuth callback 配置为 `https://<techunter-api>/api/auth/github/callback`，Webhook 配置为 `https://<techunter-api>/api/github/webhook`。
+5. 把 GitHub OAuth callback 配置为 `https://<techunter-api>/api/auth/github/callback`，Webhook 配置为 `https://<techunter-api>/api/github/webhook`。如需自动处理私有仓库合作者申请，GitHub App 必须安装到对应仓库，并具有仓库 `Administration: write` 权限。
 
 API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包含或托管 Web UI。Electron 在本机提供打包后的 UI，并通过 HTTPS 调用这里的 API。
 

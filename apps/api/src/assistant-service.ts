@@ -142,7 +142,7 @@ export class AssistantService {
             title: String(toolInput['title'] ?? ''),
             description: String(toolInput['description'] ?? ''),
             publisherId: input.user.id,
-          });
+          }, input.githubCredential);
           if (!input.modelCredential || !input.modelAudience) {
             throw httpError('Agent 授权不足，任务草稿已保留。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
           }

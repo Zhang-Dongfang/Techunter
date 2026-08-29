@@ -14,6 +14,12 @@ const desktopApi: DesktopAgentApi = {
   identity() {
     return ipcRenderer.invoke('agent:identity');
   },
+  syncProject(input) {
+    return ipcRenderer.invoke('project:sync', input);
+  },
+  locateProject(projectId) {
+    return ipcRenderer.invoke('project:locate', projectId);
+  },
   provision(input) {
     return ipcRenderer.invoke('agent:provision', input);
   },

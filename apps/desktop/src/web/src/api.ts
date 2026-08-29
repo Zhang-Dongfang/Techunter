@@ -84,6 +84,7 @@ export const api = {
   githubRepositories: () => request<{ repositories: GitHubRepositoryCandidate[] }>('/api/github/repositories'),
   importProject: (githubRepositoryId: number) => post<Project>('/api/projects/import', { githubRepositoryId }),
   checkoutAuthorization: (projectId: string) => request<{ token: string; expiresAt: string | null }>(`/api/projects/${projectId}/checkout-authorization`),
+  requestProjectCollaboration: (projectId: string) => post<{ status: 'invited' | 'already_collaborator'; actionUrl: string }>(`/api/projects/${projectId}/collaboration-request`),
   createTask: (body: { projectId: string; title: string; description: string; parentTaskId?: string | null }) =>
     post<Task>('/api/tasks', body),
   createSubtask: (parentId: string, body: { projectId: string; title: string; description: string }) =>

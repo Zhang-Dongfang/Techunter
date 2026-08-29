@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import { LocalAgent } from '../worker/local-agent';
 import { authorizeConexusInBrowser, type ConexusBrowserAuthInput } from './browser-auth';
 
@@ -30,8 +30,8 @@ let rendererOrigin = '';
 const configuredApiUrl = (process.env['TECHUNTER_API_URL'] || 'http://127.0.0.1:4310').replace(/\/+$/, '');
 const configuredRendererUrl = process.env['TECHUNTER_RENDERER_URL']?.replace(/\/+$/, '');
 const configuredUiPort = Number(process.env['TECHUNTER_UI_PORT'] ?? '4311');
-const configuredZoom = Number(process.env['TECHUNTER_DESKTOP_ZOOM'] ?? '1.15');
-const defaultZoom = Number.isFinite(configuredZoom) ? Math.min(1.6, Math.max(0.8, configuredZoom)) : 1.15;
+const configuredZoom = Number(process.env['TECHUNTER_DESKTOP_ZOOM'] ?? '1.25');
+const defaultZoom = Number.isFinite(configuredZoom) ? Math.min(1.6, Math.max(0.8, configuredZoom)) : 1.25;
 
 function allowedRendererUrl(rawUrl: string): boolean {
   try {
@@ -180,6 +180,26 @@ function registerLocalAgentIpc(): void {
   ipcMain.handle('agent:identity', (event) => {
     assertTrustedSender(event);
     return localAgent.identity();
+  });
+  ipcMain.handle('project:sync', async (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (!input || typeof input !== 'object' || !(input as { project?: unknown }).project) throw new Error('项目参数无效。');
+    const options: Electron.OpenDialogOptions = {
+      title: '选择项目存放目录',
+      buttonLabel: '同步到这里',
+      properties: ['openDirectory', 'createDirectory'],
+    };
+    const selection = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (selection.canceled || !selection.filePaths[0]) return null;
+    const value = input as { project: Parameters<LocalAgent['syncProject']>[0]; accessToken?: unknown };
+    return localAgent.syncProject(value.project, selection.filePaths[0], typeof value.accessToken === 'string' ? value.accessToken : undefined);
+  });
+  ipcMain.handle('project:locate', (event, projectId: unknown) => {
+    assertTrustedSender(event);
+    if (typeof projectId !== 'string') throw new Error('项目 ID 无效。');
+    return localAgent.locateProject(projectId);
   });
   ipcMain.handle('agent:provision', (event, input: unknown) => {
     assertTrustedSender(event);

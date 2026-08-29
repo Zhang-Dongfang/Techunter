@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe('LocalAgent', () => {
-  it('clones a missing project, creates a worktree, runs setup, and enforces editable paths', async () => {
+  it('syncs a project, creates a worktree, runs setup, and enforces editable paths', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-'));
     cleanup.push(root);
     const source = path.join(root, 'source');
@@ -47,6 +47,9 @@ describe('LocalAgent', () => {
       },
     } as unknown as Task;
     const agent = new LocalAgent(path.join(root, 'agent-data'));
+    const synced = await agent.syncProject(project, path.join(root, 'projects'));
+    expect(synced.outcome).toBe('cloned');
+    expect((await agent.locateProject(project.id)).path).toBe(synced.path);
     const result = await agent.provision(project, task);
     expect(result.headSha).toBe(headSha);
     expect(result.setupLog).toContain('ready');

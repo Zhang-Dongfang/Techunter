@@ -1,7 +1,5 @@
 import { minimatch } from 'minimatch';
 import {
-  makeTaskBranchName,
-  renderTaskGuide,
   type DashboardResponse,
   type GitHubRepositoryCandidate,
   type LedgerEntry,
@@ -20,6 +18,7 @@ import { config } from './config.js';
 import { database, dataOrThrow } from './database.js';
 import { httpError, translateDatabaseError } from './errors.js';
 import { GitHubService } from './github-service.js';
+import { resolveTaskVersion } from './task-version.js';
 
 type Row = Record<string, any>;
 
@@ -117,6 +116,18 @@ export class TaskService {
     return this.projectFromRow(update.data as Row);
   }
 
+  async requestProjectCollaboration(projectId: string, actor: User, githubCredential: string): Promise<{ status: 'invited' | 'already_collaborator'; actionUrl: string }> {
+    if (!actor.githubLogin) throw httpError('提交合作者申请前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    const project = await this.getProject(projectId);
+    if (project.visibility === 'public') throw httpError('公开仓库不需要申请合作者权限。', 400);
+    const result = await this.github.requestCollaboration(project, actor.githubLogin, githubCredential);
+    await this.audit(actor.id, 'project.collaboration_requested', 'project', projectId, {
+      githubLogin: actor.githubLogin,
+      result: result.status,
+    });
+    return result;
+  }
+
   async dashboard(me: User): Promise<Omit<DashboardResponse, 'runtime'>> {
     const [projects, tasks, points, reviewSubmissions] = await Promise.all([
       this.projects(),
@@ -191,7 +202,6 @@ export class TaskService {
       githubIssueNumber: row['github_issue_number'] === null ? null : Number(row['github_issue_number']),
       githubIssueUrl: row['github_issue_url'] ? String(row['github_issue_url']) : null,
       analysis: effectiveAnalysis,
-      guideMarkdown: effectiveAnalysis ? renderTaskGuide(effectiveAnalysis) : '',
       scope,
       workspace: workspaceResult.data ? this.workspaceFromRow(workspaceResult.data as Row) : null,
       latestSubmission: submissionResult.data ? await this.submissionFromRow(submissionResult.data as Row) : null,
@@ -201,17 +211,21 @@ export class TaskService {
     };
   }
 
-  async createDraft(input: { projectId: string; title: string; description: string; publisherId: string; parentTaskId?: string | null }): Promise<Task> {
+  async createDraft(input: { projectId: string; title: string; description: string; publisherId: string; parentTaskId?: string | null }, githubCredential: string): Promise<Task> {
     const project = await this.getProject(input.projectId);
     let parent: Task | null = null;
     if (input.parentTaskId) {
       parent = await this.getTask(input.parentTaskId);
       if (parent.projectId !== input.projectId) throw httpError('子任务必须与父任务属于同一项目。', 400);
       if (!['active', 'submitted'].includes(parent.status)) throw httpError('只有进行中的任务可以创建子任务。', 400);
+      if (parent.githubIssueNumber === null || !parent.assignee?.githubLogin) throw httpError('母任务还没有可同步的远程任务分支。', 409);
     }
-    const targetBranch = parent?.githubIssueNumber && parent.assignee?.githubLogin
-      ? makeTaskBranchName(parent.githubIssueNumber, parent.assignee.githubLogin)
-      : parent?.targetBranch ?? project.defaultBranch;
+    const version = await resolveTaskVersion(project, parent, async (parentBranch) => {
+      if (!parent?.assignee?.githubLogin) throw httpError('母任务还没有可同步的远程任务分支。', 409);
+      const branch = await this.github.ensureTaskBranch(parent, project, parent.assignee.githubLogin, githubCredential);
+      if (branch.name !== parentBranch) throw new Error('母任务分支解析不一致。');
+      return branch.headSha;
+    });
     const row = dataOrThrow(await database().from('tasks').insert({
       project_id: project.id,
       parent_task_id: parent?.id ?? null,
@@ -219,8 +233,8 @@ export class TaskService {
       title: input.title.trim(),
       description: input.description.trim(),
       publisher_id: input.publisherId,
-      base_sha: project.headSha,
-      target_branch: targetBranch,
+      base_sha: version.baseSha,
+      target_branch: version.targetBranch,
     }).select('id').single()) as Row;
     await this.audit(input.publisherId, 'task.created', 'task', String(row['id']), { parentTaskId: parent?.id ?? null });
     return this.getTask(String(row['id']));

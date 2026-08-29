@@ -7,7 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { minimatch } from 'minimatch';
 import { readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
-import type { LocalWorkspaceResult } from '../shared/desktop-contracts.js';
+import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,13 +21,15 @@ function matches(file: string, patterns: string[]): boolean {
   return patterns.some((pattern) => minimatch(file, pattern, { dot: true, nocase: process.platform === 'win32' }));
 }
 
-function credentialUrl(project: Project, accessToken?: string): string {
+function gitEnvironment(project: Project, accessToken?: string): NodeJS.ProcessEnv {
   const token = accessToken?.trim() || readLocalTechunterConfig().config?.githubToken?.trim();
-  if (!token || project.visibility === 'public') return project.cloneUrl;
-  const url = new URL(project.cloneUrl);
-  url.username = 'x-access-token';
-  url.password = token;
-  return url.toString();
+  if (!token || project.visibility === 'public') return process.env;
+  return {
+    ...process.env,
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+  };
 }
 
 function safeRemote(value: string): string {
@@ -40,6 +42,17 @@ function safeRemote(value: string): string {
     return value.trim();
   }
 }
+
+function remoteMatchesProject(remote: string, project: Project): boolean {
+  const normalize = (value: string) => safeRemote(value).replaceAll('\\', '/').replace(/\/$/, '').replace(/\.git$/i, '').toLowerCase();
+  const actual = normalize(remote);
+  const expected = normalize(project.cloneUrl);
+  if (actual === expected) return true;
+  const githubPath = `${project.repoOwner}/${project.repoName}`.toLowerCase();
+  return actual.endsWith(`/${githubPath}`) || actual.endsWith(`:${githubPath}`);
+}
+
+type ProjectLocations = { version: 1; projects: Record<string, string> };
 
 async function runShell(command: string, cwd: string, timeoutMs = 15 * 60_000): Promise<string> {
   const executable = process.platform === 'win32' ? 'powershell.exe' : (process.env['SHELL'] || '/bin/sh');
@@ -82,14 +95,14 @@ function detectedSetupCommands(root: string): string[] {
 }
 
 export class LocalAgent {
-  private readonly repositoriesRoot: string;
   private readonly workspacesRoot: string;
   private readonly identityPath: string;
+  private readonly projectLocationsPath: string;
 
   constructor(private readonly dataRoot: string) {
-    this.repositoriesRoot = path.join(dataRoot, 'repositories');
     this.workspacesRoot = path.join(dataRoot, 'workspaces');
     this.identityPath = path.join(dataRoot, 'device.json');
+    this.projectLocationsPath = path.join(dataRoot, 'projects.json');
   }
 
   async identity(): Promise<{ deviceId: string; deviceLabel: string }> {
@@ -103,31 +116,48 @@ export class LocalAgent {
     return identity;
   }
 
+  async syncProject(project: Project, parentDirectory: string, accessToken?: string): Promise<LocalProjectSyncResult> {
+    if (!path.isAbsolute(parentDirectory)) throw new Error('项目存放目录必须是绝对路径。');
+    if (!/^[A-Za-z0-9_.-]+$/.test(project.repoName)) throw new Error('GitHub 仓库名称不能作为本地目录。');
+    const parentPath = path.resolve(parentDirectory);
+    await fsp.mkdir(parentPath, { recursive: true });
+    const repositoryPath = path.join(parentPath, project.repoName);
+    let outcome: LocalProjectSyncResult['outcome'] = 'cloned';
+
+    if (await this.isGitRepository(repositoryPath)) {
+      await this.assertProjectRemote(repositoryPath, project);
+      outcome = await this.fetchProject(repositoryPath, project, accessToken, true);
+    } else {
+      if (fs.existsSync(repositoryPath) && (await fsp.readdir(repositoryPath)).length > 0) {
+        throw new Error(`目标目录已存在且不是 Git 仓库：${repositoryPath}`);
+      }
+      await execFileAsync('git', ['clone', '--filter=blob:none', project.cloneUrl, repositoryPath], {
+        env: gitEnvironment(project, accessToken),
+        timeout: 15 * 60_000,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+    }
+
+    const status = (await execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, timeout: 30_000 })).stdout;
+    const headSha = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repositoryPath, timeout: 10_000 })).stdout.trim();
+    await this.saveProjectLocation(project.id, repositoryPath);
+    return { projectId: project.id, path: repositoryPath, headSha, outcome, workingTreeClean: status.trim().length === 0 };
+  }
+
+  async locateProject(projectId: string): Promise<{ path: string | null }> {
+    const projectPath = (await this.projectLocations()).projects[projectId];
+    return { path: projectPath && await this.isGitRepository(projectPath) ? projectPath : null };
+  }
+
   async provision(project: Project, task: Task, accessToken?: string): Promise<LocalWorkspaceResult> {
     if (!task.scope) throw new Error('任务缺少 Agent 环境计划。');
-    await Promise.all([fsp.mkdir(this.repositoriesRoot, { recursive: true }), fsp.mkdir(this.workspacesRoot, { recursive: true })]);
-    const repositoryPath = path.join(this.repositoriesRoot, project.id);
+    await fsp.mkdir(this.workspacesRoot, { recursive: true });
+    const repositoryPath = (await this.locateProject(project.id)).path;
+    if (!repositoryPath) throw new Error('请先在项目页面选择目录并同步仓库。');
     const workspacePath = path.join(this.workspacesRoot, task.id);
-    const gitDirectory = path.join(repositoryPath, '.git');
-    if (!fs.existsSync(gitDirectory)) {
-      try {
-        await execFileAsync('git', ['clone', '--filter=blob:none', '--no-checkout', credentialUrl(project, accessToken), repositoryPath], { timeout: 15 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-      } finally {
-        if (fs.existsSync(path.join(repositoryPath, '.git'))) {
-          await execFileAsync('git', ['remote', 'set-url', 'origin', project.cloneUrl], { cwd: repositoryPath, timeout: 10_000 });
-        }
-      }
-    } else {
-      const remote = (await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: repositoryPath, timeout: 10_000 })).stdout.trim();
-      const expected = `${project.repoOwner}/${project.repoName}.git`.toLowerCase();
-      if (!safeRemote(remote).toLowerCase().endsWith(expected)) throw new Error(`本地项目缓存的 GitHub remote 不匹配：${safeRemote(remote)}`);
-    }
-    await execFileAsync('git', ['remote', 'set-url', 'origin', credentialUrl(project, accessToken)], { cwd: repositoryPath, timeout: 10_000 });
-    try {
-      await execFileAsync('git', ['fetch', '--prune', '--tags', 'origin'], { cwd: repositoryPath, timeout: 15 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
-    } finally {
-      await execFileAsync('git', ['remote', 'set-url', 'origin', project.cloneUrl], { cwd: repositoryPath, timeout: 10_000 });
-    }
+    await this.assertProjectRemote(repositoryPath, project);
+    await this.fetchProject(repositoryPath, project, accessToken, false);
 
     if (!fs.existsSync(workspacePath)) {
       const base = task.baseSha || `origin/${project.defaultBranch}`;
@@ -148,6 +178,61 @@ export class LocalAgent {
       if (output) log.push(output);
     }
     return { taskId: task.id, path: workspacePath, headSha, setupLog: log.join('\n').slice(-100_000) };
+  }
+
+  private async projectLocations(): Promise<ProjectLocations> {
+    try {
+      const parsed = JSON.parse(await fsp.readFile(this.projectLocationsPath, 'utf8')) as Partial<ProjectLocations>;
+      if (parsed.version === 1 && parsed.projects && typeof parsed.projects === 'object') {
+        return { version: 1, projects: Object.fromEntries(Object.entries(parsed.projects).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) };
+      }
+    } catch { /* no saved project locations yet */ }
+    return { version: 1, projects: {} };
+  }
+
+  private async saveProjectLocation(projectId: string, repositoryPath: string): Promise<void> {
+    await fsp.mkdir(this.dataRoot, { recursive: true });
+    const locations = await this.projectLocations();
+    locations.projects[projectId] = repositoryPath;
+    await fsp.writeFile(this.projectLocationsPath, JSON.stringify(locations, null, 2), { mode: 0o600 });
+  }
+
+  private async isGitRepository(repositoryPath: string): Promise<boolean> {
+    if (!fs.existsSync(repositoryPath)) return false;
+    try {
+      const result = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: repositoryPath, timeout: 10_000 });
+      return result.stdout.trim() === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  private async assertProjectRemote(repositoryPath: string, project: Project): Promise<void> {
+    const remote = (await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: repositoryPath, timeout: 10_000 })).stdout.trim();
+    if (!remoteMatchesProject(remote, project)) throw new Error(`本地目录的 GitHub remote 不匹配：${safeRemote(remote)}`);
+  }
+
+  private async fetchProject(repositoryPath: string, project: Project, accessToken: string | undefined, updateWorkingTree: boolean): Promise<'updated' | 'fetched'> {
+    await execFileAsync('git', ['fetch', '--prune', '--tags', 'origin'], {
+      cwd: repositoryPath,
+      env: gitEnvironment(project, accessToken),
+      timeout: 15 * 60_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    if (!updateWorkingTree) return 'fetched';
+    const [branch, status] = await Promise.all([
+      execFileAsync('git', ['branch', '--show-current'], { cwd: repositoryPath, timeout: 10_000 }),
+      execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, timeout: 30_000 }),
+    ]);
+    if (branch.stdout.trim() !== project.defaultBranch || status.stdout.trim()) return 'fetched';
+    await execFileAsync('git', ['merge', '--ff-only', `origin/${project.defaultBranch}`], {
+      cwd: repositoryPath,
+      timeout: 5 * 60_000,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return 'updated';
   }
 
   async locate(taskId: string): Promise<{ path: string | null }> {

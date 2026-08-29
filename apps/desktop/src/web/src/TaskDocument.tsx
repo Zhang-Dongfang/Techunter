@@ -22,17 +22,12 @@ export function TaskDocument({ task }: { task: Task }) {
       <p>{task.summary || task.description}</p>
     </article>
 
-    <div className="document-columns">
-      <article><h4>发布者原始需求</h4><p>{task.description}</p></article>
-      <article><h4>Agent 分析与估价依据</h4><p>{analysis?.rationale ?? '该任务尚未保存完整 Agent 分析；请以原始需求和验收标准为准。'}</p></article>
-    </div>
+    <article className="document-analysis"><h4>Agent 分析与估价依据</h4><p>{analysis?.rationale ?? '该任务尚未保存完整 Agent 分析；请以任务目标和验收标准为准。'}</p></article>
 
     <div className="document-footer">
       <span>建议贡献点 <strong>{analysis?.suggestedPoints ?? task.rewardPoints} CP</strong></span>
       <span>当前目标分支 <code>{task.targetBranch}</code></span>
       {task.githubIssueUrl && <a href={task.githubIssueUrl} target="_blank" rel="noreferrer"><Github size={14} />GitHub Issue #{task.githubIssueNumber}<ExternalLink size={12} /></a>}
     </div>
-
-    {task.guideMarkdown && <details className="raw-task-guide"><summary>查看 CLI / GitHub 同版 Markdown 文档</summary><pre>{task.guideMarkdown}</pre></details>}
   </section>;
 }

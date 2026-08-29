@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity,
+  ArrowLeft,
   ArrowRight,
   Bot,
   Boxes,
@@ -14,6 +15,7 @@ import {
   Command,
   ExternalLink,
   FileCode2,
+  FolderGit2,
   GitBranch,
   Github,
   Home,
@@ -41,6 +43,7 @@ import { ConexusLogin } from './ConexusLogin';
 import { TaskDocument } from './TaskDocument';
 
 type View = 'market' | 'mine' | 'review' | 'points';
+type TaskView = Exclude<View, 'points'>;
 
 const STATUS: Record<TaskStatus, { label: string; className: string }> = {
   draft: { label: '草稿', className: 'status-draft' },
@@ -49,6 +52,36 @@ const STATUS: Record<TaskStatus, { label: string; className: string }> = {
   submitted: { label: '待验收', className: 'status-submitted' },
   accepted: { label: '已完成', className: 'status-accepted' },
   cancelled: { label: '已取消', className: 'status-cancelled' },
+};
+
+const TASK_VIEW_COPY: Record<TaskView, { eyebrow: string; title: string; description: string; emptyTitle: string; emptyDescription: string }> = {
+  market: {
+    eyebrow: 'TASK MARKET',
+    title: '项目任务广场',
+    description: '先选择项目，再查看和处理归属于该项目的任务。',
+    emptyTitle: '还没有项目',
+    emptyDescription: '从 GitHub 导入项目后，项目和任务会出现在这里。',
+  },
+  mine: {
+    eyebrow: 'MY HUNTS',
+    title: '我的项目任务',
+    description: '按项目查看你正在负责和已经交付的任务。',
+    emptyTitle: '还没有参与的项目',
+    emptyDescription: '认领任务后，对应项目会出现在这里。',
+  },
+  review: {
+    eyebrow: 'REVIEW QUEUE',
+    title: '项目审核目录',
+    description: '按项目处理等待验收的交付。',
+    emptyTitle: '没有待审核项目',
+    emptyDescription: '出现待验收任务时，对应项目会出现在这里。',
+  },
+};
+
+const TASK_VIEW_FILTERS: Record<TaskView, Array<'all' | TaskStatus>> = {
+  market: ['all', 'open', 'active', 'submitted', 'accepted'],
+  mine: ['all', 'active', 'submitted', 'accepted'],
+  review: ['all'],
 };
 
 function cn(...parts: Array<string | false | null | undefined>): string {
@@ -105,6 +138,19 @@ function TaskCard({ task, onOpen }: { task: TaskSummary; onOpen: () => void }) {
   );
 }
 
+function ProjectDirectoryCard({ project, tasks, onOpen }: { project: Project; tasks: TaskSummary[]; onOpen: () => void }) {
+  const statusCounts = (['draft', 'open', 'active', 'submitted', 'accepted'] as TaskStatus[])
+    .map((status) => ({ status, count: tasks.filter((task) => task.status === status).length }))
+    .filter((item) => item.count > 0);
+  return <button className="project-directory-card" onClick={onOpen}>
+    <div className="project-directory-head"><span className="project-directory-icon"><FolderGit2 size={20} /></span><div><strong>{project.name}</strong><span>{project.repoOwner}/{project.repoName}</span></div><ArrowRight size={17} /></div>
+    <p>{project.description || '共享项目，任务和交付统一归档在此目录。'}</p>
+    <div className="project-directory-count"><strong>{tasks.length}</strong><span>项任务</span></div>
+    <div className="project-directory-statuses">{statusCounts.length ? statusCounts.map(({ status, count }) => <span key={status} className={STATUS[status].className}><i />{STATUS[status].label} {count}</span>) : <span className="project-directory-empty">当前视图暂无任务</span>}</div>
+    <div className="project-directory-foot"><span><GitBranch size={13} />{project.defaultBranch}</span><span><Coins size={13} />{project.availablePoints} CP</span></div>
+  </button>;
+}
+
 function Modal({ children, onClose, wide = false }: { children: ReactNode; onClose: () => void; wide?: boolean }) {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
@@ -114,6 +160,58 @@ function Modal({ children, onClose, wide = false }: { children: ReactNode; onClo
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <div className={cn('modal', wide && 'modal-wide')}>{children}</div>
   </div>;
+}
+
+function CollaborationRequestModal({
+  project,
+  githubLogin,
+  onClose,
+  onContinue,
+}: {
+  project: Project;
+  githubLogin: string | null;
+  onClose: () => void;
+  onContinue: () => Promise<void>;
+}) {
+  const [result, setResult] = useState<'invited' | 'already_collaborator' | null>(null);
+  const [actionUrl, setActionUrl] = useState(project.htmlUrl);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function requestAccess() {
+    setBusy(true); setError('');
+    try {
+      const response = await api.requestProjectCollaboration(project.id);
+      setResult(response.status);
+      setActionUrl(response.actionUrl);
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueSync() {
+    setBusy(true); setError('');
+    try { await onContinue(); }
+    catch (caught) { setError((caught as Error).message); setBusy(false); }
+  }
+
+  return <Modal onClose={busy ? () => undefined : onClose}>
+    <div className="modal-head"><div><span className="eyebrow">PRIVATE REPOSITORY</span><h2>申请仓库合作者权限</h2></div><button className="icon-button" disabled={busy} onClick={onClose}><X size={20} /></button></div>
+    <div className="collaboration-request">
+      <div className="collaboration-repository"><span><ShieldCheck size={22} /></span><div><strong>{project.repoOwner}/{project.repoName}</strong><small>将为 GitHub 账号 @{githubLogin ?? '未连接'} 申请仓库访问权</small></div></div>
+      {!result ? <p>这是一个受限仓库。Techunter 不会在你成为合作者之前下发检出凭据；提交后，GitHub 会发送一封仓库邀请。</p> : result === 'invited' ? <div className="collaboration-success"><CheckCircle2 size={19} /><div><strong>合作者邀请已发送</strong><span>请先在 GitHub 通知或邮件中接受邀请，然后回到这里继续同步。</span></div></div> : <div className="collaboration-success"><CheckCircle2 size={19} /><div><strong>GitHub 已确认合作者权限</strong><span>现在可以继续选择本地目录并同步仓库。</span></div></div>}
+      {error && <div className="form-error"><XCircle size={16} />{error}</div>}
+      <div className="form-actions">
+        <button className="button ghost" disabled={busy} onClick={onClose}>取消</button>
+        {!result ? <button className="button primary" disabled={busy || !githubLogin} onClick={() => void requestAccess()}>{busy ? <Loader2 className="spin" size={16} /> : <Github size={16} />}提交合作者申请</button> : <>
+          {result === 'invited' && <a className="button secondary" href={actionUrl} target="_blank" rel="noreferrer"><Github size={16} />前往 GitHub</a>}
+          <button className="button primary" disabled={busy} onClick={() => void continueSync()}>{busy ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}{result === 'invited' ? '我已接受，继续同步' : '继续同步'}</button>
+        </>}
+      </div>
+    </div>
+  </Modal>;
 }
 
 function ImportProjectModal({ onClose, onImported }: { onClose: () => void; onImported: (project: Project) => void }) {
@@ -197,7 +295,7 @@ function CreateTaskModal({
         {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.repoOwner}/{project.repoName}</option>)}
       </select></label>
       <label>任务标题<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：为任务认领增加租约机制" minLength={3} required /></label>
-      <label>原始需求<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说清楚背景、问题和期望结果。Agent 会补全验收标准、文件范围和估价。" minLength={10} rows={7} required /></label>
+      <label>任务说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说清楚背景、问题和期望结果。Agent 会补全验收标准、文件范围和估价。" minLength={10} rows={7} required /></label>
       <div className="agent-hint"><Sparkles size={18} /><span>创建后，Task Spec Agent 会扫描仓库结构并生成任务说明、Scope 与建议贡献点。</span></div>
       {error && <div className="form-error"><XCircle size={16} />{error}</div>}
       <div className="form-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={busy}>{busy ? <><Loader2 className="spin" size={17} />Agent 分析中</> : <>创建并分析<ArrowRight size={17} /></>}</button></div>
@@ -379,7 +477,12 @@ export function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [activeProjectId, setActiveProjectId] = useState('');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectLocation, setProjectLocation] = useState<{ projectId: string; path: string } | null>(null);
+  const [projectLocationChecking, setProjectLocationChecking] = useState(false);
+  const [projectSyncing, setProjectSyncing] = useState(false);
+  const [projectSyncNotice, setProjectSyncNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [collaborationProject, setCollaborationProject] = useState<Project | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -397,7 +500,7 @@ export function App() {
     try {
       const data = await api.dashboard();
       setDashboard(data);
-      setActiveProjectId((current) => data.projects.some((project) => project.id === current) ? current : (data.projects[0]?.id ?? ''));
+      setSelectedProjectId((current) => data.projects.some((project) => project.id === current) ? current : '');
       setAuthRequired(false);
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) {
@@ -422,6 +525,26 @@ export function App() {
   useEffect(() => {
     if (view === 'points') api.points().then((result) => setPointsData({ available: result.available, entries: result.entries })).catch((caught) => setError((caught as Error).message));
   }, [view, dashboard]);
+
+  useEffect(() => {
+    let active = true;
+    setProjectLocation(null);
+    setProjectSyncNotice(null);
+    if (!selectedProjectId || !window.techunterDesktop) {
+      setProjectLocationChecking(false);
+      return () => { active = false; };
+    }
+    setProjectLocationChecking(true);
+    window.techunterDesktop.locateProject(selectedProjectId)
+      .then((result) => {
+        if (active && result.path) setProjectLocation({ projectId: selectedProjectId, path: result.path });
+      })
+      .catch((caught) => {
+        if (active) setProjectSyncNotice({ tone: 'error', text: (caught as Error).message });
+      })
+      .finally(() => { if (active) setProjectLocationChecking(false); });
+    return () => { active = false; };
+  }, [selectedProjectId]);
 
   async function openTask(id: string) {
     setError('');
@@ -491,17 +614,82 @@ export function App() {
     }
   }
 
-  const tasks = useMemo(() => {
+  async function syncProjectLocally(project: Project, accessToken?: string) {
+    const desktop = window.techunterDesktop;
+    if (!desktop) throw new Error('仓库同步仅在 Techunter Desktop 中可用。');
+    const result = await desktop.syncProject({ project, accessToken });
+    if (!result) return;
+    setProjectLocation({ projectId: project.id, path: result.path });
+    const outcome = result.outcome === 'cloned' ? '仓库已克隆' : result.outcome === 'updated' ? '仓库已更新' : '远程内容已获取';
+    setProjectSyncNotice({
+      tone: 'success',
+      text: `${outcome}到 ${result.path}${result.workingTreeClean ? '' : '；检测到本地改动，未覆盖当前工作区。'}`,
+    });
+  }
+
+  async function beginProjectSync(project: Project) {
+    if (projectSyncing) return;
+    setProjectSyncing(true);
+    setProjectSyncNotice(null);
+    try {
+      let accessToken: string | undefined;
+      if (project.visibility !== 'public') {
+        try {
+          accessToken = (await api.checkoutAuthorization(project.id)).token;
+        } catch (caught) {
+          if (caught instanceof ApiError && caught.code === 'GITHUB_COLLABORATOR_REQUIRED') {
+            setCollaborationProject(project);
+            return;
+          }
+          throw caught;
+        }
+      }
+      await syncProjectLocally(project, accessToken);
+    } catch (caught) {
+      setProjectSyncNotice({ tone: 'error', text: (caught as Error).message });
+    } finally {
+      setProjectSyncing(false);
+    }
+  }
+
+  async function continuePrivateProjectSync(project: Project) {
+    const checkout = await api.checkoutAuthorization(project.id);
+    setCollaborationProject(null);
+    setProjectSyncing(true);
+    try {
+      await syncProjectLocally(project, checkout.token);
+    } catch (caught) {
+      setProjectSyncNotice({ tone: 'error', text: (caught as Error).message });
+    } finally {
+      setProjectSyncing(false);
+    }
+  }
+
+  const visibleTasks = useMemo(() => {
     if (!dashboard) return [];
+    const normalizedSearch = search.trim().toLowerCase();
     return dashboard.tasks.filter((task) => {
-      if (activeProjectId && task.projectId !== activeProjectId) return false;
       if (view === 'mine' && task.assignee?.id !== dashboard.me.id) return false;
       if (view === 'review' && task.status !== 'submitted') return false;
       if (statusFilter !== 'all' && task.status !== statusFilter) return false;
-      if (search && !`${task.title} ${task.summary} ${task.projectName}`.toLowerCase().includes(search.toLowerCase())) return false;
+      const project = dashboard.projects.find((candidate) => candidate.id === task.projectId);
+      if (normalizedSearch && !`${task.title} ${task.summary} ${task.projectName} ${project?.description ?? ''} ${project?.repoOwner ?? ''} ${project?.repoName ?? ''}`.toLowerCase().includes(normalizedSearch)) return false;
       return true;
     });
-  }, [dashboard, view, statusFilter, search, activeProjectId]);
+  }, [dashboard, view, statusFilter, search]);
+
+  const projectEntries = useMemo(() => {
+    if (!dashboard || view === 'points') return [];
+    const normalizedSearch = search.trim().toLowerCase();
+    return dashboard.projects.map((project) => ({
+      project,
+      tasks: visibleTasks.filter((task) => task.projectId === project.id),
+      projectMatches: !normalizedSearch || `${project.name} ${project.description} ${project.repoOwner} ${project.repoName}`.toLowerCase().includes(normalizedSearch),
+    })).filter((entry) => {
+      if (entry.tasks.length) return true;
+      return view === 'market' && statusFilter === 'all' && entry.projectMatches;
+    });
+  }, [dashboard, search, statusFilter, view, visibleTasks]);
 
   if (loading && !dashboard) return <div className="boot-screen"><div className="brand-mark"><CrosshairIcon /></div><h1>TECHUNTER</h1><Loader2 className="spin" /></div>;
   if (authRequired) return <ConexusLogin onAuthorized={() => { void load(); }} />;
@@ -513,13 +701,16 @@ export function App() {
     { id: 'review' as const, label: '审核中心', icon: <ShieldCheck size={19} />, count: dashboard.reviewCount },
     { id: 'points' as const, label: '贡献点', icon: <WalletCards size={19} /> },
   ];
-  const activeProject = dashboard.projects.find((project) => project.id === activeProjectId) ?? dashboard.projects[0];
+  const selectedProject = dashboard.projects.find((project) => project.id === selectedProjectId);
+  const selectedProjectTasks = selectedProject ? visibleTasks.filter((task) => task.projectId === selectedProject.id) : [];
+  const taskView: TaskView | null = view === 'points' ? null : view;
+  const viewCopy = taskView ? TASK_VIEW_COPY[taskView] : null;
+  const viewFilters = taskView ? TASK_VIEW_FILTERS[taskView] : [];
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="logo"><div className="brand-mark"><CrosshairIcon /></div><div><strong>TECHUNTER</strong><span>科技猎人</span></div></div>
-      <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}>{item.icon}<span>{item.label}</span>{Boolean(item.count) && <b>{item.count}</b>}</button>)}</nav>
-      <div className="sidebar-project"><span className="eyebrow">SHARED PROJECTS</span><div><span className="project-icon">{activeProject?.name.slice(0, 1) ?? 'T'}</span><div><select value={activeProjectId} onChange={(event) => { setActiveProjectId(event.target.value); setSelectedTask(null); }}>{dashboard.projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.repoOwner}/{project.repoName}</option>)}</select><small>{dashboard.projects.length} 个共享项目</small></div><ChevronDown size={15} /></div><button className="sidebar-import" onClick={() => setImportOpen(true)}><Plus size={14} />从 GitHub 导入</button></div>
+      <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => { setView(item.id); setSelectedProjectId(''); setSelectedTask(null); setStatusFilter('all'); }}>{item.icon}<span>{item.label}</span>{Boolean(item.count) && <b>{item.count}</b>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="secure-note"><ShieldCheck size={17} /><div><strong>企业内部模式</strong><span>限定文件 · 全程审计</span></div></div><span className="version">v0.1.0 INTERNAL</span></div>
     </aside>
 
@@ -535,10 +726,20 @@ export function App() {
 
       <div className="page">
         {dashboard.runtime.conexusAuthorizationRequired && <div className="authorization-banner"><KeyRound size={19} /><div><strong>模型授权已到期</strong><span>Techunter 仍保持登录，任务与 GitHub 功能不受影响。续期后可继续使用 Agent。</span>{conexusError && <small>{conexusError}</small>}</div><button className="button secondary" disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}{conexusConnecting ? '等待浏览器授权' : '续期授权'}</button></div>}
-        {view !== 'points' && <><div className="page-head"><div><span className="eyebrow">{view === 'market' ? 'TASK MARKET' : view === 'mine' ? 'MY HUNTS' : 'REVIEW QUEUE'}</span><h1>{view === 'market' ? '发现值得解决的问题' : view === 'mine' ? '正在追踪的任务' : '等待验收的交付'}</h1><p>{view === 'market' ? '挑选任务，交给本机 Agent 自动同步项目并配置环境。' : view === 'mine' ? '你的进行中任务、工作环境和交付进度。' : '基于测试证据与 Agent 预审做最终判断。'}</p></div><button className="button primary new-task" disabled={!activeProject} onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button></div>
-          <div className="market-toolbar"><div className="filter-tabs">{['all', 'open', 'active', 'submitted', 'accepted'].map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status as TaskStatus].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{tasks.length} 个任务</div></div>
-          {error && <div className="page-error"><XCircle size={17} />{error}</div>}
-          {tasks.length ? <div className="task-grid">{tasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => openTask(task.id)} />)}</div> : <EmptyState icon={<Search />} title="没有匹配的任务" description="调整筛选条件，或者发布一个新任务。" />}
+        {taskView && viewCopy && <>
+          {!selectedProject ? <>
+            <div className="page-head"><div><span className="eyebrow">{viewCopy.eyebrow}</span><h1>{viewCopy.title}</h1><p>{viewCopy.description}</p></div>{taskView === 'market' && <button className="button primary" onClick={() => setImportOpen(true)}><Plus size={18} />导入 GitHub 项目</button>}</div>
+            <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><FolderGit2 size={16} />{projectEntries.length} 个项目 · {visibleTasks.length} 个任务</div></div>
+            {error && <div className="page-error"><XCircle size={17} />{error}</div>}
+            {projectEntries.length ? <div className="project-directory-grid">{projectEntries.map(({ project, tasks }) => <ProjectDirectoryCard key={project.id} project={project} tasks={tasks} onOpen={() => { setSelectedProjectId(project.id); setSelectedTask(null); }} />)}</div> : <EmptyState icon={<FolderGit2 />} title={search || statusFilter !== 'all' ? '没有匹配的项目' : viewCopy.emptyTitle} description={search || statusFilter !== 'all' ? '调整搜索或筛选条件后重试。' : viewCopy.emptyDescription} />}
+          </> : <>
+            <button className="project-directory-back" onClick={() => { setSelectedProjectId(''); setSelectedTask(null); }}><ArrowLeft size={15} />返回项目目录</button>
+            <div className="project-context-head"><div className="project-context-icon"><FolderGit2 size={24} /></div><div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />{selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div><div className="project-context-actions">{projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>已同步到本机</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button>{taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}</> : <button className="button primary" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '同步仓库'}</button>}</div></div>
+            {projectSyncNotice && <div className={cn('project-sync-notice', projectSyncNotice.tone)}>{projectSyncNotice.tone === 'success' ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{projectSyncNotice.text}</div>}
+            <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{selectedProjectTasks.length} 个任务</div></div>
+            {error && <div className="page-error"><XCircle size={17} />{error}</div>}
+            {selectedProjectTasks.length ? <div className="task-grid">{selectedProjectTasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => openTask(task.id)} />)}</div> : <EmptyState icon={<Search />} title="这个项目中没有匹配的任务" description={projectLocation?.projectId === selectedProject.id ? '调整搜索或筛选条件，或者在该项目下发布任务。' : '先同步仓库，再在这个项目下发布任务。'} />}
+          </>}
         </>}
         {view === 'points' && <><div className="page-head"><div><span className="eyebrow">CONTRIBUTION LEDGER</span><h1>贡献点与账单</h1><p>每一笔分配、冻结和结算都有不可变更的来源记录。</p></div></div><PointsView points={pointsData?.available ?? dashboard.myAvailablePoints} entries={pointsData?.entries ?? []} /></>}
       </div>
@@ -548,12 +749,13 @@ export function App() {
       configured={dashboard.runtime.agentConfigured}
       authorizationRequired={dashboard.runtime.conexusAuthorizationRequired}
       model={dashboard.runtime.agentModel}
-      projectId={activeProject?.id}
+      projectId={selectedProject?.id}
       onChanged={() => void load()}
     />
 
-    {createOpen && <CreateTaskModal projects={dashboard.projects} defaultProjectId={activeProject?.id} onClose={() => setCreateOpen(false)} onCreated={(task) => { setCreateOpen(false); setSelectedTask(task); void load(); }} />}
-    {importOpen && <ImportProjectModal onClose={() => setImportOpen(false)} onImported={(project) => { setImportOpen(false); setActiveProjectId(project.id); void load(); }} />}
+    {createOpen && <CreateTaskModal projects={dashboard.projects} defaultProjectId={selectedProject?.id} onClose={() => setCreateOpen(false)} onCreated={(task) => { setCreateOpen(false); setSelectedProjectId(task.projectId); setSelectedTask(task); void load(); }} />}
+    {importOpen && <ImportProjectModal onClose={() => setImportOpen(false)} onImported={(project) => { setImportOpen(false); setSelectedProjectId(project.id); void load(); }} />}
+    {collaborationProject && <CollaborationRequestModal project={collaborationProject} githubLogin={dashboard.me.githubLogin} onClose={() => setCollaborationProject(null)} onContinue={() => continuePrivateProjectSync(collaborationProject)} />}
     {selectedTask && <TaskDetail task={selectedTask} me={dashboard.me} projects={dashboard.projects} onClose={() => setSelectedTask(null)} onChanged={(task) => { setSelectedTask(task); void load(); }} onOpenTask={openTask} />}
   </div>;
 }

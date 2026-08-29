@@ -101,7 +101,6 @@ export interface Task {
   githubIssueNumber: number | null;
   githubIssueUrl: string | null;
   analysis: TaskAnalysis | null;
-  guideMarkdown: string;
   scope: TaskScope | null;
   workspace: Workspace | null;
   latestSubmission: Submission | null;
