@@ -487,6 +487,7 @@ export function App() {
   const [branchLoading, setBranchLoading] = useState(false);
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchError, setBranchError] = useState('');
+  const [branchReloadKey, setBranchReloadKey] = useState(0);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -548,7 +549,7 @@ export function App() {
       if (!cancelled) setBranchLoading(false);
     });
     return () => { cancelled = true; };
-  }, [selectedProjectId, dashboard?.runtime.githubConnected]);
+  }, [selectedProjectId, dashboard?.runtime.githubConnected, branchReloadKey]);
 
   useEffect(() => {
     if (view === 'points') api.points().then((result) => setPointsData({ available: result.available, entries: result.entries })).catch((caught) => setError((caught as Error).message));
@@ -767,7 +768,7 @@ export function App() {
     </aside>
 
     <main className="content">
-      <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={load}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
+      <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={() => { setBranchReloadKey((value) => value + 1); void load(); }}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
         <span>{dashboard.me.email ?? `@${dashboard.me.login}`}</span>
         {dashboard.runtime.conexusAuthorizationRequired && <button disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}<div><strong>{conexusConnecting ? '等待浏览器授权' : '续期 Conexus 模型授权'}</strong>{conexusError && <small>{conexusError}</small>}</div></button>}
         {!dashboard.runtime.githubConnected && dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : dashboard.me.githubLogin ? '重新连接 GitHub' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}
@@ -791,7 +792,7 @@ export function App() {
               <div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />默认分支 {selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div>
               <div className="project-context-actions">
                 <div className="project-branch-control"><GitBranch size={16} /><div><label htmlFor="project-source-branch">任务源码分支</label><select id="project-source-branch" value={activeSourceBranch} disabled={!canSwitchProjectBranch || branchLoading || branchSwitching || !dashboard.runtime.githubConnected} onChange={(event) => { void switchProjectBranch(event.target.value); }}>{branchOptions.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}{branch.isDefault ? ' · 默认' : ''}</option>)}</select><small>{branchLoading ? '正在读取 GitHub 分支' : branchSwitching ? '正在切换并刷新基线' : `提交 ${selectedProject.headSha.slice(0, 8)}`}</small></div>{branchLoading || branchSwitching ? <Loader2 className="spin" size={14} /> : <ChevronDown size={14} />}</div>
-                {branchError && <span className="project-branch-error">{branchError}</span>}
+                {branchError && <span className="project-branch-error" role="alert"><span>{branchError}</span><button type="button" disabled={branchLoading} onClick={() => setBranchReloadKey((value) => value + 1)}><RefreshCw size={12} />重试</button></span>}
                 {projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>已同步到本机</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button>{taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}</> : <button className="button primary" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '同步仓库'}</button>}
               </div>
             </div>

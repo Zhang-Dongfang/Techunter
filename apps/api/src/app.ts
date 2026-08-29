@@ -13,6 +13,7 @@ import { config } from './config.js';
 import { database } from './database.js';
 import { httpError } from './errors.js';
 import { GitHubService } from './github-service.js';
+import { desktopCorsMethods } from './http-policy.js';
 import { TaskService } from './task-service.js';
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -70,6 +71,7 @@ export async function buildApp() {
       else callback(new Error('Origin is not allowed'), false);
     },
     credentials: true,
+    methods: desktopCorsMethods,
   });
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });

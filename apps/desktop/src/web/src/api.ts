@@ -16,6 +16,7 @@ import type {
   GitHubRepositoryCandidate,
   PackageFile,
 } from '@techunter/core';
+import { retryTransientRequest } from './request-retry';
 
 export class ApiError extends Error {
   constructor(
@@ -84,7 +85,8 @@ export const api = {
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   githubRepositories: () => request<{ repositories: GitHubRepositoryCandidate[] }>('/api/github/repositories'),
   importProject: (githubRepositoryId: number) => post<Project>('/api/projects/import', { githubRepositoryId }),
-  projectBranches: (projectId: string) => request<{ branches: GitHubBranch[]; sourceBranch: string }>(`/api/projects/${projectId}/branches`),
+  projectBranches: (projectId: string) => retryTransientRequest(() =>
+    request<{ branches: GitHubBranch[]; sourceBranch: string }>(`/api/projects/${projectId}/branches`)),
   switchProjectBranch: (projectId: string, sourceBranch: string) => request<Project>(`/api/projects/${projectId}/branch`, {
     method: 'PATCH',
     body: JSON.stringify({ sourceBranch }),
