@@ -181,7 +181,10 @@ export interface DashboardResponse {
     agentModel: string | null;
     githubConfigured: boolean;
     githubAccountLinkConfigured: boolean;
+    githubConnected: boolean;
     modelAccessMode: 'direct' | 'conexus';
+    conexusAuthorizationRequired: boolean;
+    modelAuthorizationExpiresAt: string | null;
   };
 }
 

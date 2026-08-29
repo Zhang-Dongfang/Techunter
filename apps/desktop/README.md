@@ -39,11 +39,19 @@ TECHUNTER_API_URL=https://techunter-api.example.com
 TECHUNTER_UI_PORT=4311
 ```
 
+在 Windows 上打包 x64 安装程序：
+
+```powershell
+npm run package:win --workspace @techunter/desktop
+```
+
+打包时 `apps/desktop/.env` 会作为资源随安装程序分发，并在安装后的应用启动时读取。这里只能放客户端可公开的配置，禁止放 API 密钥、令牌或其他秘密。安装程序输出到根目录的 `dist/windows`。
+
 Railway API 的 `TECHUNTER_WEB_ORIGINS` 必须包含 `http://127.0.0.1:4311`。`TECHUNTER_RENDERER_URL` 只供开发时指向 Vite，生产环境不要设置。
 
 GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据只用于 git 传输，remote 在 clone/fetch 后恢复为无凭据 URL。
 
-Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复用浏览器中的 github.com 会话；Conexus 第一次成功登录后在官方 API 域保存 HttpOnly 浏览器会话，之后只需确认继续使用该账号。
+Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复用浏览器中的 github.com 会话；GitHub 连接按用户保存，不随单次 Techunter 登录结束。Techunter 登录会话最长 30 天、连续 7 天未使用会失效；短期 Conexus Run Ticket 到期只暂停模型功能，可复用官方 API 域保存的 HttpOnly 浏览器会话快速续期。
 
 ## 安全边界
 

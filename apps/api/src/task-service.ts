@@ -226,7 +226,7 @@ export class TaskService {
     return this.getTask(String(row['id']));
   }
 
-  async analyzeTask(taskId: string, actor: User, authorization: { credential: string; audience: string }, githubCredential?: string): Promise<TaskAnalysis> {
+  async analyzeTask(taskId: string, actor: User, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<TaskAnalysis> {
     const task = await this.getTask(taskId);
     if (task.status !== 'draft') throw httpError('只有草稿任务可以重新分析。', 400);
     if (task.publisher.id !== actor.id && actor.role !== 'admin') throw httpError('当前账号没有分析该任务的权限。', 403);
@@ -242,8 +242,8 @@ export class TaskService {
       editableLimit: parent?.scope?.editablePaths,
       readonlyLimit: parent?.scope ? [...parent.scope.editablePaths, ...parent.scope.readonlyPaths] : undefined,
       inheritedDeniedPaths: parent?.scope?.deniedPaths,
-      modelCredential: authorization.credential,
-      modelAudience: authorization.audience,
+      modelCredential: authorization?.credential,
+      modelAudience: authorization?.audience,
     });
     const update = await database().from('tasks').update({
       summary: analysis.summary,
@@ -331,7 +331,7 @@ export class TaskService {
     return this.workspaceFromRow(row);
   }
 
-  async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[] }, authorization: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
+  async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[] }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id || !task.scope) throw httpError('只有任务执行者可以提交进行中的任务。', 400);
     const children = dataOrThrow(await database().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)')) as Row[];
@@ -356,8 +356,8 @@ export class TaskService {
       changedFiles: files,
       testOutput: input.testOutput,
       summary: input.summary,
-      modelCredential: authorization.credential,
-      modelAudience: authorization.audience,
+      modelCredential: authorization?.credential,
+      modelAudience: authorization?.audience,
     });
     const status = review.verdict === 'approved' ? 'approved' : 'changes_requested';
     const project = await this.getProject(task.projectId);

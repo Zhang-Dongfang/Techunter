@@ -98,6 +98,8 @@ a { color: inherit; text-decoration: none; }
 .profile-menu strong, .profile-menu small { display: block; }.profile-menu strong { font-size: 11px; }.profile-menu small { font-size: 9px; color: var(--muted-2); margin-top: 2px; }
 
 .page { padding: 43px 46px 145px; max-width: 1500px; margin: auto; }
+.authorization-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 24px; padding: 13px 14px; border: 1px solid rgba(240,188,85,.22); border-radius: 10px; background: rgba(240,188,85,.07); color: #f0bc55; }
+.authorization-banner > div { min-width: 0; }.authorization-banner strong,.authorization-banner span,.authorization-banner small { display: block; }.authorization-banner strong { color: #e8d19f; font-size: 11px; }.authorization-banner span { margin-top: 3px; color: #9b9179; font-size: 9px; line-height: 1.5; }.authorization-banner small { margin-top: 4px; color: #ff8585; font-size: 9px; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 34px; }
 .page-head h1 { margin: 7px 0 9px; font-size: 31px; letter-spacing: -.035em; font-weight: 720; }
 .page-head p { margin: 0; color: var(--muted); font-size: 12px; }

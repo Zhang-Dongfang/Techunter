@@ -77,7 +77,9 @@ export class AgentService {
   private aiConfig(modelCredential?: string, modelAudience?: string) {
     const value = config();
     if (value.ai.accessMode === 'conexus') {
-      if (!modelCredential || !modelAudience) throw httpError('Conexus 授权已过期，请重新登录。', 401);
+      if (!modelCredential || !modelAudience) {
+        throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
+      }
       return {
         aiApiKey: modelCredential,
         aiAccessMode: value.ai.accessMode,

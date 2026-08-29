@@ -55,8 +55,9 @@ export class AssistantService {
     const credential = value.ai.accessMode === 'conexus' ? input.modelCredential : value.ai.apiKey;
     if (!credential || (value.ai.accessMode === 'conexus' && !input.modelAudience)) {
       throw httpError(
-        value.ai.accessMode === 'conexus' ? 'Techunter Agent 授权已过期，请重新登录。' : 'Task Agent 未配置。',
+        value.ai.accessMode === 'conexus' ? 'Conexus 模型授权已过期，请重新授权。' : 'Task Agent 未配置。',
         value.ai.accessMode === 'conexus' ? 401 : 503,
+        value.ai.accessMode === 'conexus' ? 'CONEXUS_AUTHORIZATION_REQUIRED' : undefined,
       );
     }
     const projects = await this.tasks.projects();
@@ -142,7 +143,9 @@ export class AssistantService {
             description: String(toolInput['description'] ?? ''),
             publisherId: input.user.id,
           });
-          if (!input.modelCredential || !input.modelAudience) throw httpError('Agent 授权不足，任务草稿已保留。', 401);
+          if (!input.modelCredential || !input.modelAudience) {
+            throw httpError('Agent 授权不足，任务草稿已保留。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
+          }
           await this.tasks.analyzeTask(draft.id, input.user, { credential: input.modelCredential, audience: input.modelAudience }, input.githubCredential);
           return json(taskForAgent(await this.tasks.getTask(draft.id)));
         },

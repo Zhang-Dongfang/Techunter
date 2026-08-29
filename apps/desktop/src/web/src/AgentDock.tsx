@@ -27,11 +27,13 @@ function activityLabel(name: string): string {
 
 export function AgentDock({
   configured,
+  authorizationRequired,
   model,
   projectId,
   onChanged,
 }: {
   configured: boolean;
+  authorizationRequired?: boolean;
   model: string | null;
   projectId?: string;
   onChanged: () => void;
@@ -111,10 +113,10 @@ export function AgentDock({
 
     <form className="agent-composer" onSubmit={submit}>
       <button type="button" className="agent-orb" onClick={() => setExpanded((value) => !value)} title={expanded ? '收起对话' : '展开对话'}><Bot size={20} />{!expanded && messages.length > 0 && <i />}</button>
-      <div><textarea rows={1} value={input} onFocus={() => setExpanded(true)} onChange={(event) => setInput(event.target.value)} onKeyDown={keyDown} disabled={!configured || busy} placeholder={configured ? '交给 Agent：查询任务、发布工作、分析代码…' : 'Agent 未配置，请先运行 tch init'} /><span>Enter 发送 · Shift Enter 换行</span></div>
+      <div><textarea rows={1} value={input} onFocus={() => setExpanded(true)} onChange={(event) => setInput(event.target.value)} onKeyDown={keyDown} disabled={!configured || busy} placeholder={configured ? '交给 Agent：查询任务、发布工作、分析代码…' : authorizationRequired ? 'Conexus 模型授权已到期，请先续期' : 'Agent 未配置，请先运行 tch init'} /><span>Enter 发送 · Shift Enter 换行</span></div>
       <button className="agent-send" disabled={!configured || busy || !input.trim()} title="发送">{busy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
       {!expanded && <button type="button" className="agent-expand" onClick={() => setExpanded(true)} title="展开对话"><ChevronUp size={17} /></button>}
-      {!configured && <span className="agent-config-error"><XCircle size={14} />未连接</span>}
+      {!configured && <span className="agent-config-error"><XCircle size={14} />{authorizationRequired ? '待续期' : '未连接'}</span>}
     </form>
   </section>;
 }

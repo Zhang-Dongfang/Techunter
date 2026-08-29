@@ -80,11 +80,14 @@ export async function buildApp() {
   app.get('/api/dashboard', async (request) => ({
     ...await tasks.dashboard(request.currentUser),
     runtime: {
-      agentConfigured: agent.configured && Boolean(request.modelAuthorization),
+      agentConfigured: agent.configured && (config().ai.accessMode === 'direct' || Boolean(request.modelAuthorization)),
       agentModel: config().ai.model || null,
       githubConfigured: github.configured,
       githubAccountLinkConfigured: Boolean(config().github.clientId),
+      githubConnected: request.githubConnected,
       modelAccessMode: config().ai.accessMode,
+      conexusAuthorizationRequired: config().ai.accessMode === 'conexus' && !request.modelAuthorization,
+      modelAuthorizationExpiresAt: request.modelAuthorizationExpiresAt ?? null,
     },
   }));
 
@@ -119,7 +122,9 @@ export async function buildApp() {
     return reply.code(201).send(await tasks.createDraft({ ...body, publisherId: request.currentUser.id }));
   });
   app.post('/api/tasks/:id/analyze', async (request) => {
-    if (!request.modelAuthorization) throw httpError('Conexus 授权已过期，请重新登录。', 401);
+    if (config().ai.accessMode === 'conexus' && !request.modelAuthorization) {
+      throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
+    }
     const { id } = idParams.parse(request.params);
     const analysis = await tasks.analyzeTask(id, request.currentUser, request.modelAuthorization, request.githubCredential);
     return { analysis, task: await tasks.getTask(id) };
@@ -140,7 +145,9 @@ export async function buildApp() {
   app.post('/api/tasks/:id/workspaces', async (request, reply) => reply.code(201).send(await tasks.createWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceBody.parse(request.body))));
   app.patch('/api/workspaces/:id', async (request) => tasks.updateWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceUpdateBody.parse(request.body)));
   app.post('/api/tasks/:id/submissions', async (request, reply) => {
-    if (!request.modelAuthorization) throw httpError('Conexus 授权已过期，请重新登录。', 401);
+    if (config().ai.accessMode === 'conexus' && !request.modelAuthorization) {
+      throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
+    }
     return reply.code(201).send(await tasks.submitTask(idParams.parse(request.params).id, request.currentUser, submitBody.parse(request.body), request.modelAuthorization, request.githubCredential));
   });
   app.post('/api/submissions/:id/accept', async (request) => {

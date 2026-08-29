@@ -4,6 +4,8 @@
 
 它不 clone 长期仓库、不保存本机路径，也不执行用户项目环境命令。任务分析需要代码证据时，会从 GitHub 下载短期 archive 到临时目录并在调用结束后删除。Conexus 与 GitHub 都由 Desktop 发起系统浏览器授权；GitHub callback 使用与当前 Techunter session 绑定的短期签名 state，不依赖系统浏览器共享 Desktop Cookie。
 
+Techunter 登录会话具有 30 天绝对期限和 7 天空闲期限。Conexus Run Ticket 保持自身的短期有效期；它过期后只暂停模型功能，用户可以通过 Conexus 保存的浏览器会话重新授权。GitHub OAuth 凭证按用户加密保存，不随单个 Techunter 会话退出或 Run Ticket 到期而丢失；用户从 Desktop 断开 GitHub 时会同时撤销远端授权。
+
 ## 部署顺序
 
 1. 按 `infra/supabase/README.md` 应用迁移，并把 `techunter` 加入 Supabase Data API Exposed schemas。

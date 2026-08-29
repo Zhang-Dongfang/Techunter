@@ -43,7 +43,12 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
     },
   });
   const body = await response.json().catch(() => ({})) as { error?: string; code?: string };
-  if (!response.ok) throw new ApiError(body.error || `请求失败 (${response.status})`, response.status, body.code);
+  if (!response.ok) {
+    if (body.code === 'CONEXUS_AUTHORIZATION_REQUIRED') {
+      window.dispatchEvent(new Event('techunter:conexus-authorization-required'));
+    }
+    throw new ApiError(body.error || `请求失败 (${response.status})`, response.status, body.code);
+  }
   return body as T;
 }
 
@@ -54,13 +59,24 @@ function post<T>(url: string, body: unknown = {}): Promise<T> {
 export const api = {
   conexusConfig: () => request<ConexusAuthConfig>('/api/auth/conexus/config'),
   authorizeConexus: (authorization: ConexusAccountAuthorization, audience: string) =>
-    post<{ user: User; expiresAt: string }>('/api/auth/conexus', {
+    post<{ user: User; session: { expiresAt: string; idleExpiresAt: string }; modelAuthorizationExpiresAt: string }>('/api/auth/conexus', {
       runTicket: authorization.runTicket,
       audience,
     }),
-  me: () => request<{ user: User }>('/api/auth/me'),
+  refreshConexus: (authorization: ConexusAccountAuthorization, audience: string) =>
+    post<{ user: User; modelAuthorizationExpiresAt: string }>('/api/auth/conexus/refresh', {
+      runTicket: authorization.runTicket,
+      audience,
+    }),
+  me: () => request<{
+    user: User;
+    githubConnected: boolean;
+    modelAuthorizationExpiresAt: string | null;
+    session: { expiresAt: string; idleExpiresAt: string };
+  }>('/api/auth/me'),
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
   beginGitHubAuthorization: () => post<{ authorizationUrl: string }>('/api/auth/github'),
+  disconnectGitHub: () => request<{ ok: boolean }>('/api/auth/github', { method: 'DELETE' }),
   dashboard: () => request<DashboardResponse>('/api/dashboard'),
   tasks: (query = '') => request<{ tasks: TaskSummary[] }>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),

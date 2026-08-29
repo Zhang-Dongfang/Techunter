@@ -18,6 +18,7 @@ import {
   Github,
   Home,
   Layers3,
+  KeyRound,
   Loader2,
   LogOut,
   Plus,
@@ -26,6 +27,7 @@ import {
   ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Unplug,
   UserRound,
   UsersRound,
   WalletCards,
@@ -387,6 +389,8 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [githubConnecting, setGitHubConnecting] = useState(false);
   const [githubError, setGitHubError] = useState('');
+  const [conexusConnecting, setConexusConnecting] = useState(false);
+  const [conexusError, setConexusError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -410,6 +414,12 @@ export function App() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
+    const authorizationRequired = () => { void load(); };
+    window.addEventListener('techunter:conexus-authorization-required', authorizationRequired);
+    return () => window.removeEventListener('techunter:conexus-authorization-required', authorizationRequired);
+  }, [load]);
+
+  useEffect(() => {
     if (view === 'points') api.points().then((result) => setPointsData({ available: result.available, entries: result.entries })).catch((caught) => setError((caught as Error).message));
   }, [view, dashboard]);
 
@@ -425,6 +435,23 @@ export function App() {
     setAuthRequired(true);
   }
 
+  async function refreshConexus() {
+    if (!window.techunterDesktop || conexusConnecting) return;
+    setConexusConnecting(true);
+    setConexusError('');
+    try {
+      const config = await api.conexusConfig();
+      const authorization = await window.techunterDesktop.authorizeConexus(config);
+      await api.refreshConexus(authorization, window.location.origin);
+      await load();
+      setProfileOpen(false);
+    } catch (caught) {
+      setConexusError((caught as Error).message);
+    } finally {
+      setConexusConnecting(false);
+    }
+  }
+
   async function connectGitHub() {
     if (!window.techunterDesktop || githubConnecting) return;
     setGitHubConnecting(true);
@@ -435,13 +462,28 @@ export function App() {
       const deadline = Date.now() + 5 * 60_000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 1_500));
-        const { user } = await api.me();
-        if (!user.githubLogin) continue;
+        const { githubConnected } = await api.me();
+        if (!githubConnected) continue;
         await load();
         setProfileOpen(false);
         return;
       }
       throw new Error('等待 GitHub 浏览器授权超时，请重试。');
+    } catch (caught) {
+      setGitHubError((caught as Error).message);
+    } finally {
+      setGitHubConnecting(false);
+    }
+  }
+
+  async function disconnectGitHub() {
+    if (githubConnecting || !window.confirm('断开 GitHub 并撤销 Techunter 的 GitHub 授权？')) return;
+    setGitHubConnecting(true);
+    setGitHubError('');
+    try {
+      await api.disconnectGitHub();
+      await load();
+      setProfileOpen(false);
     } catch (caught) {
       setGitHubError((caught as Error).message);
     } finally {
@@ -482,9 +524,17 @@ export function App() {
     </aside>
 
     <main className="content">
-      <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConfigured ? '服务已配置' : '未配置'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={load}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu"><span>{dashboard.me.email ?? `@${dashboard.me.login}`}</span>{!dashboard.me.githubLogin && dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}{!dashboard.me.githubLogin && !dashboard.runtime.githubAccountLinkConfigured && <span>GitHub 尚未连接</span>}{dashboard.me.githubLogin && <span>GitHub · @{dashboard.me.githubLogin}</span>}<button onClick={() => { void logout(); }}><LogOut size={14} /><div><strong>退出登录</strong></div></button></div>}</div></div></header>
+      <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={load}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
+        <span>{dashboard.me.email ?? `@${dashboard.me.login}`}</span>
+        {dashboard.runtime.conexusAuthorizationRequired && <button disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}<div><strong>{conexusConnecting ? '等待浏览器授权' : '续期 Conexus 模型授权'}</strong>{conexusError && <small>{conexusError}</small>}</div></button>}
+        {!dashboard.runtime.githubConnected && dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : dashboard.me.githubLogin ? '重新连接 GitHub' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}
+        {!dashboard.runtime.githubConnected && !dashboard.runtime.githubAccountLinkConfigured && <span>GitHub 尚未连接</span>}
+        {dashboard.runtime.githubConnected && <><span>GitHub · @{dashboard.me.githubLogin}</span><button disabled={githubConnecting} onClick={() => { void disconnectGitHub(); }}><Unplug size={14} /><div><strong>断开 GitHub</strong>{githubError && <small>{githubError}</small>}</div></button></>}
+        <button onClick={() => { void logout(); }}><LogOut size={14} /><div><strong>退出登录</strong></div></button>
+      </div>}</div></div></header>
 
       <div className="page">
+        {dashboard.runtime.conexusAuthorizationRequired && <div className="authorization-banner"><KeyRound size={19} /><div><strong>模型授权已到期</strong><span>Techunter 仍保持登录，任务与 GitHub 功能不受影响。续期后可继续使用 Agent。</span>{conexusError && <small>{conexusError}</small>}</div><button className="button secondary" disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}{conexusConnecting ? '等待浏览器授权' : '续期授权'}</button></div>}
         {view !== 'points' && <><div className="page-head"><div><span className="eyebrow">{view === 'market' ? 'TASK MARKET' : view === 'mine' ? 'MY HUNTS' : 'REVIEW QUEUE'}</span><h1>{view === 'market' ? '发现值得解决的问题' : view === 'mine' ? '正在追踪的任务' : '等待验收的交付'}</h1><p>{view === 'market' ? '挑选任务，交给本机 Agent 自动同步项目并配置环境。' : view === 'mine' ? '你的进行中任务、工作环境和交付进度。' : '基于测试证据与 Agent 预审做最终判断。'}</p></div><button className="button primary new-task" disabled={!activeProject} onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button></div>
           <div className="market-toolbar"><div className="filter-tabs">{['all', 'open', 'active', 'submitted', 'accepted'].map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status as TaskStatus].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{tasks.length} 个任务</div></div>
           {error && <div className="page-error"><XCircle size={17} />{error}</div>}
@@ -496,6 +546,7 @@ export function App() {
 
     <AgentDock
       configured={dashboard.runtime.agentConfigured}
+      authorizationRequired={dashboard.runtime.conexusAuthorizationRequired}
       model={dashboard.runtime.agentModel}
       projectId={activeProject?.id}
       onChanged={() => void load()}

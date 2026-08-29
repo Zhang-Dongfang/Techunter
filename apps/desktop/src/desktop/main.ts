@@ -9,7 +9,9 @@ import { LocalAgent } from '../worker/local-agent';
 import { authorizeConexusInBrowser, type ConexusBrowserAuthInput } from './browser-auth';
 
 try {
-  const envPath = path.resolve(process.cwd(), '.env');
+  const envPath = app.isPackaged
+    ? path.join(process.resourcesPath, '.env')
+    : path.resolve(process.cwd(), '.env');
   if (fs.existsSync(envPath)) process.loadEnvFile(envPath);
 } catch {
   // Process-level environment values remain authoritative.
