@@ -130,6 +130,10 @@ export async function buildApp() {
     return { tasks: await tasks.listTasks({ status: query.status, assigneeId: query.mine === 'true' ? request.currentUser.id : undefined, search: query.search }) };
   });
   app.get('/api/tasks/:id', async (request) => tasks.getTask(idParams.parse(request.params).id));
+  app.delete('/api/tasks/:id', async (request) => {
+    assertRole(request, ['admin']);
+    return tasks.removeTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
+  });
   app.post('/api/tasks', async (request, reply) => {
     const body = createTaskBody.parse(request.body);
     if (!request.githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');

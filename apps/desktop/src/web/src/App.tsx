@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity,
   ArrowLeft,
@@ -29,6 +29,7 @@ import {
   ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Trash2,
   Unplug,
   UserRound,
   UsersRound,
@@ -296,7 +297,7 @@ function CreateTaskModal({
       </select></label>
       <label>任务标题<input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：为任务认领增加租约机制" minLength={3} required /></label>
       <label>任务说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说清楚背景、问题和期望结果。Agent 会补全验收标准、文件范围和估价。" minLength={10} rows={7} required /></label>
-      <div className="agent-hint"><Sparkles size={18} /><span>创建后，Task Spec Agent 会扫描仓库结构并生成任务说明、Scope 与建议贡献点。</span></div>
+      <div className="agent-hint"><Sparkles size={18} /><span>创建后，Task Spec Agent 会直接读取 GitHub 上选定的源码分支，生成任务说明、Scope 与建议贡献点，无需先同步到本机。</span></div>
       {error && <div className="form-error"><XCircle size={16} />{error}</div>}
       <div className="form-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={busy}>{busy ? <><Loader2 className="spin" size={17} />Agent 分析中</> : <>创建并分析<ArrowRight size={17} /></>}</button></div>
     </form>
@@ -348,6 +349,7 @@ function TaskDetail({
   projects,
   onClose,
   onChanged,
+  onRemoved,
   onOpenTask,
 }: {
   task: Task;
@@ -355,6 +357,7 @@ function TaskDetail({
   projects: Project[];
   onClose: () => void;
   onChanged: (task: Task) => void;
+  onRemoved: (result: { id: string; disposition: 'deleted' | 'cancelled' }) => void;
   onOpenTask: (id: string) => void;
 }) {
   const [busy, setBusy] = useState('');
@@ -367,6 +370,7 @@ function TaskDetail({
   const [testOutput, setTestOutput] = useState('');
   const [changeReason, setChangeReason] = useState('请根据验收标准补充实现与测试。');
   const [localPath, setLocalPath] = useState('');
+  const [removeConfirm, setRemoveConfirm] = useState(false);
 
   const project = projects.find((candidate) => candidate.id === task.projectId);
 
@@ -394,8 +398,13 @@ function TaskDetail({
     const desktop = window.techunterDesktop;
     if (!desktop) throw new Error('自动同步和环境配置仅在 Techunter Desktop 中可用。');
     if (!project) throw new Error('找不到任务所属项目。');
-    const identity = await desktop.identity();
     const checkout = await api.checkoutAuthorization(project.id);
+    const projectLocation = await desktop.locateProject(project.id);
+    if (!projectLocation.path) {
+      const synced = await desktop.syncProject({ project, accessToken: checkout.token });
+      if (!synced) throw new Error('已取消本地目录选择，尚未准备任务工作环境。');
+    }
+    const identity = await desktop.identity();
     const workspace = await api.workspace(task.id, identity);
     await api.updateWorkspace(workspace.id, { status: 'provisioning' });
     try {
@@ -415,6 +424,21 @@ function TaskDetail({
     setLocalPath(changes.path);
     return api.submit(task.id, { summary, testOutput, files: changes.files });
   }
+
+  async function removeTask() {
+    setBusy('remove');
+    setError('');
+    try {
+      onRemoved(await api.removeTask(task.id));
+    } catch (caught) {
+      setError((caught as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const canRemove = me.role === 'admin' && !['accepted', 'cancelled'].includes(task.status);
+  const removeLabel = task.status === 'draft' ? '删除草稿' : '取消并移除任务';
 
   return <>
     <Modal onClose={onClose} wide>
@@ -449,6 +473,13 @@ function TaskDetail({
               {task.status === 'active' && mine && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{task.workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
               {task.status === 'submitted' && submission?.status === 'approved' && canReview && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}验收并结算</button><textarea className="compact-textarea" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} rows={3} /><button className="button danger full" disabled={Boolean(busy)} onClick={() => action('changes', () => api.requestChanges(submission.id, changeReason))}><XCircle size={17} />要求修改</button></>}
               {task.status === 'accepted' && <div className="done-panel"><CheckCircle2 size={22} /><div><strong>任务已完成</strong><span>贡献点已进入执行者账户</span></div></div>}
+              {canRemove && (!removeConfirm
+                ? <button className="button danger full" disabled={Boolean(busy)} onClick={() => setRemoveConfirm(true)}><Trash2 size={16} />{removeLabel}</button>
+                : <div className="task-remove-confirm">
+                  <strong>{task.status === 'draft' ? '永久删除这个草稿？' : '确认取消并移除这个任务？'}</strong>
+                  <p>{task.status === 'draft' ? '草稿将永久删除，此操作无法恢复。' : '任务会从市场移除，GitHub Issue 与未合并 PR 将关闭，未结算贡献点会退回项目。'}</p>
+                  <div><button className="button ghost" disabled={Boolean(busy)} onClick={() => setRemoveConfirm(false)}>返回</button><button className="button danger" disabled={Boolean(busy)} onClick={() => void removeTask()}>{busy === 'remove' ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}{removeLabel}</button></div>
+                </div>)}
             </div>
             {error && <div className="form-error"><XCircle size={16} />{error}</div>}
           </aside>
@@ -488,6 +519,8 @@ export function App() {
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchError, setBranchError] = useState('');
   const [branchReloadKey, setBranchReloadKey] = useState(0);
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const branchControlRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -520,6 +553,24 @@ export function App() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (!branchMenuOpen) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!branchControlRef.current?.contains(event.target as Node)) setBranchMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setBranchMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnPointerDown);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointerDown);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [branchMenuOpen]);
+
+  useEffect(() => { setBranchMenuOpen(false); }, [selectedProjectId]);
 
   useEffect(() => {
     const authorizationRequired = () => { void load(); };
@@ -759,6 +810,7 @@ export function App() {
     ? [{ name: activeSourceBranch, sha: selectedProject.headSha, protected: false, isDefault: activeSourceBranch === selectedProject.defaultBranch }, ...projectBranches]
     : projectBranches;
   const canSwitchProjectBranch = ['admin', 'maintainer'].includes(dashboard.me.role);
+  const branchControlDisabled = !canSwitchProjectBranch || branchLoading || branchSwitching || !dashboard.runtime.githubConnected;
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -791,15 +843,51 @@ export function App() {
               <div className="project-context-icon"><FolderGit2 size={24} /></div>
               <div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />默认分支 {selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div>
               <div className="project-context-actions">
-                <div className="project-branch-control"><GitBranch size={16} /><div><label htmlFor="project-source-branch">任务源码分支</label><select id="project-source-branch" value={activeSourceBranch} disabled={!canSwitchProjectBranch || branchLoading || branchSwitching || !dashboard.runtime.githubConnected} onChange={(event) => { void switchProjectBranch(event.target.value); }}>{branchOptions.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}{branch.isDefault ? ' · 默认' : ''}</option>)}</select><small>{branchLoading ? '正在读取 GitHub 分支' : branchSwitching ? '正在切换并刷新基线' : `提交 ${selectedProject.headSha.slice(0, 8)}`}</small></div>{branchLoading || branchSwitching ? <Loader2 className="spin" size={14} /> : <ChevronDown size={14} />}</div>
+                <div ref={branchControlRef} className={cn('project-branch-control', (branchLoading || branchSwitching) && 'busy', branchMenuOpen && 'open')}>
+                  <GitBranch size={16} />
+                  <div className="project-branch-field">
+                    <label id="project-source-branch-label">任务源码分支</label>
+                    <button
+                      type="button"
+                      className="project-branch-trigger"
+                      aria-labelledby="project-source-branch-label"
+                      aria-haspopup="listbox"
+                      aria-expanded={branchMenuOpen}
+                      disabled={branchControlDisabled}
+                      onClick={() => setBranchMenuOpen((open) => !open)}
+                    >
+                      <span>{activeSourceBranch}{activeSourceBranch === selectedProject.defaultBranch && <em> · 默认</em>}</span>
+                      <ChevronDown size={13} />
+                    </button>
+                    <small>{branchLoading ? '正在读取 GitHub 分支' : branchSwitching ? '正在切换并刷新基线' : `提交 ${selectedProject.headSha.slice(0, 8)}`}</small>
+                  </div>
+                  {(branchLoading || branchSwitching) && <Loader2 className="spin" size={14} />}
+                  {branchMenuOpen && <div className="project-branch-menu" role="listbox" aria-label="任务源码分支">
+                    {branchOptions.map((branch) => <button
+                      type="button"
+                      key={branch.name}
+                      role="option"
+                      aria-selected={branch.name === activeSourceBranch}
+                      className={branch.name === activeSourceBranch ? 'selected' : ''}
+                      onClick={() => {
+                        setBranchMenuOpen(false);
+                        if (branch.name !== activeSourceBranch) void switchProjectBranch(branch.name);
+                      }}
+                    >
+                      <span><strong>{branch.name}</strong>{branch.isDefault && <small>默认分支</small>}</span>
+                      {branch.name === activeSourceBranch && <Check size={14} />}
+                    </button>)}
+                  </div>}
+                </div>
                 {branchError && <span className="project-branch-error" role="alert"><span>{branchError}</span><button type="button" disabled={branchLoading} onClick={() => setBranchReloadKey((value) => value + 1)}><RefreshCw size={12} />重试</button></span>}
-                {projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>已同步到本机</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button>{taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}</> : <button className="button primary" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '同步仓库'}</button>}
+                {projectLocation?.projectId === selectedProject.id ? <><div className="project-sync-location"><CheckCircle2 size={16} /><span><strong>本地仓库已准备</strong><small title={projectLocation.path}>{projectLocation.path}</small></span></div><button className="button secondary" disabled={projectSyncing} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}重新同步</button></> : <button className="button secondary" title="仅在本机执行任务时需要" disabled={projectSyncing || projectLocationChecking} onClick={() => void beginProjectSync(selectedProject)}>{projectSyncing || projectLocationChecking ? <Loader2 className="spin" size={17} /> : <FolderGit2 size={17} />}{projectLocationChecking ? '检查本地仓库' : projectSyncing ? '同步中' : '准备本地仓库'}</button>}
+                {taskView === 'market' && <button className="button primary new-task" onClick={() => setCreateOpen(true)}><Plus size={18} />发布任务</button>}
               </div>
             </div>
             {projectSyncNotice && <div className={cn('project-sync-notice', projectSyncNotice.tone)}>{projectSyncNotice.tone === 'success' ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{projectSyncNotice.text}</div>}
             <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{selectedProjectTasks.length} 个任务</div></div>
             {error && <div className="page-error"><XCircle size={17} />{error}</div>}
-            {selectedProjectTasks.length ? <div className="task-grid">{selectedProjectTasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => openTask(task.id)} />)}</div> : <EmptyState icon={<Search />} title="这个项目中没有匹配的任务" description={projectLocation?.projectId === selectedProject.id ? '调整搜索或筛选条件，或者在该项目下发布任务。' : '先同步仓库，再在这个项目下发布任务。'} />}
+            {selectedProjectTasks.length ? <div className="task-grid">{selectedProjectTasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => openTask(task.id)} />)}</div> : <EmptyState icon={<Search />} title="这个项目中没有匹配的任务" description="可以直接发布任务；本地仓库只需在认领并执行任务时准备。" />}
           </>}
         </>}
         {view === 'points' && <><div className="page-head"><div><span className="eyebrow">CONTRIBUTION LEDGER</span><h1>贡献点与账单</h1><p>每一笔分配、冻结和结算都有不可变更的来源记录。</p></div></div><PointsView points={pointsData?.available ?? dashboard.myAvailablePoints} entries={pointsData?.entries ?? []} /></>}
@@ -817,6 +905,6 @@ export function App() {
     {createOpen && <CreateTaskModal projects={dashboard.projects} defaultProjectId={selectedProject?.id} onClose={() => setCreateOpen(false)} onCreated={(task) => { setCreateOpen(false); setSelectedProjectId(task.projectId); setSelectedTask(task); void load(); }} />}
     {importOpen && <ImportProjectModal onClose={() => setImportOpen(false)} onImported={(project) => { setImportOpen(false); setSelectedProjectId(project.id); void load(); }} />}
     {collaborationProject && <CollaborationRequestModal project={collaborationProject} githubLogin={dashboard.me.githubLogin} onClose={() => setCollaborationProject(null)} onContinue={() => continuePrivateProjectSync(collaborationProject)} />}
-    {selectedTask && <TaskDetail task={selectedTask} me={dashboard.me} projects={dashboard.projects} onClose={() => setSelectedTask(null)} onChanged={(task) => { setSelectedTask(task); void load(); }} onOpenTask={openTask} />}
+    {selectedTask && <TaskDetail task={selectedTask} me={dashboard.me} projects={dashboard.projects} onClose={() => setSelectedTask(null)} onChanged={(task) => { setSelectedTask(task); void load(); }} onRemoved={(result) => { setSelectedTask(null); setProjectSyncNotice({ tone: 'success', text: result.disposition === 'deleted' ? '任务草稿已永久删除。' : '任务已取消并从任务市场移除。' }); void load(); }} onOpenTask={openTask} />}
   </div>;
 }

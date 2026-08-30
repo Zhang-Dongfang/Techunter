@@ -186,6 +186,7 @@ export class TaskService {
   async listTasks(filters: { status?: string; assigneeId?: string; search?: string } = {}): Promise<TaskSummary[]> {
     let query = database().from('tasks').select('*').order('updated_at', { ascending: false });
     if (filters.status && filters.status !== 'all') query = query.eq('status', filters.status);
+    else query = query.neq('status', 'cancelled');
     if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
     if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
     const rows = dataOrThrow(await query) as Row[];
@@ -323,6 +324,25 @@ export class TaskService {
     });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     return this.getTask(taskId);
+  }
+
+  async removeTask(taskId: string, actor: User, githubCredential?: string): Promise<{ id: string; disposition: 'deleted' | 'cancelled' }> {
+    if (actor.role !== 'admin') throw httpError('只有管理员可以删除任务。', 403);
+    const task = await this.getTask(taskId);
+    if (task.status === 'accepted') throw httpError('已验收结算的任务不能删除。', 409, 'TASK_ALREADY_SETTLED');
+    if (task.status === 'cancelled') throw httpError('任务已经被取消。', 409, 'TASK_ALREADY_CANCELLED');
+
+    if (task.status !== 'draft') {
+      const children = await database().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)');
+      if (children.error) throw new Error(children.error.message);
+      if (children.data.length) throw httpError(`还有 ${children.data.length} 个未完成子任务，不能移除父任务。`, 409, 'OPEN_CHILD_TASKS');
+      await this.github.cancelTask(task, await this.getProject(task.projectId), githubCredential);
+    }
+
+    const result = await database().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
+    const disposition = result.data === 'deleted' ? 'deleted' : 'cancelled';
+    return { id: taskId, disposition };
   }
 
   async claimTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {

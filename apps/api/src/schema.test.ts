@@ -14,6 +14,10 @@ test('Supabase migration owns the shared schema and atomic invariants', () => {
   assert.match(migration, /function techunter\.claim_task/i);
   assert.match(migration, /function techunter\.publish_task/i);
   assert.match(migration, /function techunter\.accept_task/i);
+  assert.match(migration, /function techunter\.admin_remove_task/i);
+  assert.match(migration, /task\.draft_deleted/i);
+  assert.match(migration, /task_refund/i);
+  assert.match(migration, /TASK_ALREADY_SETTLED/i);
   assert.match(migration, /revoke all on schema techunter from public, anon, authenticated/i);
   assert.match(migration, /source_branch text/i);
   assert.match(migration, /set source_branch = default_branch/i);

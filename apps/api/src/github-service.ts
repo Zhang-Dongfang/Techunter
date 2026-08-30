@@ -361,6 +361,30 @@ export class GitHubService {
     if (task.githubIssueNumber) await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, state: 'closed', labels: [] });
   }
 
+  async cancelTask(task: Task, project: Project, userCredential?: string): Promise<void> {
+    const octokit = await this.client(userCredential);
+    const pullRequestNumber = task.latestSubmission?.pullRequestUrl?.match(/\/pull\/(\d+)/)?.[1];
+    if (pullRequestNumber) {
+      await octokit.pulls.update({
+        owner: project.repoOwner,
+        repo: project.repoName,
+        pull_number: Number(pullRequestNumber),
+        state: 'closed',
+      });
+    }
+    if (task.githubIssueNumber) {
+      await octokit.issues.update({
+        owner: project.repoOwner,
+        repo: project.repoName,
+        issue_number: task.githubIssueNumber,
+        state: 'closed',
+        state_reason: 'not_planned',
+        assignees: [],
+        labels: [],
+      });
+    }
+  }
+
   private async ensureLabels(octokit: Octokit, owner: string, repo: string): Promise<void> {
     const existing = await octokit.paginate(octokit.issues.listLabelsForRepo, { owner, repo, per_page: 100 });
     const names = new Set(existing.map((label) => label.name));

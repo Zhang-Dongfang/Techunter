@@ -97,6 +97,7 @@ export const api = {
     post<Task>('/api/tasks', body),
   createSubtask: (parentId: string, body: { projectId: string; title: string; description: string }) =>
     post<Task>(`/api/tasks/${parentId}/subtasks`, body),
+  removeTask: (id: string) => request<{ id: string; disposition: 'deleted' | 'cancelled' }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   analyze: (id: string) => post<{ analysis: TaskAnalysis; task: Task }>(`/api/tasks/${id}/analyze`),
   publish: (id: string, rewardPoints: number) => post<Task>(`/api/tasks/${id}/publish`, { rewardPoints }),
   claim: (id: string) => post<Task>(`/api/tasks/${id}/claim`),
