@@ -37,10 +37,10 @@ git add -- apps/desktop/package.json package-lock.json
 git commit -m "chore(desktop): release v$Version"
 if ($LASTEXITCODE -ne 0) { Write-Error 'Release commit failed'; exit 1 }
 
-git tag "desktop-v$Version"
+git tag -a "desktop-v$Version" -m "Techunter Desktop v$Version"
 if ($LASTEXITCODE -ne 0) { Write-Error 'Release tag failed'; exit 1 }
 
-git push --follow-tags
+git push --atomic origin HEAD "refs/tags/desktop-v$Version"
 if ($LASTEXITCODE -ne 0) { Write-Error 'Push failed'; exit 1 }
 
 Write-Host "Desktop v$Version was pushed. GitHub Actions will publish the installer and update metadata." -ForegroundColor Green
