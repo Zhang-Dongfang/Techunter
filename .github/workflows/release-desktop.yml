@@ -1,0 +1,62 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - desktop-v*
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./apps/desktop/package.json').version"
+          $expectedTag = "desktop-v$version"
+          if ('${{ github.ref_name }}' -ne $expectedTag) {
+            throw "Tag ${{ github.ref_name }} does not match Desktop version $version (expected $expectedTag)."
+          }
+
+      - name: Configure public Desktop environment
+        shell: pwsh
+        env:
+          TECHUNTER_API_URL: ${{ vars.TECHUNTER_API_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TECHUNTER_API_URL)) {
+            throw 'Set the TECHUNTER_API_URL repository variable before publishing Desktop.'
+          }
+          @(
+            "TECHUNTER_API_URL=$($env:TECHUNTER_API_URL.TrimEnd('/'))"
+            'TECHUNTER_UI_PORT=4311'
+            'TECHUNTER_DESKTOP_ZOOM=1.25'
+          ) | Set-Content apps/desktop/.env
+
+      - name: Build shared core
+        run: npm run build --workspace @techunter/core
+
+      - name: Test Desktop
+        run: npm run test --workspace @techunter/desktop
+
+      - name: Build and publish Windows update
+        run: npm run publish:win --workspace @techunter/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}

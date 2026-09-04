@@ -1,0 +1,90 @@
+{
+  "name": "@techunter/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/desktop/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k -n web,desktop -c magenta,yellow \"npm:dev:web\" \"npm:dev:desktop\"",
+    "dev:web": "vite --host 0.0.0.0",
+    "dev:desktop": "node scripts/wait-for-dev.mjs && tsup && cross-env TECHUNTER_RENDERER_URL=http://127.0.0.1:5173 electron .",
+    "build": "npm run typecheck && npm run build:web && tsup",
+    "build:web": "vite build",
+    "package:win": "npm run build && electron-builder --win nsis",
+    "publish:win": "npm run build && electron-builder --win nsis --publish always",
+    "desktop": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build --workspace @techunter/core && vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@techunter/core": "0.1.0",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.468.0",
+    "minimatch": "^10.0.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "43.4.1",
+    "electron-builder": "^26.15.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "vitest": "^4.0.9"
+  },
+  "build": {
+    "appId": "com.techunter.desktop",
+    "productName": "Techunter",
+    "asar": true,
+    "directories": {
+      "output": "../../dist/windows"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Techunter-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Zhang-Dongfang",
+        "repo": "Techunter",
+        "releaseType": "release",
+        "tagNamePrefix": "desktop-v"
+      }
+    ]
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

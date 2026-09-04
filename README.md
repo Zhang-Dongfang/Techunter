@@ -1,6 +1,11 @@
-# Techunter
+# Techunter / 科技猎人
 
-> AI-powered task distribution CLI for development teams — manage GitHub Issues through a conversational terminal interface.
+> AI 驱动的任务分发与协作平台。CLI 与 Electron Desktop 是两个并列应用，共用同一套 Agent、仓库读取和任务约定。
+
+- [`apps/cli`](apps/cli)：终端 REPL 与 MCP 服务
+- [`apps/api`](apps/api)：Railway 中央控制面，连接 Supabase、Conexus 与 GitHub
+- [`apps/desktop`](apps/desktop/README.md)：企业内部 Web + Electron 本机 Agent
+- [`packages/core`](packages/core)：两个应用复用的 Agent 与领域核心
 
 ```
     ╔═══════════════╗
@@ -36,7 +41,9 @@ npm install -g techunter
 ```bash
 git clone https://github.com/Zhang-Dongfang/Techunter.git
 cd Techunter
-npm install && npm run build && npm link
+npm install
+npm run build
+npm link ./apps/cli
 ```
 
 ---
@@ -51,7 +58,7 @@ tch init
 
 The wizard will prompt for:
 1. **GitHub auth** — Browser OAuth (recommended) or a Personal Access Token (`repo` + `read:user` scopes)
-2. **AI provider** — OpenRouter (default) or any OpenAI-compatible endpoint + API key
+2. **AI provider** — Conexus account mode (per-user usage and logs), OpenRouter, or another OpenAI-compatible endpoint
 3. **Repository** — auto-detected from your git remote
 
 Then start the REPL:
@@ -208,11 +215,20 @@ tch-mcp
 
 ## Development
 
-```bash
-npm run dev        # Run with tsx (no build step)
-npm run build      # Compile to dist/
-npm run typecheck  # Type-check without emitting
+本地 Desktop 连接已经部署的中央 API：
+
+```powershell
+Copy-Item apps/desktop/.env.example apps/desktop/.env
+npm install
+npm run dev          # 启动本地 UI 和 Electron，连接 TECHUNTER_API_URL
+npm run dev:api      # 仅在调试中央 API 时启动，需要根目录 .env
+npm run dev:cli      # 在当前仓库启动 CLI
+npm run typecheck    # 检查全部 workspace
+npm test             # 运行中央 API 与本机 Agent 测试
+npm run build        # 构建 core、CLI、Railway API 和 desktop
 ```
+
+中央 API 首次部署前需要应用 `infra/supabase` 迁移；完整顺序见 [`apps/api/README.md`](apps/api/README.md)。
 
 To verify end-to-end: build and run `tch init` in a directory with a GitHub remote.
 
@@ -221,14 +237,18 @@ To verify end-to-end: build and run `tch init` in a directory with a GitHub remo
 ## Architecture
 
 ```
-tch
-  └─ src/index.ts          readline REPL + slash command dispatch
-       ├─ /pick, /new …    → tool run() functions directly
-       └─ natural language → runAgentLoop()
-            └─ LLM (tool_use) → toolModules[name].execute(input, config)
+packages/core
+  ├─ Agent runtime / prompts
+  ├─ repository tools
+  └─ task and GitHub conventions
+       ↑                         ↑
+apps/cli                 apps/api                    apps/desktop
+  ├─ terminal + MCP        ├─ Railway Fastify API      ├─ React local UI
+  └─ CLI workflows         ├─ Supabase.techunter       └─ Electron 本机 Agent
+                           └─ GitHub / Conexus
 ```
 
-All tools live in `src/tools/{name}/index.ts`. See [CLAUDE.md](CLAUDE.md) for full architecture notes.
+CLI 工具位于 `apps/cli/src/tools/{name}/index.ts`；桌面端说明见 [apps/desktop/README.md](apps/desktop/README.md)，完整开发约定见 [CLAUDE.md](CLAUDE.md)。
 
 ---
 

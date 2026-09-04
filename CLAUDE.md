@@ -1,119 +1,100 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file contains repository-specific guidance for coding agents working on Techunter.
+
+## Workspace layout
+
+Techunter is an npm-workspaces monorepo. The two product applications are peers; neither imports source code from the other.
+
+```text
+apps/api/       Railway control plane and Supabase/GitHub/Conexus adapters
+apps/cli/       Published `techunter` CLI, `tch` REPL, and `tch-mcp`
+apps/desktop/   React Web UI, Electron shell, and local repository/environment Agent
+infra/          Supabase migrations and Railway deployment configuration
+packages/core/  Shared Agent runtime, contracts, repository tools, and task conventions
+```
+
+Cross-application behavior belongs in `@techunter/core`. UI, terminal prompts, HTTP handlers, persistence, Electron IPC, and other adapter-specific code stays in its application.
 
 ## Commands
 
+Run these from the repository root:
+
 ```bash
-npm run build      # Build with tsup → dist/index.js and dist/mcp.js
-npm run dev        # Run directly with tsx (no build step)
-npm run typecheck  # Type-check without emitting
-npm link           # Install globally as `tch` / `techunter` / `tch-mcp`
+npm install
+npm run dev          # API + Web + Electron
+npm run dev:cli      # CLI, using the repository root as its working directory
+npm run typecheck    # all workspaces
+npm test             # API and local-Agent tests
+npm run build        # core, CLI, then desktop
 ```
 
-There are no tests. To verify end-to-end, build and run `tch init` in a directory with a GitHub remote.
+Target one workspace when useful:
 
-## Architecture
-
-**Techunter** is an AI-powered task-distribution CLI. Users interact via a conversational readline REPL (`src/index.ts`); natural-language requests are handled by an agent loop (`src/lib/agent.ts`).
-
-### Request flow
-
-```
-tch
-  └─ src/index.ts          readline REPL + slash command dispatch
-       ├─ /pick, /new …    → tool run() functions directly
-       └─ natural language → runAgentLoop()
-            └─ LLM (tool_use) → toolModules[name].execute(input, config)
-                 ├─ command tools   hardcoded interactive flows (terminal=true → loop exits)
-                 └─ low-level tools reasoning helpers (get_task, list_files, grep_code, …)
+```bash
+npm run typecheck --workspace @techunter/core
+npm run typecheck --workspace techunter
+npm run typecheck --workspace @techunter/api
+npm run test --workspace @techunter/desktop
 ```
 
-### Tool architecture
+## Shared core
 
-All tools live in `src/tools/{name}/index.ts` and export:
+`packages/core/src/index.ts` is the public boundary. It currently exports:
 
-```typescript
-export const definition: OpenAI.ChatCompletionTool  // tool schema for the LLM
-export const execute: (input, config) => Promise<string>
-export const terminal?: boolean   // true = agent loop exits after this tool
-export function run(config, ...): Promise<string>  // called by slash commands
+- AI client creation and the reusable tool-calling runtime;
+- repository file listing, grep, safe command execution, and context collection;
+- task analysis and delivery-review Agents;
+- CLI config-store discovery for desktop reuse;
+- canonical GitHub labels, task metadata, branch names, and task-guide rendering.
+
+Both applications import these capabilities through `@techunter/core`; do not add relative imports that reach into another workspace.
+
+## CLI architecture
+
+```text
+apps/cli/src/index.ts
+  ├─ slash command → tools/{name}.run()
+  └─ free text     → lib/agent.ts → registered tool execute()
 ```
 
-`src/tools/registry.ts` collects all modules into `toolModules[]`. The agent uses this to build its tools array and dispatch calls — no hardcoded switch statements.
+- `apps/cli/src/tools/registry.ts` is the central tool registry.
+- Interactive product flows live in `apps/cli/src/tools/*`.
+- GitHub and git CLI adapters live in `apps/cli/src/lib/github.ts` and `git.ts`.
+- `apps/cli/src/mcp.ts` exposes non-interactive tools over stdio.
+- Source imports use `.js` extensions. tsup emits bundled CommonJS executables and preserves the shebang already present in `src/index.ts`.
 
-**Command tools** (`terminal = true`) — hardcoded interactive flows, mirrors slash commands:
-`pick`, `new_task`, `close`, `submit`, `my_status`, `review`, `refresh`, `open_code`, `reject`, `accept`, `edit_task`, `wiki`
+To add a CLI tool, create `apps/cli/src/tools/{name}/index.ts`, register it in `registry.ts`, and add its slash-command dispatch only if it needs an interactive alias.
 
-**Low-level tools** — reasoning helpers, chainable:
-`get_task`, `get_comments`, `get_diff`, `run_command`, `list_files`, `grep_code`, `ask_user`, `list_tasks`
+## Control-plane and Desktop architecture
 
-### Sub-agents
+```text
+apps/api/src/              Fastify API, Supabase, GitHub, Conexus, task/ledger services
+apps/desktop/src/web/      React renderer bundled and served locally by Electron
+apps/desktop/src/desktop/  Electron main process and narrow preload bridge
+apps/desktop/src/worker/   Local clone/fetch/worktree/setup/diff Agent
+infra/supabase/            Isolated techunter schema and atomic database functions
+```
 
-Three sub-agent loops run inside command tools, each using `runSubAgentLoop()`:
+The Railway API is the only shared business service and the only component allowed to hold `SUPABASE_SERVICE_ROLE_KEY`. It does not serve the UI. The Electron renderer calls the API and never queries Supabase directly. `AgentService` delegates task analysis and review to `@techunter/core`; it must not introduce a second heuristic Agent implementation.
 
-| Sub-agent | File | Tools |
-|---|---|---|
-| Guide generator | `new-task/guide-generator.ts` | `list_files`, `grep_code`, `run_command`, `ask_user` |
-| Rejection comment | `reject/comment-generator.ts` | `get_task`, `get_comments`, `get_diff`, `grep_code` |
-| Submit reviewer | `submit/reviewer.ts` | `run_command`, `grep_code`, `get_diff` |
-| Wiki generator | `wiki/wiki-generator.ts` | `list_files`, `grep_code`, `run_command` |
+The local Agent owns machine-specific repositories and worktrees. It must verify Git remotes, check out the frozen task base SHA, keep credentials out of persisted remotes, execute native-host setup commands, and reject submitted files outside `editablePaths`. Never add project-image or Docker-provider branches back to the environment contract.
 
-Sub-agents reuse tool `execute()` functions from the registry. Prompts live in co-located `prompts.ts` files.
+Electron intentionally allows arbitrary local shell commands from the trusted Techunter page. Preserve the trust boundary: `contextIsolation` and sandbox remain enabled, Node integration remains disabled in the renderer, and shell access stays behind the narrow preload IPC API.
 
-### Key files
+## Task and GitHub invariants
 
-| File | Purpose |
-|---|---|
-| `src/index.ts` | Entry point, readline REPL, slash command dispatch |
-| `src/lib/agent.ts` | Main agent loop; uses registry for tools and dispatch |
-| `src/lib/sub-agent.ts` | `runSubAgentLoop()` — shared sub-agent loop helper |
-| `src/lib/agent-ui.ts` | `printToolCall()`, `printToolResult()` — shared display |
-| `src/lib/client.ts` | `createClient(config)`, `MODEL` — single LLM client config |
-| `src/lib/display.ts` | `printTaskList()`, `printMyTasks()`, `colorStatus()` etc. |
-| `src/lib/launch.ts` | `launchClaudeCode()` — spawns Claude Code for a task |
-| `src/lib/github.ts` | All Octokit calls; label management, issues, PRs |
-| `src/lib/project.ts` | `buildProjectContext()` — file tree + key files, capped at 80 KB |
-| `src/lib/git.ts` | Branch creation, push, diff via simple-git; `makeWorkerBranchName(username)` |
-| `src/lib/config.ts` | `conf`-based config store at `~/.config/techunter/` |
-| `src/lib/markdown.ts` | `renderMarkdown()` — terminal markdown renderer |
-| `src/lib/proxy.ts` | `getHttpsProxyAgent()` / `getUndiciProxyAgent()` — reads `HTTPS_PROXY` env vars |
-| `src/lib/update-check.ts` | `startAutoUpdate()` — checks npm, auto-installs update in background |
-| `src/mcp.ts` | MCP server (`tch-mcp`) — exposes all tools (except `ask_user`) via stdio |
-| `src/commands/init.ts` | One-time setup wizard (`tch init`) |
-| `src/tools/registry.ts` | Assembles all tool modules into `toolModules[]` |
-| `src/tools/types.ts` | `ToolModule` interface |
-| `src/types.ts` | `TechunterConfig`, `GitHubIssue`, `ProjectContext` |
+- Canonical states use exactly one `techunter:*` lifecycle label.
+- Task metadata and guide formatting come from `@techunter/core` so CLI and desktop remain compatible.
+- Publishing a desktop task creates a CLI-readable GitHub Issue before freezing points.
+- Claiming is atomic; only one user can win a concurrent claim.
+- Contribution-point transfers are ledger entries with idempotency keys, never balance-only mutations.
+- Atomic claim, reserve, and settlement behavior belongs in Supabase functions, not read-then-write API code.
+- `projects` never stores a local path; local paths are device-owned state and never enter Supabase.
+- `Project.sourceBranch` selects the GitHub branch used for future task analysis and checkout. Switching it must not rewrite an existing task's frozen `baseSha` or `targetBranch`; `defaultBranch` remains repository metadata.
+- Parent/child task visibility may only narrow, never broaden.
+- Agent output is advisory; deterministic scope, ledger, repository, and permission checks remain authoritative.
 
-### Build constraints
+## Verification
 
-- Output is ESM (`"type": "module"`). All source imports use `.js` extensions.
-- All `node_modules` are **external** in tsup — never bundled. This prevents CJS/ESM double-import issues.
-- The `#!/usr/bin/env node` shebang lives in `src/index.ts` line 1. Do not add a tsup `banner` — it would duplicate.
-- AI: OpenAI-compatible client → `https://api.ppio.com/openai`, model `zai-org/glm-5`. Always use `createClient(config)` and `MODEL` from `src/lib/client.ts`.
-
-### GitHub label lifecycle
-
-Issues carry exactly one `techunter:*` label at a time:
-
-`techunter:available` → `techunter:claimed` → `techunter:in-review` → `techunter:changes-needed`
-
-Labels are auto-created on `tch init` via `ensureLabels()`.
-
-### Branch naming
-
-Task branches: `task-{issue_number}-{first-5-words-of-title-kebab-cased}`
-
-Worker branches (per-user integration branch): `worker-{github-username}` — `accept` merges task PRs here, then optionally pushes to `baseBranch`.
-
-`submit` derives the issue number from the current branch via regex `^task-(\d+)-`.
-
-### Adding a new tool
-
-1. Create `src/tools/{name}/index.ts` exporting `definition`, `execute`, optionally `run` and `terminal`.
-2. Add it to `src/tools/registry.ts`.
-3. If it has a slash command alias, add the case to `src/index.ts`.
-
-### inquirer usage
-
-`inquirer` v12 — import named exports from `@inquirer/prompts` (`input`, `password`, `select`).
+For code changes, run typecheck, tests, and builds from the root. Avoid live GitHub or paid-model mutations in automated verification. The integration suite uses fake Agent/GitHub ports and covers task settlement, denied-file isolation, and concurrent claims.
