@@ -58,6 +58,19 @@ a { color: inherit; text-decoration: none; }
 .secure-note strong { font-size: 11px; }
 .secure-note span { color: #68736f; font-size: 9px; margin-top: 3px; }
 .version { display: block; color: #454b54; font-size: 9px; letter-spacing: .12em; text-align: center; margin-top: 16px; }
+.update-control { position: relative; width: 100%; display: grid; grid-template-columns: 19px 1fr; align-items: center; gap: 8px; margin-top: 10px; padding: 9px 11px; overflow: hidden; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #59616b; text-align: left; cursor: pointer; }
+.update-control:hover:not(:disabled) { border-color: #2b3037; background: rgba(255,255,255,.025); color: #9da5af; }
+.update-control:disabled { cursor: default; }
+.update-control svg { position: relative; z-index: 1; }
+.update-control span { position: relative; z-index: 1; min-width: 0; }
+.update-control strong, .update-control small { display: block; }
+.update-control strong { overflow: hidden; font-size: 9px; letter-spacing: .06em; text-overflow: ellipsis; white-space: nowrap; }
+.update-control small { margin-top: 3px; color: #454b54; font-size: 8px; }
+.update-control > i { position: absolute; inset: auto auto 0 0; height: 2px; background: var(--orange); box-shadow: 0 0 8px rgba(255,107,44,.5); transition: width .2s ease; }
+.update-control.available, .update-control.downloading { color: var(--orange-2); }
+.update-control.downloaded { border-color: rgba(80,216,144,.18); background: rgba(80,216,144,.05); color: var(--green); }
+.update-control.downloaded small { color: #718a7c; }
+.update-control.error { color: #ff8585; }
 
 .content { grid-column: 2; min-width: 0; }
 .topbar { height: 76px; position: sticky; top: 0; z-index: 15; display: flex; align-items: center; justify-content: space-between; padding: 0 38px; background: rgba(10,11,13,.88); border-bottom: 1px solid var(--line-soft); backdrop-filter: blur(16px); }

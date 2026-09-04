@@ -38,6 +38,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { DashboardResponse, GitHubBranch, GitHubRepositoryCandidate, LedgerEntry, Project, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
+import type { DesktopUpdateState } from '../../shared/desktop-contracts';
 import { AgentDock } from './AgentDock';
 import { ApiError, api } from './api';
 import { ConexusLogin } from './ConexusLogin';
@@ -497,6 +498,44 @@ function CrosshairIcon() {
   return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2"/></svg>;
 }
 
+function UpdateControl({ state, onAction }: { state: DesktopUpdateState | null; onAction: () => void }) {
+  if (!state) return <span className="version">WEB CLIENT</span>;
+  const busy = state.status === 'checking' || state.status === 'available' || state.status === 'downloading';
+  const actionable = state.status === 'downloaded' || state.status === 'idle' || state.status === 'up-to-date' || state.status === 'error';
+  const label = state.status === 'downloaded'
+    ? `v${state.availableVersion ?? state.currentVersion} 已就绪`
+    : state.status === 'downloading'
+      ? `正在下载 v${state.availableVersion ?? ''}`
+      : state.status === 'available'
+        ? `发现 v${state.availableVersion ?? ''}`
+        : state.status === 'checking'
+          ? '正在检查更新'
+          : state.status === 'error'
+            ? '更新检查失败'
+            : `v${state.currentVersion}`;
+  const detail = state.status === 'downloaded'
+    ? '点击重启并安装'
+    : state.status === 'downloading'
+      ? `${state.progress ?? 0}%`
+      : state.status === 'available'
+        ? '正在准备下载'
+        : state.status === 'checking'
+          ? '连接 GitHub Releases'
+          : state.status === 'error'
+            ? '点击重试'
+            : state.status === 'disabled'
+              ? 'DEV · 自动更新已关闭'
+              : state.status === 'up-to-date'
+                ? '已是最新版本 · 点击复查'
+                : '点击检查更新';
+
+  return <button type="button" className={cn('update-control', state.status)} disabled={!actionable} onClick={onAction} title={state.message}>
+    {busy ? <Loader2 className="spin" size={15} /> : state.status === 'downloaded' ? <CheckCircle2 size={15} /> : <RefreshCw size={15} />}
+    <span><strong>{label}</strong><small>{detail}</small></span>
+    {state.status === 'downloading' && <i style={{ width: `${state.progress ?? 0}%` }} />}
+  </button>;
+}
+
 function PointsView({ points, entries }: { points: number; entries: LedgerEntry[] }) {
   const incoming = entries.filter((entry) => entry.toLabel !== '系统发行').reduce((sum, entry) => sum + entry.amount, 0);
   return <div className="points-layout"><div className="balance-hero"><div className="balance-glow" /><span>可用贡献点</span><strong>{points.toLocaleString()} <em>CP</em></strong><p>企业内部贡献记录，不与现金兑换</p><div className="balance-stats"><div><small>历史流入</small><b>+{incoming}</b></div><div><small>交易笔数</small><b>{entries.length}</b></div></div></div><div className="ledger-panel"><div className="panel-title"><div><span className="eyebrow">LEDGER</span><h3>贡献点明细</h3></div><ShieldCheck size={22} /></div>{entries.length ? <div className="ledger-list">{entries.map((entry) => <div key={entry.id}><span className={cn('ledger-icon', entry.type === 'task_settlement' && 'income')}><Coins size={17} /></span><div><strong>{entry.memo}</strong><small>{entry.fromLabel} → {entry.toLabel} · {new Date(entry.createdAt).toLocaleString('zh-CN')}</small></div><b>+{entry.amount} CP</b></div>)}</div> : <EmptyState icon={<WalletCards />} title="还没有账单" description="完成第一个任务后，贡献点会出现在这里。" />}</div></div>;
@@ -532,6 +571,19 @@ export function App() {
   const [githubError, setGitHubError] = useState('');
   const [conexusConnecting, setConexusConnecting] = useState(false);
   const [conexusError, setConexusError] = useState('');
+  const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null);
+
+  useEffect(() => {
+    const desktop = window.techunterDesktop;
+    if (!desktop) return;
+    let active = true;
+    const unsubscribe = desktop.onUpdateState((state) => { if (active) setUpdateState(state); });
+    desktop.getUpdateState().then((state) => { if (active) setUpdateState(state); }).catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -694,6 +746,24 @@ export function App() {
     }
   }
 
+  async function handleUpdateAction() {
+    const desktop = window.techunterDesktop;
+    if (!desktop || !updateState) return;
+    try {
+      if (updateState.status === 'downloaded') {
+        await desktop.installUpdate();
+        return;
+      }
+      setUpdateState(await desktop.checkForUpdates());
+    } catch (caught) {
+      setUpdateState({
+        ...updateState,
+        status: 'error',
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }
+
   async function syncProjectLocally(project: Project, accessToken?: string) {
     const desktop = window.techunterDesktop;
     if (!desktop) throw new Error('仓库同步仅在 Techunter Desktop 中可用。');
@@ -816,7 +886,7 @@ export function App() {
     <aside className="sidebar">
       <div className="logo"><div className="brand-mark"><CrosshairIcon /></div><div><strong>TECHUNTER</strong><span>科技猎人</span></div></div>
       <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => { setView(item.id); setSelectedProjectId(''); setSelectedTask(null); setStatusFilter('all'); }}>{item.icon}<span>{item.label}</span>{Boolean(item.count) && <b>{item.count}</b>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="secure-note"><ShieldCheck size={17} /><div><strong>企业内部模式</strong><span>限定文件 · 全程审计</span></div></div><span className="version">v0.1.0 INTERNAL</span></div>
+      <div className="sidebar-bottom"><div className="secure-note"><ShieldCheck size={17} /><div><strong>企业内部模式</strong><span>限定文件 · 全程审计</span></div></div><UpdateControl state={updateState} onAction={() => { void handleUpdateAction(); }} /></div>
     </aside>
 
     <main className="content">

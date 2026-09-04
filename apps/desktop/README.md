@@ -47,6 +47,20 @@ npm run package:win --workspace @techunter/desktop
 
 打包时 `apps/desktop/.env` 会作为资源随安装程序分发，并在安装后的应用启动时读取。这里只能放客户端可公开的配置，禁止放 API 密钥、令牌或其他秘密。安装程序输出到根目录的 `dist/windows`。
 
+## 自动更新与发布
+
+安装版 Desktop 启动 10 秒后会检查 GitHub Releases，之后每 4 小时复查一次。发现新版本后会后台下载；下载完成时可从左下角立即重启安装，也会在正常退出应用后自动安装。开发模式不会访问更新源。
+
+发布前先在 GitHub 仓库的 Actions variables 中配置公开的 `TECHUNTER_API_URL`，然后从干净工作区执行：
+
+```powershell
+.\release-desktop.ps1 0.1.1
+```
+
+脚本会更新 Desktop 版本、验证构建并推送 `desktop-v0.1.1` tag。`Release Desktop` workflow 会生成 NSIS 安装程序、blockmap 和 `latest.yml`，并发布到 GitHub Release。不要手工上传缺少 `latest.yml` 的安装包，否则客户端无法发现更新。
+
+生产发布建议再配置 `WIN_CSC_LINK` 与 `WIN_CSC_KEY_PASSWORD` Actions secrets 为安装器签名；未配置时更新链路仍可工作，但 Windows 会把安装器显示为未签名应用。
+
 Railway API 的 `TECHUNTER_WEB_ORIGINS` 必须包含 `http://127.0.0.1:4311`。`TECHUNTER_RENDERER_URL` 只供开发时指向 Vite，生产环境不要设置。
 
 GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据通过单次 Git 进程环境传入，不写入 remote。私有仓库会先确认当前 GitHub 用户已有访问权；没有访问权时必须先完成合作者申请并接受 GitHub 邀请。

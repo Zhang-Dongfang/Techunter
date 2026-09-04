@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import { LocalAgent } from '../worker/local-agent';
 import { authorizeConexusInBrowser, type ConexusBrowserAuthInput } from './browser-auth';
+import { registerAutoUpdates } from './updates';
 
 try {
   const envPath = app.isPackaged
@@ -32,6 +33,10 @@ const configuredRendererUrl = process.env['TECHUNTER_RENDERER_URL']?.replace(/\/
 const configuredUiPort = Number(process.env['TECHUNTER_UI_PORT'] ?? '4311');
 const configuredZoom = Number(process.env['TECHUNTER_DESKTOP_ZOOM'] ?? '1.25');
 const defaultZoom = Number.isFinite(configuredZoom) ? Math.min(1.6, Math.max(0.8, configuredZoom)) : 1.25;
+const autoUpdates = registerAutoUpdates({
+  assertTrustedSender,
+  getWindow: () => mainWindow,
+});
 
 function allowedRendererUrl(rawUrl: string): boolean {
   try {
@@ -307,6 +312,7 @@ if (!hasLock) {
     registerTerminalIpc();
     registerLocalAgentIpc();
     registerAuthenticationIpc();
+    autoUpdates.start();
     await createWindow();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();
@@ -323,6 +329,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  autoUpdates.stop();
   for (const session of terminalSessions.values()) session.process.kill();
   terminalSessions.clear();
   localUiServer?.close();

@@ -5,6 +5,20 @@ import type { DesktopAgentApi } from '../shared/desktop-contracts';
 const desktopApi: DesktopAgentApi = {
   apiBaseUrl: process.env['TECHUNTER_API_URL']?.replace(/\/+$/, '') || 'http://127.0.0.1:4310',
   platform: process.platform,
+  getUpdateState() {
+    return ipcRenderer.invoke('update:state');
+  },
+  checkForUpdates() {
+    return ipcRenderer.invoke('update:check');
+  },
+  installUpdate() {
+    return ipcRenderer.invoke('update:install');
+  },
+  onUpdateState(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on('update:state-changed', handler);
+    return () => ipcRenderer.removeListener('update:state-changed', handler);
+  },
   authorizeConexus(input) {
     return ipcRenderer.invoke('auth:conexus', input);
   },
