@@ -5,21 +5,10 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { minimatch } from 'minimatch';
-import { readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
+import { isTaskPathEditable, normalizeScopePath, readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
 import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
 
 const execFileAsync = promisify(execFile);
-
-function normalizeRelative(value: string): string {
-  const normalized = value.replaceAll('\\', '/').replace(/^\.\//, '');
-  if (!normalized || normalized === '..' || normalized.startsWith('/') || normalized.includes('../')) throw new Error(`非法仓库路径：${value}`);
-  return normalized;
-}
-
-function matches(file: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => minimatch(file, pattern, { dot: true, nocase: process.platform === 'win32' }));
-}
 
 function gitEnvironment(project: Project, accessToken?: string): NodeJS.ProcessEnv {
   const token = accessToken?.trim() || readLocalTechunterConfig().config?.githubToken?.trim();
@@ -249,9 +238,13 @@ export class LocalAgent {
       execFileAsync('git', ['diff', '--no-renames', '--name-only', '-z', base, '--'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
       execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
     ]);
-    const changed = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').map((file) => file.trim()).filter(Boolean).map(normalizeRelative))];
+    const changed = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean).map((file) => {
+      const normalized = normalizeScopePath(file);
+      if (normalized !== file) throw new Error(`文件名不是规范的任务相对路径：${file}`);
+      return normalized;
+    }))];
     for (const file of changed) {
-      if (!matches(file, task.scope.editablePaths) || matches(file, task.scope.deniedPaths)) throw new Error(`本机改动超出任务 editablePaths：${file}`);
+      if (!isTaskPathEditable(file, task.scope)) throw new Error(`本机改动超出任务 editablePaths：${file}。请先在任务详情提交范围复议，批准后刷新任务再交付。`);
     }
     const files: PackageFile[] = [];
     let totalBytes = 0;

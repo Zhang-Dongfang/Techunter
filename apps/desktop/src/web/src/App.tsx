@@ -42,6 +42,7 @@ import { AgentDock } from './AgentDock';
 import { ApiError, api } from './api';
 import { ConexusLogin } from './ConexusLogin';
 import { TaskDocument } from './TaskDocument';
+import { ScopeRequests } from './ScopeRequests';
 
 type View = 'market' | 'mine' | 'review' | 'points';
 type TaskView = Exclude<View, 'points'>;
@@ -73,9 +74,9 @@ const TASK_VIEW_COPY: Record<TaskView, { eyebrow: string; title: string; descrip
   review: {
     eyebrow: 'REVIEW QUEUE',
     title: '项目审核目录',
-    description: '按项目处理等待验收的交付。',
+    description: '按项目处理修改范围申请和等待验收的交付。',
     emptyTitle: '没有待审核项目',
-    emptyDescription: '出现待验收任务时，对应项目会出现在这里。',
+    emptyDescription: '出现待审批的范围申请或待验收任务时，对应项目会出现在这里。',
   },
 };
 
@@ -124,6 +125,7 @@ function TaskCard({ task, onOpen }: { task: TaskSummary; onOpen: () => void }) {
     <button className="task-card" onClick={onOpen}>
       <div className="task-card-top">
         <StatusBadge status={task.status} />
+        {Boolean(task.pendingScopeRequestCount) && <span className="scope-pending-badge">范围待审批</span>}
         <span className="task-id">TH-{shortId(task.id)}</span>
       </div>
       <div className="task-project"><Boxes size={14} />{task.projectName}{task.parentTaskId && <span className="subtask-chip">子任务</span>}</div>
@@ -420,7 +422,8 @@ function TaskDetail({
   async function submitDelivery() {
     const desktop = window.techunterDesktop;
     if (!desktop) throw new Error('交付必须从准备该环境的 Techunter Desktop 提交。');
-    const changes = await desktop.collectChanges({ task });
+    const latestTask = await api.task(task.id);
+    const changes = await desktop.collectChanges({ task: latestTask });
     setLocalPath(changes.path);
     return api.submit(task.id, { summary, testOutput, files: changes.files });
   }
@@ -454,6 +457,7 @@ function TaskDetail({
             <section><div className="section-title"><ShieldCheck size={18} /><h3>验收标准</h3></div>{task.acceptanceCriteria.length ? <ul className="criteria-list">{task.acceptanceCriteria.map((item) => <li key={item}><span><Check size={14} /></span>{item}</li>)}</ul> : <p className="muted">等待 Agent 分析。</p>}</section>
 
             {task.scope && <section><div className="section-title"><FileCode2 size={18} /><h3>任务文件范围</h3><span className="revision">REV {task.scope.revision}</span></div><div className="scope-columns"><div><h4>可编辑</h4>{task.scope.editablePaths.map((file) => <code key={file}>{file}</code>)}</div><div><h4>只读上下文</h4>{task.scope.readonlyPaths.length ? task.scope.readonlyPaths.map((file) => <code key={file}>{file}</code>) : <span className="muted">无</span>}</div></div><details className="environment-details"><summary>本机 Agent 环境计划</summary><dl><dt>准备</dt><dd>{task.scope.environment.setupCommands.join(' · ') || '由 Agent 自动探测'}</dd><dt>测试</dt><dd>{task.scope.environment.testCommands.join(' · ') || '未配置'}</dd><dt>网络</dt><dd>{task.scope.environment.networkAllowlist.join(' · ') || '按本机策略'}</dd></dl></details></section>}
+            {task.scope && <ScopeRequests key={task.id} task={task} me={me} onChanged={onChanged} />}
 
             {task.children.length > 0 && <section><div className="section-title"><Layers3 size={18} /><h3>子任务</h3><span className="revision">{task.children.length}</span></div><div className="child-list">{task.children.map((child) => <button key={child.id} onClick={() => onOpenTask(child.id)}><StatusBadge status={child.status} /><span>{child.title}</span><strong>{child.rewardPoints} CP</strong><ArrowRight size={16} /></button>)}</div></section>}
 
@@ -769,7 +773,7 @@ export function App() {
     const normalizedSearch = search.trim().toLowerCase();
     return dashboard.tasks.filter((task) => {
       if (view === 'mine' && task.assignee?.id !== dashboard.me.id) return false;
-      if (view === 'review' && task.status !== 'submitted') return false;
+      if (view === 'review' && task.status !== 'submitted' && !(task.pendingScopeRequestCount && task.assignee?.id !== dashboard.me.id && (task.publisher.id === dashboard.me.id || dashboard.me.role === 'admin'))) return false;
       if (statusFilter !== 'all' && task.status !== statusFilter) return false;
       const project = dashboard.projects.find((candidate) => candidate.id === task.projectId);
       if (normalizedSearch && !`${task.title} ${task.summary} ${task.projectName} ${project?.description ?? ''} ${project?.repoOwner ?? ''} ${project?.repoName ?? ''}`.toLowerCase().includes(normalizedSearch)) return false;

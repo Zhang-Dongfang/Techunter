@@ -1,5 +1,6 @@
-import { minimatch } from 'minimatch';
 import {
+  isTaskPathEditable,
+  normalizeScopePath,
   type DashboardResponse,
   type GitHubBranch,
   type GitHubRepositoryCandidate,
@@ -29,21 +30,16 @@ function jsonValue<T>(value: unknown, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
-function matches(path: string, patterns: string[]): boolean {
-  return patterns.some((pattern) => minimatch(path, pattern, { dot: true, nocase: process.platform === 'win32' }));
-}
-
-function normalizePackageFiles(files: PackageFile[], scope: TaskScope): PackageFile[] {
+export function normalizePackageFiles(files: PackageFile[], scope: TaskScope): PackageFile[] {
   const unique = new Set<string>();
   let totalBytes = 0;
   return files.map((file) => {
-    const normalized = file.path.replaceAll('\\', '/').replace(/^\.\//, '');
-    if (!normalized || normalized === '..' || normalized.startsWith('/') || normalized.includes('../')) {
-      throw httpError(`非法提交路径：${file.path}`, 400);
-    }
+    let normalized: string;
+    try { normalized = normalizeScopePath(file.path); }
+    catch { throw httpError(`非法提交路径：${file.path}`, 400); }
     if (unique.has(normalized)) throw httpError(`提交包含重复路径：${normalized}`, 400);
     unique.add(normalized);
-    if (!matches(normalized, scope.editablePaths) || matches(normalized, scope.deniedPaths)) {
+    if (!isTaskPathEditable(normalized, scope)) {
       throw httpError(`提交文件超出 editablePaths：${normalized}`, 400);
     }
     if (file.encoding !== 'utf-8' && file.encoding !== 'base64') throw httpError(`不支持的文件编码：${normalized}`, 400);
@@ -180,6 +176,8 @@ export class TaskService {
       if (reviewTasks.error) throw new Error(reviewTasks.error.message);
       reviewCount = reviewTasks.data.length;
     }
+    reviewCount += tasks.filter((task) => task.assignee?.id !== me.id && (task.publisher.id === me.id || me.role === 'admin'))
+      .reduce((count, task) => count + (task.pendingScopeRequestCount ?? 0), 0);
     return { me, projects, tasks, myAvailablePoints: points, reviewCount };
   }
 
@@ -191,6 +189,9 @@ export class TaskService {
     if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
     const rows = dataOrThrow(await query) as Row[];
     const summaries = await Promise.all(rows.map((row) => this.summaryFromRow(row)));
+    const pending = dataOrThrow(await database().from('scope_requests').select('task_id').eq('status', 'pending')) as Row[];
+    const pendingIds = new Set(pending.map((row) => String(row['task_id'])));
+    for (const task of summaries) task.pendingScopeRequestCount = pendingIds.has(task.id) ? 1 : 0;
     const order: Record<string, number> = { active: 0, open: 1, submitted: 2 };
     return summaries.sort((left, right) => (order[left.status] ?? 3) - (order[right.status] ?? 3) || right.updatedAt.localeCompare(left.updatedAt));
   }

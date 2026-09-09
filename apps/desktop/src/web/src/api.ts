@@ -15,6 +15,9 @@ import type {
   Workspace,
   GitHubRepositoryCandidate,
   PackageFile,
+  ScopeRequest,
+  ScopeRequestInput,
+  ScopeRequestDecision,
 } from '@techunter/core';
 import { retryTransientRequest } from './request-retry';
 
@@ -102,6 +105,12 @@ export const api = {
   publish: (id: string, rewardPoints: number) => post<Task>(`/api/tasks/${id}/publish`, { rewardPoints }),
   claim: (id: string) => post<Task>(`/api/tasks/${id}/claim`),
   release: (id: string) => post<Task>(`/api/tasks/${id}/release`),
+  scopeRequests: (id: string) => request<{ requests: ScopeRequest[] }>(`/api/tasks/${id}/scope-requests`),
+  requestScope: (id: string, body: ScopeRequestInput) => post<ScopeRequest>(`/api/tasks/${id}/scope-requests`, body),
+  decideScope: (id: string, requestId: string, body: ScopeRequestDecision) =>
+    post<{ request: ScopeRequest; task: Task; githubSynced: boolean | null }>(`/api/tasks/${id}/scope-requests/${requestId}/decision`, body),
+  withdrawScope: (id: string, requestId: string) => post<ScopeRequest>(`/api/tasks/${id}/scope-requests/${requestId}/withdraw`),
+  syncScope: (id: string) => post<{ synced: boolean }>(`/api/tasks/${id}/scope/sync`),
   workspace: (id: string, body: { deviceId: string; deviceLabel: string }) => post<Workspace>(`/api/tasks/${id}/workspaces`, body),
   updateWorkspace: (id: string, body: { status: 'provisioning' | 'running' | 'failed'; headSha?: string; setupLog?: string; error?: string | null }) =>
     request<Workspace>(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),

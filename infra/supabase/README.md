@@ -10,3 +10,5 @@ supabase db push
 Add `techunter` to **Project Settings → API → Exposed schemas**. The migration grants the schema only to `service_role`; `anon` and `authenticated` receive no table access. All browser and desktop traffic must go through the Railway `techunter-api` service.
 
 Do not put `SUPABASE_SERVICE_ROLE_KEY` in the desktop or Web environment.
+
+The scope reconsideration feature requires `migrations/202609080001_scope_requests.sql` before deploying the updated API. It adds service-only request history, atomic approval/withdrawal functions, and invalidation on task lifecycle changes. See [the feature design](../../docs/scope-reconsideration.md) for the GitHub transport boundary and API contract.
