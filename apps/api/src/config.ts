@@ -3,7 +3,6 @@ import {
   DEFAULT_CONEXUS_API_URL,
   DEFAULT_CONEXUS_BASE_URL,
   DEFAULT_CONEXUS_PUBLICATION_SLUG,
-  DEFAULT_CONEXUS_AUDIENCE,
   DEFAULT_MODEL,
   type AiAccessMode,
 } from '@techunter/core';
@@ -16,7 +15,6 @@ const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(4310),
   TECHUNTER_PUBLIC_URL: z.string().url().default('http://127.0.0.1:4310'),
   TECHUNTER_WEB_ORIGINS: z.string().default('http://127.0.0.1:5173'),
-  TECHUNTER_CLI_AUDIENCE: z.string().url().default(DEFAULT_CONEXUS_AUDIENCE),
   TECHUNTER_PROJECT_INITIAL_POINTS: z.coerce.number().int().min(0).default(10_000),
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
@@ -46,7 +44,6 @@ export function parseConfig(environment: NodeJS.ProcessEnv) {
     port: value.PORT,
     publicUrl: value.TECHUNTER_PUBLIC_URL.replace(/\/+$/, ''),
     webOrigins: value.TECHUNTER_WEB_ORIGINS.split(',').map((origin) => origin.trim().replace(/\/+$/, '')).filter(Boolean),
-    cliAudience: new URL(value.TECHUNTER_CLI_AUDIENCE).origin,
     initialProjectPoints: value.TECHUNTER_PROJECT_INITIAL_POINTS,
     supabaseUrl: value.SUPABASE_URL,
     supabaseServiceRoleKey: value.SUPABASE_SERVICE_ROLE_KEY,

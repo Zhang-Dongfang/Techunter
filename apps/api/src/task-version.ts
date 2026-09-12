@@ -6,6 +6,7 @@ export interface ProjectVersionSource {
 }
 
 export interface ParentTaskVersionSource {
+  workingBranch?: string | null;
   githubIssueNumber: number | null;
   assignee: { githubLogin: string | null } | null;
 }
@@ -19,6 +20,6 @@ export async function resolveTaskVersion(
   if (parent.githubIssueNumber === null || !parent.assignee?.githubLogin) {
     throw new Error('母任务还没有可同步的远程任务分支。');
   }
-  const targetBranch = makeTaskBranchName(parent.githubIssueNumber, parent.assignee.githubLogin);
+  const targetBranch = parent.workingBranch || makeTaskBranchName(parent.githubIssueNumber, parent.assignee.githubLogin);
   return { baseSha: await latestBranchHead(targetBranch), targetBranch };
 }

@@ -39,14 +39,21 @@ async function fixture() {
   await rpc('allocate_project_points', { p_project_id: projectId, p_amount: 1000 });
   let modelFailure = false, publishFailure = false, changesFailure = false, settlementFailure = false, releaseFailure = false;
   let mergeCount = 0, changeCount = 0;
+  const workspaceIds = new Map<string, string>();
   const merged = new Set<string>();
   const port = {
     async rpc(name: string, args: Record<string, unknown>) {
-      if (name === 'accept_task' && settlementFailure) return { data: null, error: { message: 'database temporarily unavailable' } };
+      if (name === 'finish_task_review' && settlementFailure) return { data: null, error: { message: 'database temporarily unavailable' } };
       try { return { data: await rpc(name, args), error: null }; }
       catch (error) { return { data: null, error: { message: (error as Error).message } }; }
     },
     from(table: string) {
+      if (table === 'workspaces') {
+        const filters: Record<string, unknown> = {};
+        const builder = { select() { return builder; }, eq(column: string, value: unknown) { filters[column] = value; return builder; },
+          async maybeSingle() { return { data: (await db.query<Row>("select id from techunter.workspaces where id=$1 and task_id=$2 and user_id=$3 and status=$4", [filters['id'], filters['task_id'], filters['user_id'], filters['status']])).rows[0] ?? null, error: null }; } };
+        return builder;
+      }
       if (table === 'submissions') {
         let id: string;
         const builder = { select() { return builder; }, eq(_column: string, value: string) { id = value; return builder; },
@@ -82,6 +89,7 @@ async function fixture() {
       assert.equal(args[4]?.treeSha, 'c'.repeat(40));
       await args[4]?.beforeMerge();
       const task = args[0]; if (!merged.has(task.id)) { merged.add(task.id); mergeCount++; }
+      await args[4]?.onMerged?.();
     },
     async syncChangesNeeded() { changeCount++; if (changesFailure) throw new Error('GitHub unavailable'); },
     async syncRelease() { if (releaseFailure) throw new Error('GitHub unavailable'); },
@@ -106,10 +114,11 @@ async function fixture() {
     const id = (await db.query<Row>('insert into techunter.tasks(project_id,title,publisher_id,parent_task_id,scope_json,base_sha) values ($1,$2,$3,$4,$5,$6) returning id', [projectId, `Reward ${reward}`, reviewer.id, parentId, JSON.stringify(scope), 'frozen-sha'])).rows[0]!['id'];
     await rpc('publish_task', { p_task_id: id, p_actor_id: reviewer.id, p_reward: reward, p_issue_number: 1, p_issue_url: 'https://example.invalid/issue/1' });
     await rpc('claim_task', { p_task_id: id, p_user_id: worker.id });
-    await db.query("insert into techunter.workspaces(task_id,user_id,status,device_id) values ($1,$2,'running','fixture-device')", [id, worker.id]);
+    const workspace = (await db.query<Row>("insert into techunter.workspaces(task_id,user_id,status,device_id) values ($1,$2,'running','fixture-device') returning id", [id, worker.id])).rows[0]!;
+    workspaceIds.set(id, workspace['id']);
     return id;
   }
-  const submit = (id: string) => service.submitTask(id, worker, input);
+  const submit = (id: string) => service.submitTask(id, worker, { ...input, workspaceId: workspaceIds.get(id)! });
   const accept = async (id: string) => service.acceptSubmission((await submit(id)).id, reviewer);
   const reserved = async () => Number((await db.query<Row>("select balance from techunter.point_accounts where owner_type='project' and owner_id=$1 and bucket='reserved'", [projectId])).rows[0]!['balance']);
   return { projectId, service, createTask, submit, accept, reserved,

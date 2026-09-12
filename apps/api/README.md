@@ -16,9 +16,9 @@ Techunter 登录会话具有 30 天绝对期限和 7 天空闲期限。Conexus R
 
 API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包含或托管 Web UI。Electron 在本机提供打包后的 UI，并通过 HTTPS 调用这里的 API。
 
-## 修改范围复议升级
+## 版本升级
 
-最新系统修复需要先应用 `202609120003_system_integrity.sql`，再更新 API、Desktop 和 CLI。它增加子任务归属校验、释放操作恢复、审核代码快照、按执行者隔离的工作环境，以及原子的项目导入和 Conexus 用户初始化。CLI 的中央任务配置见[根 README](../../README.md#central-tasks-shared-with-desktop)。
+最新修复需要按顺序应用全部迁移，最后应用 `202609120004_task_coordination.sql`，再更新 API 和 Desktop。它统一认领、审核、取消的持久化互斥与恢复，固定任务集成分支，并在提交事务中校验工作区。`POST /api/tasks/:id/submit` 新增必填 UUID `workspaceId`；旧客户端必须同步升级。具体恢复条件和历史数据检查见 [Supabase README](../../infra/supabase/README.md)。
 
 当前版本还需要先应用 `202609120002_durable_task_operations.sql`，然后更新 API 和 Desktop。任务分析会固定读取任务 `baseSha`，通过版本校验写回；发布和提交进度存入数据库，可以在 API 重启后从 Desktop 恢复。发布失败保留预算占用，撤回发布时先关闭对应 Issue 再释放占用。恢复提交不再要求重新运行模型。完整升级和旧提交恢复说明见 [Supabase README](../../infra/supabase/README.md)。
 

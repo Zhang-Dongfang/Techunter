@@ -284,7 +284,7 @@ export class GitHubService {
   async ensureTaskBranch(task: Task, project: Project, githubLogin: string, userCredential?: string): Promise<{ name: string; headSha: string; created: boolean }> {
     if (!task.githubIssueNumber) throw httpError('任务还没有对应的 GitHub Issue。', 409);
     const octokit = await this.client(userCredential);
-    const name = makeTaskBranchName(task.githubIssueNumber, githubLogin);
+    const name = task.workingBranch || makeTaskBranchName(task.githubIssueNumber, githubLogin);
     try {
       const existing = await octokit.git.getRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${name}` });
       return { name, headSha: existing.data.object.sha, created: false };
@@ -308,18 +308,13 @@ export class GitHubService {
     await octokit.issues.update({ ...location, body: scopeIssueBody(issue.data.body ?? '', task.scope) });
   }
 
-  async syncClaim(task: Task, project: Project, githubLogin: string, userCredential?: string): Promise<void> {
+  async syncClaim(task: Task, project: Project, githubLogin: string, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<void> {
     if (!task.githubIssueNumber) return;
     const octokit = await this.client(userCredential);
-    const branch = await this.ensureTaskBranch(task, project, githubLogin, userCredential);
-    try {
-      await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [githubLogin], labels: [taskLabels.claimed] });
-    } catch (error) {
-      if (branch.created) {
-        await octokit.git.deleteRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${branch.name}` }).catch(() => undefined);
-      }
-      throw error;
-    }
+    await checkpoint();
+    await this.ensureTaskBranch(task, project, githubLogin, userCredential);
+    await checkpoint();
+    await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [githubLogin], labels: [taskLabels.claimed] });
   }
 
   async syncRelease(task: Task, project: Project, userCredential?: string): Promise<void> {
@@ -328,16 +323,21 @@ export class GitHubService {
     await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [], labels: [taskLabels.available] });
   }
 
-  async syncChangesNeeded(task: Task, project: Project, reason: string, userCredential?: string): Promise<void> {
+  async syncChangesNeeded(task: Task, project: Project, reason: string, userCredential?: string, operation?: { id: string; checkpoint(): Promise<void> }): Promise<void> {
     if (!task.githubIssueNumber) return;
     const octokit = await this.client(userCredential);
     await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, labels: [taskLabels.changesNeeded] });
-    await octokit.issues.createComment({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, body: `## 验收修改意见\n\n${reason}` });
+    const marker = operation ? `<!-- techunter-review:${operation.id} -->` : '';
+    const comments = operation ? await octokit.paginate(octokit.issues.listComments, { owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, per_page: 100 }) : [];
+    if (!marker || !comments.some(comment => comment.body?.includes(marker))) {
+      await operation?.checkpoint();
+      await octokit.issues.createComment({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, body: `## 验收修改意见\n\n${reason}\n${marker}` });
+    }
   }
 
   private taskBranch(task: Task): string {
-    return task.githubIssueNumber && task.assignee?.githubLogin
-      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`;
+    return task.workingBranch || (task.githubIssueNumber && task.assignee?.githubLogin
+      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`);
   }
 
   async assertSubmissionHead(task: Task, project: Project, headSha: string, userCredential?: string): Promise<void> {
@@ -448,14 +448,16 @@ export class GitHubService {
     return url ?? null;
   }
 
-  async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string, reviewed?: { treeSha: string; beforeMerge(): Promise<void> }): Promise<void> {
+  async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string,
+    reviewed?: { treeSha: string; beforeMerge(): Promise<void>; onMerged?(): Promise<void>; checkpoint?(): Promise<void> }): Promise<void> {
     const octokit = await this.client(userCredential);
     const match = pullRequestUrl?.match(/\/pull\/(\d+)/);
     if (!match || !task.scope) throw httpError('任务缺少可校验的 PR 或文件范围。', 409);
     const location = { owner: project.repoOwner, repo: project.repoName, pull_number: Number(match[1]) };
     const pull = (await octokit.pulls.get(location)).data;
-    const expectedBranch = task.githubIssueNumber && task.assignee?.githubLogin
-      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`;
+    // Preserve settlement intent even when an externally merged PR fails validation.
+    if (pull.merged) await reviewed?.onMerged?.();
+    const expectedBranch = this.taskBranch(task);
     if ((pull.state !== 'open' && !pull.merged) || pull.base.ref !== task.targetBranch || pull.head.ref !== expectedBranch || pull.head.repo?.id !== project.githubRepositoryId) {
       throw httpError('PR 状态、目标分支或来源仓库与任务不一致。', 409, 'PULL_SCOPE_INVALID');
     }
@@ -468,26 +470,43 @@ export class GitHubService {
     // Reject concurrent pushes during pagination and pin the merge to the checked head.
     const latest = (await octokit.pulls.get(location)).data;
     if (latest.head.sha !== pull.head.sha || latest.base.sha !== pull.base.sha || latest.base.ref !== pull.base.ref) throw httpError('PR 在范围校验期间发生变化，请重新验收。', 409);
-    await reviewed?.beforeMerge();
     if (!latest.merged) {
-      const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
-      if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409);
+      await reviewed?.beforeMerge();
+      try {
+        const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
+        if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409, 'GITHUB_MERGE_REJECTED');
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        const definite = (error as { code?: string }).code === 'GITHUB_MERGE_REJECTED' || [401, 403, 404, 405, 409, 422].includes(status ?? 0);
+        if (!definite) throw error; // Timeouts and transport failures retain the acceptance intent.
+        const observed = (await octokit.pulls.get(location)).data;
+        if (!observed.merged) throw httpError('GitHub 尚未合并 PR，可退回修改后重新交付。', 409, 'GITHUB_MERGE_REJECTED');
+        if (observed.head.sha !== pull.head.sha) throw httpError('PR 已被外部操作合并且版本发生变化，需要核对合并结果。', 409, 'PULL_REVIEW_OUTDATED');
+      }
     }
+    await reviewed?.onMerged?.();
+    await reviewed?.checkpoint?.();
     if (task.githubIssueNumber) await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, state: 'closed', labels: [] });
   }
 
-  async cancelTask(task: Task, project: Project, userCredential?: string): Promise<void> {
+  async cancelTask(task: Task, project: Project, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<void> {
     const octokit = await this.client(userCredential);
     const pullRequestNumber = task.latestSubmission?.pullRequestUrl?.match(/\/pull\/(\d+)/)?.[1];
     if (pullRequestNumber) {
+      const pull = (await octokit.pulls.get({ owner: project.repoOwner, repo: project.repoName, pull_number: Number(pullRequestNumber) })).data;
+      if (pull.merged) throw httpError('PR 已合并，请恢复验收结算，不能取消退款。', 409, 'PULL_ALREADY_MERGED');
+      await checkpoint();
       await octokit.pulls.update({
         owner: project.repoOwner,
         repo: project.repoName,
         pull_number: Number(pullRequestNumber),
         state: 'closed',
       });
+      const closed = (await octokit.pulls.get({ owner: project.repoOwner, repo: project.repoName, pull_number: Number(pullRequestNumber) })).data;
+      if (closed.merged) throw httpError('PR 已合并，请恢复验收结算，不能取消退款。', 409, 'PULL_ALREADY_MERGED');
     }
     if (task.githubIssueNumber) {
+      await checkpoint();
       await octokit.issues.update({
         owner: project.repoOwner,
         repo: project.repoName,

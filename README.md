@@ -1,264 +1,54 @@
 # Techunter / 科技猎人
 
-> AI 驱动的任务分发与协作平台。CLI 与 Electron Desktop 是两个并列应用，共用同一套 Agent、仓库读取和任务约定。
+AI 驱动的任务分发与协作平台。Electron Desktop 提供任务市场、本机工作环境和交付界面，中央 API 负责 GitHub 协作、模型调用与贡献点结算。
 
-- [`apps/cli`](apps/cli)：终端 REPL 与 MCP 服务
-- [`apps/api`](apps/api)：Railway 中央控制面，连接 Supabase、Conexus 与 GitHub
-- [`apps/desktop`](apps/desktop/README.md)：企业内部 Web + Electron 本机 Agent
-- [`packages/core`](packages/core)：两个应用复用的 Agent 与领域核心
+- [`apps/desktop`](apps/desktop/README.md)：React UI、Electron 和本机 Agent
+- [`apps/api`](apps/api/README.md)：Railway 中央控制面，连接 Supabase、Conexus 与 GitHub
+- [`packages/core`](packages/core)：共享 Agent、仓库工具、任务约定和 API 类型
 
-```
-    ╔═══════════════╗
-◆═══╬   TECHUNTER   ╬═══▶
-    ╚═══════════════╝
-```
+## 开发
 
-<!-- demo GIF goes here -->
-
----
-
-## Why Techunter?
-
-Most teams manage tasks in GitHub Issues but switch between multiple tools to actually act on them. Techunter closes that gap:
-
-| Without Techunter | With Techunter |
-|---|---|
-| Manually write Issue descriptions | `/new` → AI scans your codebase and generates a full implementation guide |
-| Browse Issues in the browser, create branches by hand | `/pick` → select a task, branch is created and pushed automatically |
-| Write PR descriptions, update labels manually | `/submit` → AI reviews your changes against acceptance criteria, then commits and opens the PR |
-| Back-and-forth review comments | `/accept` or `/reject` with AI-generated feedback |
-
----
-
-## Installation
-
-```bash
-npm install -g techunter
-```
-
-**Install from source:**
-
-```bash
-git clone https://github.com/Zhang-Dongfang/Techunter.git
-cd Techunter
-npm install
-npm run build
-npm link ./apps/cli
-```
-
----
-
-## Quick Start
-
-Run the one-time setup wizard inside any directory with a GitHub remote:
-
-```bash
-tch init
-```
-
-The wizard will prompt for:
-1. **GitHub auth** — Browser OAuth (recommended) or a Personal Access Token (`repo` + `read:user` scopes)
-2. **AI provider** — Conexus account mode (per-user usage and logs), OpenRouter, or another OpenAI-compatible endpoint
-3. **Repository** — auto-detected from your git remote
-
-Then start the REPL:
-
-```bash
-tch
-```
-
----
-
-## Workflow
-
-### Central tasks shared with Desktop
-
-For tasks published by Desktop, run `tch config`, set **Central API** to your Techunter API HTTPS origin, and sign in with **Conexus**. Alternatively set `TECHUNTER_API_URL`. Connect the same GitHub account in Desktop and the CLI. If you customize the CLI's Conexus audience, set the API's `TECHUNTER_CLI_AUDIENCE` to the same origin.
-
-The CLI recognizes the central task ID in the Issue and sends claims, submissions, acceptance, changes requests, and cancellation through the API. Submissions package only changes allowed by the task scope, preserve file bytes and executable modes, and use central review and settlement. Switch to the task branch before submitting; provide actual test output when prompted or via the MCP tool's `test_output`. A pending submission can be resumed by submitting the task again. API errors stop the operation; they do not fall back to GitHub writes. Create central subtasks and manage their scope in Desktop.
-
-Independent GitHub tasks retain the original workflow. Concurrent claims use an atomic `techunter-claims/issue-<number>` Git ref; the same owner can retry an interrupted claim. Closing the task cleans up this ref. All participating CLI clients must be updated; direct GitHub edits and older CLI versions do not honor the claim lock or central settlement rules.
-
-### 1. Create a task
-
-```
-You › /new
-? Task title: Add email verification on signup
-
-⠋ Scanning project and generating guide…
-
-  ## Goal
-  Send a verification email after user registration.
-
-  ## Acceptance Criteria
-  - [ ] POST /auth/register sends a verification email
-  - [ ] Email contains a signed token with 24h expiry
-  - [ ] GET /auth/verify/:token activates the account
-  - [ ] Unverified users cannot access protected routes
-
-  ## Implementation Notes
-  - Use nodemailer (already in package.json)
-  - See existing token pattern in src/lib/auth.ts
-  - Add `verified` boolean column to users table
-
-? Create this task?  ❯ Yes, create task
-```
-
-### 2. Claim a task
-
-```
-You › /pick
-
-? Select a task:
-  #14   available   Add email verification on signup
-❯ #11   available   Fix login redirect bug
-
-  #11  Fix login redirect bug         available
-  After OAuth login, users are redirected to /home
-  instead of their original destination URL.
-
-? Action:  ❯ Claim this task
-
-✔ Claimed! Branch: worker-johndoe  (base: a3f92c1)
-
-? Open Claude Code for this task?  ❯ Yes, start coding now
-```
-
-### 3. Submit when done
-
-```
-You › /submit
-
-⠋ Reviewing changes against acceptance criteria…
-
-  ✅ Return URL stored in session before redirect
-  ✅ Redirects to return URL after successful login
-  ✅ Falls back to /dashboard when no return URL
-  ⚠️  Consider validating return URL to prevent open redirect
-
-? Submit task #11?  ❯ Yes, submit
-
-✔ Committed and pushed
-✔ PR created: https://github.com/myorg/my-project/pull/8
-✔ Marked as in-review
-```
-
-### 4. Review and accept
-
-```
-You › /review     # see all in-review PRs
-You › /accept     # merge PR, close issue, release branch
-```
-
----
-
-## Commands
-
-| Command | Alias | Description |
-|---|---|---|
-| `/help` | `/h` | Show all commands |
-| `/new` | `/n` | Create a task — AI generates an implementation guide |
-| `/pick` | `/p` | Browse tasks and claim one |
-| `/submit` | `/s` | AI-review changes, commit, push, open PR |
-| `/review` | `/rv` | List tasks waiting for your approval |
-| `/accept` | `/ac` | Merge PR and close issue |
-| `/status` | `/me` | Show tasks assigned to you |
-| `/edit` | `/e` | Edit a task title or description |
-| `/close` | `/d` | Close (delete) a task |
-| `/refresh` | `/r` | Reload the task list |
-| `/code` | `/c` | Open Claude Code for the current task branch |
-| `/wiki` | `/w` | Generate or refresh `TECHUNTER.md` project overview |
-| `/config` | `/cfg` | Change settings (repo, API keys, model) |
-| `/init` | | Re-run the setup wizard |
-
-Any other input is sent to the AI agent:
-
-```
-You › what tasks are available?
-You › claim the task about login redirect
-You › create a task to add pagination to the user list
-```
-
----
-
-## Task Lifecycle
-
-Issues carry exactly one `techunter:*` label at a time:
-
-```
-techunter:available  →  techunter:claimed  →  techunter:in-review
-                                                      ↓  (if rejected)
-                                           techunter:changes-needed
-```
-
-Labels are created automatically in your repository during `tch init`.
-
----
-
-## Branch Naming
-
-Each user has a persistent **worker branch** created when they first claim a task:
-
-```
-worker-{github-username}
-```
-
-Task branches submitted as PRs follow:
-
-```
-task-{issue_number}-{first-five-words-of-title}
-```
-
----
-
-## MCP Server
-
-Techunter ships a Model Context Protocol server that exposes all tools to any MCP-compatible client (e.g. Claude Desktop):
-
-```bash
-tch-mcp
-```
-
----
-
-## Development
-
-本地 Desktop 连接已经部署的中央 API：
+需要 Node.js 24 或更新版本、npm 和 Git。本机 Desktop 连接 `TECHUNTER_API_URL` 指定的中央 API。
 
 ```powershell
-Copy-Item apps/desktop/.env.example apps/desktop/.env
 npm install
-npm run dev          # 启动本地 UI 和 Electron，连接 TECHUNTER_API_URL
-npm run dev:api      # 仅在调试中央 API 时启动，需要根目录 .env
-npm run dev:cli      # 在当前仓库启动 CLI
-npm run typecheck    # 检查全部 workspace
-npm test             # 运行中央 API 与本机 Agent 测试
-npm run build        # 构建 core、CLI、Railway API 和 desktop
+Copy-Item apps/desktop/.env.example apps/desktop/.env
+# 在 apps/desktop/.env 中配置 TECHUNTER_API_URL
+npm run dev          # 启动本地 UI 和 Electron
+npm run dev:api      # 调试中央 API 时另行启动，需要配置根目录 .env
+npm run typecheck
+npm test
+npm run build        # 构建 core、API 和 Desktop
 ```
 
-中央 API 首次部署前需要应用 `infra/supabase` 迁移；完整顺序见 [`apps/api/README.md`](apps/api/README.md)。
+Windows 安装包与更新配置见 [Desktop 文档](apps/desktop/README.md)。中央 API 的部署顺序和环境变量见 [API 文档](apps/api/README.md)。
 
-To verify end-to-end: build and run `tch init` in a directory with a GitHub remote.
+## 工作流程
 
----
+1. 使用 Conexus 账号登录 Desktop，连接 GitHub 账号并导入有访问权限的仓库。
+2. 创建任务，由 Task Agent 分析源码、生成验收标准、修改范围和环境计划；确认发布后创建 Issue 并冻结贡献点。
+3. 认领任务，在本机准备独立 worktree。任务使用固定分支，释放后换人认领仍保留已验收子任务成果。
+4. 完成修改并运行测试，提交当前设备的交付包。中央 Agent 预审后创建 PR。
+5. 维护者验收合并并结算贡献点，或要求修改后重新交付。
 
-## Architecture
+发布、认领、提交、释放和审核遇到中断时，可在任务详情恢复相应操作。验收与取消互斥；合并结果尚未确定时不会允许退款取消。
 
+## 架构与升级
+
+```text
+Desktop / 本机 Agent ── HTTPS ── API (Railway)
+        │                         ├─ GitHub
+        └─ 本机仓库和 worktree      ├─ Conexus / 模型服务
+                                  └─ Supabase.techunter
 ```
-packages/core
-  ├─ Agent runtime / prompts
-  ├─ repository tools
-  └─ task and GitHub conventions
-       ↑                         ↑
-apps/cli                 apps/api                    apps/desktop
-  ├─ terminal + MCP        ├─ Railway Fastify API      ├─ React local UI
-  └─ CLI workflows         ├─ Supabase.techunter       └─ Electron 本机 Agent
-                           └─ GitHub / Conexus
-```
 
-CLI 工具位于 `apps/cli/src/tools/{name}/index.ts`；桌面端说明见 [apps/desktop/README.md](apps/desktop/README.md)，完整开发约定见 [CLAUDE.md](CLAUDE.md)。
+源码和环境位于本机；共享项目、任务状态和贡献点由中央 API 管理。Supabase service-role key 仅存放在 API。
 
----
+升级时先停止旧 API 的任务写入，按顺序应用 [数据库迁移](infra/supabase/README.md)，包括 `202609120004_task_coordination.sql`，然后更新 API 和 Desktop。新提交接口必须携带当前工作区 `workspaceId`。
+
+本仓库已移除终端应用与 MCP 服务。当前入口为 Desktop；旧终端安装不再属于受支持的客户端。
+
+完整开发约定见 [CLAUDE.md](CLAUDE.md)，系统说明见 [TECHUNTER.md](TECHUNTER.md)。
 
 ## License
 

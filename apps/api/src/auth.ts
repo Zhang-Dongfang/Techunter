@@ -128,7 +128,7 @@ function setSessionCookie(reply: FastifyReply, token: string, expiresAt: string)
 function allowedAudience(value: string): boolean {
   try {
     const origin = new URL(value).origin;
-    return [config().publicUrl, config().cliAudience, ...config().webOrigins].some((candidate) => new URL(candidate).origin === origin);
+    return [config().publicUrl, ...config().webOrigins].some((candidate) => new URL(candidate).origin === origin);
   } catch {
     return false;
   }

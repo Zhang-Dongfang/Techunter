@@ -17,7 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "conf": "^13.0.1",
     "globby": "^14.0.2",
     "https-proxy-agent": "^8.0.0",
     "ignore": "^6.0.2",
@@ -30,6 +29,6 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   }
 }

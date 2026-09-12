@@ -9,7 +9,7 @@ const task = { id: 'task', targetBranch: 'main', githubIssueNumber: 12, assignee
   scope: { revision: 2, editablePaths: ['src/feature.ts', 'README.md'], readonlyPaths: [], deniedPaths: [], visibleTests: [], environment: { setupCommands: [], testCommands: [], networkAllowlist: [] } },
 } as unknown as Task;
 
-function fixture(options: { treeChanged?: boolean; headChanged?: boolean; outOfScope?: boolean; merged?: boolean; alreadyMerged?: boolean; closed?: boolean; closeFailsOnce?: boolean } = {}) {
+function fixture(options: { treeChanged?: boolean; headChanged?: boolean; outOfScope?: boolean; merged?: boolean; alreadyMerged?: boolean; closed?: boolean; closeFailsOnce?: boolean; mergeError?: number; mergedDespiteError?: boolean; mergedDuringClose?: boolean } = {}) {
   let reads = 0, closes = 0;
   let isMerged = options.alreadyMerged ?? false;
   const merges: Array<Record<string, unknown>> = [];
@@ -22,7 +22,12 @@ function fixture(options: { treeChanged?: boolean; headChanged?: boolean; outOfS
         base: { sha: 'base-sha', ref: 'main' },
       } }; },
       listFiles: () => undefined,
-      async merge(input: Record<string, unknown>) { merges.push(input); isMerged = options.merged ?? true; return { data: { merged: isMerged } }; },
+      async merge(input: Record<string, unknown>) {
+        merges.push(input);
+        if (options.mergeError) { isMerged = options.mergedDespiteError ?? false; throw Object.assign(new Error('merge request failed'), { status: options.mergeError }); }
+        isMerged = options.merged ?? true; return { data: { merged: isMerged } };
+      },
+      async update() { if (options.mergedDuringClose) isMerged = true; },
     },
     issues: { async update() { closes += 1; if (options.closeFailsOnce && closes === 1) throw new Error('Issue temporarily unavailable'); } },
     async paginate() { return [{ filename: options.outOfScope ? 'src/private.ts' : 'README.md' }]; },
@@ -78,6 +83,37 @@ test('merged retries still enforce scope and closed unmerged PRs remain rejected
     const value = fixture(options);
     await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'));
     assert.equal(value.merges.length, 0);
+    assert.equal(value.closes(), 0);
+  }
+});
+
+test('explicit merge refusal is recoverable only after GitHub confirms the PR is unmerged', async () => {
+  for (const status of [401, 403, 404, 405, 409, 422]) {
+    const value = fixture({ mergeError: status });
+    await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'), { code: 'GITHUB_MERGE_REJECTED' });
+    assert.equal(value.closes(), 0);
+  }
+  const unknown = fixture({ mergeError: 502 });
+  await assert.rejects(() => unknown.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'), error =>
+    (error as { status?: number }).status === 502 && !(error as { code?: string }).code);
+  const already = fixture({ mergeError: 405, mergedDespiteError: true });
+  await already.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8');
+  assert.equal(already.closes(), 1);
+});
+
+test('external merge observation reserves settlement even when the PR fails snapshot validation', async () => {
+  const value = fixture({ alreadyMerged: true, treeChanged: true });
+  let observed = false;
+  await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8', undefined, {
+    treeSha: 'reviewed-tree', beforeMerge: async () => assert.fail('already merged'), onMerged: async () => { observed = true; },
+  }), { code: 'PULL_REVIEW_OUTDATED' });
+  assert.equal(observed, true);
+});
+
+test('cancellation checks for merges both before and after closing the PR', async () => {
+  for (const options of [{ alreadyMerged: true }, { mergedDuringClose: true }]) {
+    const value = fixture(options);
+    await assert.rejects(() => value.service.cancelTask({ ...task, latestSubmission: { ...task.latestSubmission!, pullRequestUrl: 'https://github.com/test/fixture/pull/8' } }, project), { code: 'PULL_ALREADY_MERGED' });
     assert.equal(value.closes(), 0);
   }
 });

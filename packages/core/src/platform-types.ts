@@ -93,6 +93,7 @@ export interface Task {
   id: string;
   version: number;
   pendingPublication?: { rewardPoints: number } | null;
+  pendingOperation?: { id: string; kind: 'publish' | 'submit' | 'claim' | 'release' | 'accept' | 'request_changes' | 'cancel' } | null;
   projectId: string;
   projectName: string;
   parentTaskId: string | null;
@@ -108,11 +109,13 @@ export interface Task {
   reviewer: User | null;
   baseSha: string;
   targetBranch: string;
+  workingBranch?: string | null;
   githubIssueNumber: number | null;
   githubIssueUrl: string | null;
   analysis: TaskAnalysis | null;
   scope: TaskScope | null;
   workspace: Workspace | null;
+  workspaces?: Workspace[];
   latestSubmission: Submission | null;
   children: TaskSummary[];
   createdAt: string;
@@ -167,6 +170,7 @@ export interface ScopeRequest extends ScopeRequestInput {
 export interface Workspace {
   id: string;
   taskId: string;
+  userId: string;
   status: WorkspaceStatus;
   provider: 'local_agent';
   deviceId: string;

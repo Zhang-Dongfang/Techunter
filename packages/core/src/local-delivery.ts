@@ -34,8 +34,10 @@ async function readWorkspaceFile(root: string, relative: string): Promise<Buffer
 }
 
 export async function taskRemoteHead(task: Task, workspacePath: string): Promise<string | null> {
-  if (!task.githubIssueNumber || !task.assignee?.githubLogin) return null;
-  const ref = `refs/remotes/origin/${makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin)}`;
+  const branch = task.workingBranch || (task.githubIssueNumber && task.assignee?.githubLogin
+    ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : null);
+  if (!branch) return null;
+  const ref = `refs/remotes/origin/${branch}`;
   try { return (await execFileAsync('git', ['rev-parse', '--verify', ref], { cwd: workspacePath, timeout: 10_000 })).stdout.trim(); }
   catch (error) { if ((error as { code?: number }).code === 128) return null; throw error; }
 }

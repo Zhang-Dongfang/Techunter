@@ -24,3 +24,12 @@ test('child tasks freeze the latest parent task branch head', async () => {
   );
   assert.deepEqual(version, { baseSha: 'b'.repeat(40), targetBranch: 'task-42-parent-owner' });
 });
+
+test('child targets survive a parent reassignment and GitHub login changes', async () => {
+  const version = await resolveTaskVersion(
+    { sourceBranch: 'main', headSha: 'a'.repeat(40) },
+    { workingBranch: 'task-stable-id', githubIssueNumber: 42, assignee: { githubLogin: 'new-owner' } },
+    async branch => { assert.equal(branch, 'task-stable-id'); return 'b'.repeat(40); },
+  );
+  assert.deepEqual(version, { baseSha: 'b'.repeat(40), targetBranch: 'task-stable-id' });
+});

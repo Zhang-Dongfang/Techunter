@@ -37,6 +37,7 @@ const workspaceUpdateBody = z.object({
 });
 const packageFile = z.object({ path: z.string().min(1).max(2_000), content: z.string().nullable(), encoding: z.enum(['utf-8', 'base64']), mode: z.enum(['100644', '100755']).optional() });
 const submitBody = z.object({
+  workspaceId: z.string().uuid(),
   headSha: z.string().regex(/^[a-f0-9]{40,64}$/),
   summary: z.string().trim().min(3).max(10_000),
   testOutput: z.string().max(100_000).default(''),

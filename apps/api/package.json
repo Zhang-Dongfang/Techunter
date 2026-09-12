@@ -13,7 +13,7 @@
     "dev": "node --env-file-if-exists=../../.env --watch --import tsx src/index.ts",
     "migrate:sqlite": "npm run build && node dist/migrate-sqlite.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build --workspace @techunter/core && npm run build && node --test \"dist/**/*.test.js\""
+    "test": "npm run build --workspace @techunter/core && npm run build && node --test \"dist/**/*.test.js\" \"test/*.test.mjs\""
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

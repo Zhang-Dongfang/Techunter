@@ -100,7 +100,7 @@ export function AgentDock({
         <div><button title="清空对话" onClick={() => setMessages([])}><Trash2 size={15} /></button><button title="收起" onClick={() => setExpanded(false)}><ChevronDown size={17} /></button></div>
       </div>
       <div className="agent-messages">
-        {messages.length === 0 && <div className="agent-welcome"><Sparkles size={20} /><strong>和 CLI 使用同一个 Agent Core</strong><span>可以查询任务、创建任务草稿、认领工作、扫描代码或执行仓库命令。</span><div>{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</button>)}</div></div>}
+        {messages.length === 0 && <div className="agent-welcome"><Sparkles size={20} /><strong>任务与代码助手</strong><span>可以查询任务、创建任务草稿、认领工作、扫描代码或执行仓库命令。</span><div>{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</button>)}</div></div>}
         {messages.map((message) => <div key={message.id} className={`agent-message ${message.role}${message.error ? ' error' : ''}`}>
           <span>{message.role === 'assistant' ? <Bot size={15} /> : '你'}</span>
           <div>
@@ -114,7 +114,7 @@ export function AgentDock({
 
     <form className="agent-composer" onSubmit={submit}>
       <button type="button" className="agent-orb" onClick={() => setExpanded((value) => !value)} title={expanded ? '收起对话' : '展开对话'}><Bot size={20} />{!expanded && messages.length > 0 && <i />}</button>
-      <div><textarea rows={1} value={input} onFocus={() => setExpanded(true)} onChange={(event) => setInput(event.target.value)} onKeyDown={keyDown} disabled={!configured || busy} placeholder={configured ? '交给 Agent：查询任务、发布工作、分析代码…' : authorizationRequired ? 'Conexus 模型授权已到期，请先续期' : 'Agent 未配置，请先运行 tch init'} /><span>Enter 发送 · Shift Enter 换行</span></div>
+      <div><textarea rows={1} value={input} onFocus={() => setExpanded(true)} onChange={(event) => setInput(event.target.value)} onKeyDown={keyDown} disabled={!configured || busy} placeholder={configured ? '交给 Agent：查询任务、发布工作、分析代码…' : authorizationRequired ? 'Conexus 模型授权已到期，请先续期' : 'Agent 未配置，请联系管理员配置模型服务'} /><span>Enter 发送 · Shift Enter 换行</span></div>
       <button className="agent-send" disabled={!configured || busy || !input.trim()} title="发送">{busy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
       {!expanded && <button type="button" className="agent-expand" onClick={() => setExpanded(true)} title="展开对话"><ChevronUp size={17} /></button>}
       {!configured && <span className="agent-config-error"><XCircle size={14} />{authorizationRequired ? '待续期' : '未连接'}</span>}

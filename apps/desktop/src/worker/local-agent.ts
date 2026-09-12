@@ -5,13 +5,13 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { collectTaskChanges, taskRemoteHead, readLocalTechunterConfig, type Project, type Task } from '@techunter/core';
+import { collectTaskChanges, taskRemoteHead, type Project, type Task } from '@techunter/core';
 import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
 
 const execFileAsync = promisify(execFile);
 
 export function gitEnvironment(project: Project, accessToken?: string): NodeJS.ProcessEnv {
-  const token = accessToken?.trim() || readLocalTechunterConfig().config?.githubToken?.trim();
+  const token = accessToken?.trim();
   if (!token || project.visibility === 'public') return process.env;
   return {
     ...process.env,

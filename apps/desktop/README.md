@@ -63,7 +63,7 @@ npm run package:win --workspace @techunter/desktop
 
 Railway API 的 `TECHUNTER_WEB_ORIGINS` 必须包含 `http://127.0.0.1:4311`。`TECHUNTER_RENDERER_URL` 只供开发时指向 Vite，生产环境不要设置。
 
-GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权，`tch init` 本机 token 仅作本机后备。凭据通过单次 Git 进程环境传入，不写入 remote。私有仓库会先确认当前 GitHub 用户已有访问权；没有访问权时必须先完成合作者申请并接受 GitHub 邀请。
+GitHub clone 优先使用中央 API 签发的短期 GitHub App installation token；未安装 App 的仓库使用当前用户已连接的 GitHub OAuth 授权。凭据通过单次 Git 进程环境传入，不写入 remote。私有仓库会先确认当前 GitHub 用户已有访问权；没有访问权时必须先完成合作者申请并接受 GitHub 邀请。
 
 Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复用浏览器中的 github.com 会话；GitHub 连接按用户保存，不随单次 Techunter 登录结束。Techunter 登录会话最长 30 天、连续 7 天未使用会失效；短期 Conexus Run Ticket 到期只暂停模型功能，可复用官方 API 域保存的 HttpOnly 浏览器会话快速续期。
 
@@ -75,7 +75,9 @@ Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复
 
 当前版本提交时会校验本机已合入的远程任务版本。子任务成果合并后，点击「同步并检查环境」会将它们合入父任务工作区；本机冲突需要先处理，Agent 不会重置或覆盖未提交改动。交付面板可以运行任务的 `testCommands` 并收集输出；测试后代码变化会要求重跑。测试仍在执行者本机运行，中央预审会明确注明这一证据来源。
 
-发布或提交遇到断线时，重新打开任务可选择「恢复发布」或「恢复提交」。如果原 API 进程刚刚退出，最多等待 90 秒后再重试。待发布的赏金会保留；「撤回发布」会关闭已创建的 Issue 并释放预算占用。升级前请先应用 [持久化操作迁移](../../infra/supabase/migrations/202609120002_durable_task_operations.sql)，再更新 API 和 Desktop。
+发布或提交遇到断线时，重新打开任务可选择「恢复发布」或「恢复提交」。如果原 API 进程刚刚退出，最多等待 90 秒后再重试。待发布的赏金会保留；「撤回发布」会关闭已创建的 Issue 并释放预算占用。升级前请按顺序应用全部迁移，包括 [任务协调迁移](../../infra/supabase/migrations/202609120004_task_coordination.sql)，再更新 API 和 Desktop。
+
+认领、释放、验收、退回和取消失败后，任务详情提供对应的恢复按钮。验收结果尚不确定时保留验收操作，禁止同时取消退款。提交必须使用当前账号、当前设备已就绪的工作区；另一台设备准备失败不会影响本机提交。任务换人后继续使用原有固定分支，保留已验收子任务成果。
 
 ```powershell
 npm run typecheck --workspace @techunter/desktop

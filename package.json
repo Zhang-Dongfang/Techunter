@@ -2,7 +2,7 @@
   "name": "techunter-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "Techunter CLI and desktop applications",
+  "description": "Techunter desktop application and control-plane API",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -11,10 +11,9 @@
     "dev": "npm run dev:desktop",
     "dev:api": "npm run dev --workspace @techunter/api",
     "dev:desktop": "npm run dev --workspace @techunter/desktop",
-    "dev:cli": "tsx apps/cli/src/index.ts",
-    "build": "npm run build --workspace @techunter/core && npm run build --workspace techunter && npm run build --workspace @techunter/api && npm run build --workspace @techunter/desktop",
-    "typecheck": "npm run typecheck --workspace @techunter/core && npm run typecheck --workspace techunter && npm run typecheck --workspace @techunter/api && npm run typecheck --workspace @techunter/desktop",
-    "test": "npm run test --workspace @techunter/api && npm run test --workspace @techunter/desktop && npm run test --workspace techunter",
+    "build": "npm run build --workspace @techunter/core && npm run build --workspace @techunter/api && npm run build --workspace @techunter/desktop",
+    "typecheck": "npm run typecheck --workspace @techunter/core && npm run typecheck --workspace @techunter/api && npm run typecheck --workspace @techunter/desktop",
+    "test": "npm run test --workspace @techunter/api && npm run test --workspace @techunter/desktop",
     "start": "npm run start --workspace @techunter/api"
   },
   "engines": {

@@ -44,6 +44,7 @@ import { ApiError, api } from './api';
 import { ConexusLogin } from './ConexusLogin';
 import { TaskDocument } from './TaskDocument';
 import { ScopeRequests } from './ScopeRequests';
+import { deviceWorkspace } from './task-workspace';
 
 type View = 'market' | 'mine' | 'review' | 'points';
 type TaskView = Exclude<View, 'points'>;
@@ -374,12 +375,17 @@ function TaskDetail({
   const [testedPackage, setTestedPackage] = useState<string>();
   const [changeReason, setChangeReason] = useState('请根据验收标准补充实现与测试。');
   const [localPath, setLocalPath] = useState('');
+  const [deviceId, setDeviceId] = useState<string>();
   const [removeConfirm, setRemoveConfirm] = useState(false);
 
   const project = projects.find((candidate) => candidate.id === task.projectId);
 
   useEffect(() => {
-    window.techunterDesktop?.locate(task.id).then((result) => setLocalPath(result.path ?? '')).catch(() => undefined);
+    let active = true;
+    setLocalPath('');
+    window.techunterDesktop?.locate(task.id).then((result) => { if (active) setLocalPath(result.path ?? ''); }).catch(() => undefined);
+    window.techunterDesktop?.identity().then((result) => { if (active) setDeviceId(result.deviceId); }).catch(() => undefined);
+    return () => { active = false; };
   }, [task.id]);
 
   async function action(name: string, fn: () => Promise<Task | unknown>) {
@@ -399,6 +405,7 @@ function TaskDetail({
   const mine = task.assignee?.id === me.id;
   const canReview = ['admin', 'maintainer'].includes(me.role) && !mine;
   const submission = task.latestSubmission;
+  const workspace = deviceWorkspace(task, me.id, deviceId);
 
   async function provisionWorkspace() {
     const desktop = window.techunterDesktop;
@@ -411,6 +418,7 @@ function TaskDetail({
       if (!synced) throw new Error('已取消本地目录选择，尚未准备任务工作环境。');
     }
     const identity = await desktop.identity();
+    setDeviceId(identity.deviceId);
     const workspace = await api.workspace(task.id, identity);
     await api.updateWorkspace(workspace.id, { status: 'provisioning' });
     try {
@@ -427,10 +435,13 @@ function TaskDetail({
     const desktop = window.techunterDesktop;
     if (!desktop) throw new Error('交付必须从准备该环境的 Techunter Desktop 提交。');
     const latestTask = await api.task(task.id);
+    const identity = await desktop.identity();
+    const workspace = deviceWorkspace(latestTask, me.id, identity.deviceId);
+    if (!workspace || workspace.status !== 'running') throw new Error('当前设备的工作环境尚未准备完成。');
     const changes = await desktop.collectChanges({ task: latestTask });
     if (testedPackage && testedPackage !== changes.packageDigest) throw new Error('交付代码在测试后发生变化，请重新运行任务测试。');
     setLocalPath(changes.path);
-    return api.submit(task.id, { summary, testOutput, files: changes.files, headSha: changes.headSha });
+    return api.submit(task.id, { workspaceId: workspace.id, summary, testOutput, files: changes.files, headSha: changes.headSha });
   }
 
   async function runTaskTests() {
@@ -449,13 +460,15 @@ function TaskDetail({
       onRemoved(await api.removeTask(task.id));
     } catch (caught) {
       setError((caught as Error).message);
+      await api.task(task.id).then(onChanged).catch(() => undefined);
     } finally {
       setBusy('');
     }
   }
 
-  const canRemove = me.role === 'admin' && !['accepted', 'cancelled'].includes(task.status);
-  const removeLabel = task.status === 'draft' ? '删除草稿' : '取消并移除任务';
+  const pendingKind = task.pendingOperation?.kind;
+  const canRemove = me.role === 'admin' && !['accepted', 'cancelled'].includes(task.status) && (!pendingKind || pendingKind === 'cancel');
+  const removeLabel = pendingKind === 'cancel' ? '恢复取消' : task.status === 'draft' ? '删除草稿' : '取消并移除任务';
 
   return <>
     <Modal onClose={onClose} wide>
@@ -475,7 +488,7 @@ function TaskDetail({
 
             {task.children.length > 0 && <section><div className="section-title"><Layers3 size={18} /><h3>子任务</h3><span className="revision">{task.children.length}</span></div><div className="child-list">{task.children.map((child) => <button key={child.id} onClick={() => onOpenTask(child.id)}><StatusBadge status={child.status} /><span>{child.title}</span><strong>{child.rewardPoints} CP</strong><ArrowRight size={16} /></button>)}</div></section>}
 
-            {task.workspace && <section><div className="section-title"><Command size={18} /><h3>本机工作环境</h3><span className={cn('workspace-state', task.workspace.status)}>{task.workspace.status}</span></div><div className="workspace-card"><div><span>{task.workspace.deviceLabel}</span><code>{localPath || task.workspace.error || 'Agent 正在准备仓库与依赖'}</code></div>{localPath && <div className="workspace-actions"><button className="button secondary" onClick={() => setTerminal(true)}><TerminalSquare size={16} />命令台</button><button className="button ghost" onClick={() => window.techunterDesktop?.run({ command: 'code .', cwd: localPath })}><Code2 size={16} />VS Code</button></div>}</div>{task.workspace.setupLog && <details className="delivery-doc"><summary>环境准备日志</summary><pre>{task.workspace.setupLog}</pre></details>}</section>}
+            {workspace && <section><div className="section-title"><Command size={18} /><h3>本机工作环境</h3><span className={cn('workspace-state', workspace.status)}>{workspace.status}</span></div><div className="workspace-card"><div><span>{workspace.deviceLabel}</span><code>{localPath || workspace.error || 'Agent 正在准备仓库与依赖'}</code></div>{localPath && <div className="workspace-actions"><button className="button secondary" onClick={() => setTerminal(true)}><TerminalSquare size={16} />命令台</button><button className="button ghost" onClick={() => window.techunterDesktop?.run({ command: 'code .', cwd: localPath })}><Code2 size={16} />VS Code</button></div>}</div>{workspace.setupLog && <details className="delivery-doc"><summary>环境准备日志</summary><pre>{workspace.setupLog}</pre></details>}</section>}
 
             {submission?.review && <section><div className="review-hero"><div className={cn('score-ring', submission.review.verdict === 'approved' ? 'good' : 'warn')}><strong>{submission.review.score}</strong><span>/100</span></div><div><span className="eyebrow">AI REVIEW</span><h3>{submission.review.verdict === 'approved' ? '自动预审通过' : '需要继续修改'}</h3><p>{submission.review.summary}</p></div></div><div className="finding-list">{submission.review.findings.map((finding) => <div key={finding.criterion}><span className={finding.passed ? 'finding-pass' : 'finding-fail'}>{finding.passed ? <Check size={15} /> : <X size={15} />}</span><div><strong>{finding.criterion}</strong><p>{finding.evidence}</p></div></div>)}</div>{submission.review.risks.length > 0 && <div className="risk-box"><strong>风险提示</strong>{submission.review.risks.map((risk) => <p key={risk}>· {risk}</p>)}</div>}<details className="delivery-doc"><summary>查看 Agent 交付文档</summary><pre>{submission.review.deliveryDocument}</pre></details>{submission.pullRequestUrl && <a className="pr-link" href={submission.pullRequestUrl} target="_blank" rel="noreferrer"><Github size={17} />打开 Pull Request<ExternalLink size={14} /></a>}</section>}
           </main>
@@ -494,9 +507,14 @@ function TaskDetail({
                 <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('publish', () => api.publish(task.id, task.pendingPublication?.rewardPoints ?? reward))}>{busy === 'publish' ? <Loader2 className="spin" size={17} /> : <Activity size={17} />}{task.pendingPublication ? '恢复发布' : '确认并发布'}</button>
                 {task.pendingPublication && <button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('cancel-publication', () => api.cancelPublication(task.id))}>撤回发布</button>}
               </>}
-              {task.status === 'open' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}>{busy === 'claim' ? <Loader2 className="spin" size={17} /> : <CrosshairIcon />}认领这个任务</button>}
-              {task.status === 'active' && mine && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{task.workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
-              {task.status === 'submitted' && submission?.status === 'approved' && canReview && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}验收并结算</button><textarea className="compact-textarea" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} rows={3} /><button className="button danger full" disabled={Boolean(busy)} onClick={() => action('changes', () => api.requestChanges(submission.id, changeReason))}><XCircle size={17} />要求修改</button></>}
+              {task.status === 'open' && !pendingKind && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}>{busy === 'claim' ? <Loader2 className="spin" size={17} /> : <CrosshairIcon />}认领这个任务</button>}
+              {task.status === 'active' && mine && task.pendingOperation?.kind === 'claim' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}><RefreshCw size={17} />恢复认领</button>}
+              {task.status === 'active' && mine && task.pendingOperation?.kind === 'release' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}><RefreshCw size={17} />恢复释放</button>}
+              {task.status === 'active' && mine && !task.pendingOperation && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
+              {task.status === 'submitted' && submission?.status === 'approved' && canReview && <>
+                {(!pendingKind || pendingKind === 'accept') && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}{pendingKind === 'accept' ? '恢复验收结算' : '验收并结算'}</button>}
+                {(!pendingKind || pendingKind === 'request_changes') && <><textarea className="compact-textarea" value={changeReason} disabled={pendingKind === 'request_changes'} onChange={(event) => setChangeReason(event.target.value)} rows={3} /><button className="button danger full" disabled={Boolean(busy)} onClick={() => action('changes', () => api.requestChanges(submission.id, changeReason))}><XCircle size={17} />{pendingKind === 'request_changes' ? '恢复退回修改' : '要求修改'}</button></>}
+              </>}
               {task.status === 'accepted' && <div className="done-panel"><CheckCircle2 size={22} /><div><strong>任务已完成</strong><span>贡献点已进入执行者账户</span></div></div>}
               {canRemove && (!removeConfirm
                 ? <button className="button danger full" disabled={Boolean(busy)} onClick={() => setRemoveConfirm(true)}><Trash2 size={16} />{removeLabel}</button>

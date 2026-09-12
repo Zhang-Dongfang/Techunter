@@ -88,8 +88,9 @@ export class TaskService {
       source_branch: current.sourceBranch,
       visibility: repository.visibility,
       head_sha: repository.headSha,
-    }).eq('id', projectId).select('*').single();
+    }).eq('id', projectId).eq('source_branch', current.sourceBranch).eq('updated_at', current.updatedAt).select('*').maybeSingle();
     if (update.error) throw new Error(update.error.message);
+    if (!update.data) return this.getProject(projectId);
     await this.audit(actor.id, 'project.synced', 'project', projectId, { sourceBranch: current.sourceBranch, headSha: repository.headSha });
     return this.projectFromRow(update.data as Row);
   }
@@ -118,8 +119,9 @@ export class TaskService {
       source_branch: branch,
       visibility: repository.visibility,
       head_sha: repository.headSha,
-    }).eq('id', projectId).select('*').single();
+    }).eq('id', projectId).eq('updated_at', current.updatedAt).select('*').maybeSingle();
     if (update.error) throw new Error(update.error.message);
+    if (!update.data) throw httpError('项目已被其他操作更新，请刷新后重新切换分支。', 409, 'PROJECT_VERSION_CONFLICT');
     await this.audit(actor.id, 'project.branch_switched', 'project', projectId, {
       previousBranch: current.sourceBranch,
       sourceBranch: branch,
@@ -182,10 +184,10 @@ export class TaskService {
       this.getUser(String(row['publisher_id'])),
       row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
       row['reviewer_id'] ? this.getUser(String(row['reviewer_id'])) : Promise.resolve(null),
-      this.db().from('workspaces').select('*').eq('task_id', id).eq('user_id', row['assignee_id'] ?? '00000000-0000-0000-0000-000000000000').order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      this.db().from('workspaces').select('*').eq('task_id', id).eq('user_id', row['assignee_id'] ?? '00000000-0000-0000-0000-000000000000').order('created_at', { ascending: false }).order('id', { ascending: false }),
       this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
-      this.db().from('task_operations').select('payload').eq('id', id).eq('kind', 'publish').is('completed_at', null).maybeSingle(),
+      this.db().from('task_operations').select('id,kind,payload').eq('task_id', id).is('completed_at', null).maybeSingle(),
     ]);
     if (workspaceResult.error) throw new Error(workspaceResult.error.message);
     if (submissionResult.error) throw new Error(submissionResult.error.message);
@@ -206,7 +208,8 @@ export class TaskService {
       id: String(row['id']),
       projectId: project.id,
       version: Number(row['lock_version']),
-      pendingPublication: publicationResult.data ? { rewardPoints: Number(publicationResult.data.payload.reward) } : null,
+      pendingPublication: publicationResult.data?.kind === 'publish' ? { rewardPoints: Number(publicationResult.data.payload.reward) } : null,
+      pendingOperation: publicationResult.data ? { id: String(publicationResult.data.id), kind: publicationResult.data.kind } : null,
       projectName: project.name,
       parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
       rootTaskId: row['root_task_id'] ? String(row['root_task_id']) : null,
@@ -221,11 +224,13 @@ export class TaskService {
       reviewer,
       baseSha: String(row['base_sha']),
       targetBranch: String(row['target_branch']),
+      workingBranch: row['working_branch'] ? String(row['working_branch']) : null,
       githubIssueNumber: row['github_issue_number'] === null ? null : Number(row['github_issue_number']),
       githubIssueUrl: row['github_issue_url'] ? String(row['github_issue_url']) : null,
       analysis: effectiveAnalysis,
       scope,
-      workspace: workspaceResult.data ? this.workspaceFromRow(workspaceResult.data as Row) : null,
+      workspace: workspaceResult.data?.[0] ? this.workspaceFromRow(workspaceResult.data[0] as Row) : null,
+      workspaces: (workspaceResult.data ?? []).map((workspace: Row) => this.workspaceFromRow(workspace)),
       latestSubmission: submissionResult.data ? await this.submissionFromRow(submissionResult.data as Row) : null,
       children: await this.summariesFromRows((childrenResult.data ?? []) as Row[]),
       createdAt: String(row['created_at']),
@@ -316,38 +321,46 @@ export class TaskService {
   async removeTask(taskId: string, actor: User, githubCredential?: string): Promise<{ id: string; disposition: 'deleted' | 'cancelled' }> {
     if (actor.role !== 'admin') throw httpError('只有管理员可以删除任务。', 403);
     const task = await this.getTask(taskId);
-    if (task.status === 'accepted') throw httpError('已验收结算的任务不能删除。', 409, 'TASK_ALREADY_SETTLED');
-    if (task.status === 'cancelled') throw httpError('任务已经被取消。', 409, 'TASK_ALREADY_CANCELLED');
-    const pending = await this.db().from('task_operations').select('id').eq('task_id', taskId).is('completed_at', null).limit(1);
-    if (pending.error) throw new Error(pending.error.message);
-    if (pending.data.length) throw httpError('请先恢复正在处理的发布或提交，再移除任务。', 409, 'OPERATION_IN_PROGRESS');
-
-    if (task.status !== 'draft') {
-      const children = await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)');
-      if (children.error) throw new Error(children.error.message);
-      if (children.data.length) throw httpError(`还有 ${children.data.length} 个未完成子任务，不能移除父任务。`, 409, 'OPEN_CHILD_TASKS');
-      await this.github.cancelTask(task, await this.getProject(task.projectId), githubCredential);
+    if (task.status === 'draft') {
+      const result = await this.db().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
+      if (result.error) translateDatabaseError(new Error(result.error.message));
+      return { id: taskId, disposition: 'deleted' };
     }
-
-    const result = await this.db().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
+    const result = await this.db().rpc('begin_task_cancel', { p_task_id: taskId, p_actor_id: actor.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
-    const disposition = result.data === 'deleted' ? 'deleted' : 'cancelled';
-    return { id: taskId, disposition };
+    if (result.data) await runTaskOperation(this.db(), String(result.data), actor.id, async (_payload, token, checkpoint) => {
+      const current = await this.getTask(taskId);
+      await checkpoint();
+      try {
+        await this.github.cancelTask(current, await this.getProject(current.projectId), githubCredential, checkpoint);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'PULL_ALREADY_MERGED') {
+          const aborted = await this.db().rpc('abort_task_cancel', { p_id: result.data, p_token: token });
+          if (aborted.error) translateDatabaseError(new Error(aborted.error.message));
+        }
+        throw error;
+      }
+      await checkpoint();
+      const finished = await this.db().rpc('finish_task_cancel', { p_id: result.data, p_token: token });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
+    return { id: taskId, disposition: 'cancelled' };
   }
 
   async claimTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     if (!user.githubLogin || !githubCredential) throw httpError('认领任务前请先连接 GitHub 账号。', 400);
-    const result = await this.db().rpc('claim_task', { p_task_id: taskId, p_user_id: user.id });
+    const result = await this.db().rpc('begin_task_claim', { p_task_id: taskId, p_actor_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
-    const task = await this.getTask(taskId);
-    const project = await this.getProject(task.projectId);
-    try {
-      await this.github.syncClaim(task, project, user.githubLogin, githubCredential);
-    } catch (error) {
-      await this.db().rpc('rollback_claim', { p_task_id: taskId, p_user_id: user.id, p_reason: (error as Error).message });
-      throw error;
-    }
-    return task;
+    if (result.data) await runTaskOperation(this.db(), String(result.data), user.id, async (_payload, token, checkpoint) => {
+      const task = await this.getTask(taskId);
+      const project = await this.getProject(task.projectId);
+      await checkpoint();
+      await this.github.syncClaim(task, project, user.githubLogin!, githubCredential, checkpoint);
+      await checkpoint();
+      const finished = await this.db().rpc('finish_task_claim', { p_id: result.data, p_token: token });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
+    return this.getTask(taskId);
   }
 
   async releaseTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
@@ -383,12 +396,14 @@ export class TaskService {
     return this.workspaceFromRow(result.data as Row);
   }
 
-  async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[]; headSha: string }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
+  async submitTask(taskId: string, user: User, input: { workspaceId: string; summary: string; testOutput: string; files: PackageFile[]; headSha: string }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id || !task.scope) throw httpError('只有任务执行者可以提交进行中的任务。', 400);
     const children = dataOrThrow(await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)')) as Row[];
     if (children.length) throw httpError(`还有 ${children.length} 个子任务未完成。`, 400);
-    if (task.workspace?.status !== 'running') throw httpError('本机工作环境尚未准备完成。', 400);
+    const workspace = await this.db().from('workspaces').select('id').eq('id', input.workspaceId).eq('task_id', taskId).eq('user_id', user.id).eq('status', 'running').maybeSingle();
+    if (workspace.error) throw new Error(workspace.error.message);
+    if (!workspace.data) throw httpError('本机工作环境尚未准备完成。', 409, 'WORKSPACE_NOT_READY');
     const files = normalizePackageFiles(input.files, task.scope);
     if (!files.length) throw httpError('editablePaths 范围内没有检测到任何改动。', 400);
     const project = await this.getProject(task.projectId);
@@ -405,8 +420,8 @@ export class TaskService {
       modelCredential: authorization?.credential,
       modelAudience: authorization?.audience,
     });
-    const begun = await this.db().rpc('begin_submission_operation', {
-      p_task_id: taskId, p_author_id: user.id, p_scope: task.scope,
+    const begun = await this.db().rpc('begin_workspace_submission', {
+      p_task_id: taskId, p_author_id: user.id, p_workspace_id: input.workspaceId, p_scope: task.scope,
       p_summary: input.summary.trim(), p_test_output: input.testOutput.trim(), p_files: files, p_review: review,
       p_head_sha: input.headSha,
     });
@@ -473,22 +488,43 @@ export class TaskService {
     const task = await this.getTask(submission.taskId);
     if (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
-    if (task.status === 'accepted') { await this.startReview(submissionId, reviewer, 'accept'); return task; }
-    const project = await this.getProject(task.projectId);
-    let treeSha = submission.reviewedTreeSha;
-    if (!treeSha) {
-      // Legacy approved submissions predate persisted tree IDs. Rebuild only from
-      // their saved review package, using the old publisher's 100644 semantics.
-      const row = dataOrThrow(await this.db().from('submissions').select('files_json').eq('id', submissionId).single()) as Row;
-      const files = normalizePackageFiles(jsonValue<PackageFile[]>(row['files_json'], []), task.scope!);
-      if (!files.length) throw httpError('该旧提交缺少可验证的审核快照，请要求重新交付。', 409);
-      treeSha = await this.github.submissionTree(task, project, files.map(file => ({ ...file, mode: '100644' })), githubCredential);
-    }
-    await this.github.completeTask(task, project, submission.pullRequestUrl, githubCredential, {
-      treeSha, beforeMerge: () => this.startReview(submissionId, reviewer, 'accept'),
-    });
-    const result = await this.db().rpc('accept_task', { p_submission_id: submissionId, p_reviewer_id: reviewer.id });
+    const result = await this.db().rpc('begin_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_action: 'accept' });
     if (result.error) translateDatabaseError(new Error(result.error.message));
+    if (result.data) await runTaskOperation(this.db(), String(result.data), reviewer.id, async (payload, token, checkpoint) => {
+      let mergeAttempted = payload['phase'] !== 'ready';
+      const mark = async (phase: 'merging' | 'merged') => {
+        const saved = await this.db().rpc('mark_task_review', { p_id: result.data, p_token: token, p_phase: phase });
+        if (saved.error) translateDatabaseError(new Error(saved.error.message));
+      };
+      try {
+        const project = await this.getProject(task.projectId);
+        let treeSha = submission.reviewedTreeSha;
+        if (!treeSha) {
+          // Rebuild legacy review evidence, never substitute the current PR tree.
+          const row = dataOrThrow(await this.db().from('submissions').select('files_json').eq('id', submissionId).single()) as Row;
+          const files = normalizePackageFiles(jsonValue<PackageFile[]>(row['files_json'], []), task.scope!);
+          if (!files.length) throw httpError('该旧提交缺少可验证的审核快照，请要求重新交付。', 409);
+          treeSha = await this.github.submissionTree(task, project, files.map(file => ({ ...file, mode: '100644' })), githubCredential);
+        }
+        await this.github.completeTask(task, project, submission.pullRequestUrl, githubCredential, {
+          treeSha, checkpoint,
+          beforeMerge: async () => { await checkpoint(); await mark('merging'); mergeAttempted = true; },
+          onMerged: async () => { mergeAttempted = true; await checkpoint(); await mark('merged'); },
+        });
+        mergeAttempted = true;
+        await mark('merged');
+        await checkpoint();
+        const finished = await this.db().rpc('finish_task_review', { p_id: result.data, p_token: token });
+        if (finished.error) translateDatabaseError(new Error(finished.error.message));
+      } catch (error) {
+        const definitelyUnmerged = (error as { code?: string }).code === 'GITHUB_MERGE_REJECTED';
+        if (!mergeAttempted || definitelyUnmerged) {
+          const aborted = await this.db().rpc('abort_task_review', { p_id: result.data, p_token: token, p_definitely_unmerged: definitelyUnmerged });
+          if (aborted.error) translateDatabaseError(new Error(aborted.error.message));
+        }
+        throw error;
+      }
+    });
     return this.getTask(task.id);
   }
 
@@ -499,16 +535,16 @@ export class TaskService {
     if (task.status !== 'submitted' || submission.status !== 'approved' || task.latestSubmission?.id !== submissionId) {
       throw httpError('只能对最新的待验收提交要求修改。', 409, 'SUBMISSION_STATE_CONFLICT');
     }
-    await this.startReview(submissionId, reviewer, 'request_changes');
-    await this.github.syncChangesNeeded(task, await this.getProject(task.projectId), reason, githubCredential);
-    const result = await this.db().rpc('request_submission_changes', { p_submission_id: submissionId, p_reviewer_id: reviewer.id, p_reason: reason });
+    const result = await this.db().rpc('begin_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_action: 'request_changes', p_reason: reason });
     if (result.error) translateDatabaseError(new Error(result.error.message));
+    await runTaskOperation(this.db(), String(result.data), reviewer.id, async (payload, token, checkpoint) => {
+      await checkpoint();
+      await this.github.syncChangesNeeded(task, await this.getProject(task.projectId), String(payload['reason']), githubCredential, { id: String(result.data), checkpoint });
+      await checkpoint();
+      const finished = await this.db().rpc('finish_task_review', { p_id: result.data, p_token: token });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
     return this.getTask(task.id);
-  }
-
-  private async startReview(submissionId: string, reviewer: User, action: 'accept' | 'request_changes'): Promise<void> {
-    const result = await this.db().rpc('start_submission_review', { p_submission_id: submissionId, p_reviewer_id: reviewer.id, p_action: action });
-    if (result.error) translateDatabaseError(new Error(result.error.message));
   }
 
   async getSubmission(id: string): Promise<Submission> {
@@ -632,7 +668,7 @@ export class TaskService {
 
   private workspaceFromRow(row: Row): Workspace {
     return {
-      id: String(row['id']), taskId: String(row['task_id']), status: row['status'] as Workspace['status'],
+      id: String(row['id']), taskId: String(row['task_id']), userId: String(row['user_id']), status: row['status'] as Workspace['status'],
       provider: 'local_agent', deviceId: String(row['device_id']), deviceLabel: String(row['device_label']),
       headSha: String(row['head_sha'] ?? ''), setupLog: String(row['setup_log'] ?? ''),
       error: row['error'] ? String(row['error']) : null,

@@ -48,10 +48,10 @@ function taskForAgent(task: Task) {
 }
 
 export class AssistantService {
-  constructor(private readonly tasks: TaskService, private readonly github: GitHubService) {}
+  constructor(private readonly tasks: TaskService, private readonly github: GitHubService, private readonly configuration = config) {}
 
   async chat(input: AssistantInput): Promise<AgentChatResponse> {
-    const value = config();
+    const value = this.configuration();
     const credential = value.ai.accessMode === 'conexus' ? input.modelCredential : value.ai.apiKey;
     if (!credential || (value.ai.accessMode === 'conexus' && !input.modelAudience)) {
       throw httpError(
@@ -136,6 +136,11 @@ export class AssistantService {
         execute: async (toolInput) => {
           const projectId = typeof toolInput['project_id'] === 'string' ? toolInput['project_id'] : project.id;
           if (!input.githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401);
+          const authorization = input.modelCredential && input.modelAudience
+            ? { credential: input.modelCredential, audience: input.modelAudience } : undefined;
+          if (this.configuration().ai.accessMode === 'conexus' && !authorization) {
+            throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
+          }
           await this.tasks.syncProject(projectId, input.user, input.githubCredential);
           const draft = await this.tasks.createDraft({
             projectId,
@@ -143,10 +148,7 @@ export class AssistantService {
             description: String(toolInput['description'] ?? ''),
             publisherId: input.user.id,
           }, input.githubCredential);
-          if (!input.modelCredential || !input.modelAudience) {
-            throw httpError('Agent 授权不足，任务草稿已保留。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
-          }
-          await this.tasks.analyzeTask(draft.id, input.user, { credential: input.modelCredential, audience: input.modelAudience }, input.githubCredential);
+          await this.tasks.analyzeTask(draft.id, input.user, authorization, input.githubCredential);
           return json(taskForAgent(await this.tasks.getTask(draft.id)));
         },
       },

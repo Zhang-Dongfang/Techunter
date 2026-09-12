@@ -115,7 +115,7 @@ export const api = {
   workspace: (id: string, body: { deviceId: string; deviceLabel: string }) => post<Workspace>(`/api/tasks/${id}/workspaces`, body),
   updateWorkspace: (id: string, body: { status: 'provisioning' | 'running' | 'failed'; headSha?: string; setupLog?: string; error?: string | null }) =>
     request<Workspace>(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  submit: (id: string, body: { summary: string; testOutput: string; files: PackageFile[]; headSha: string }) => post<Submission>(`/api/tasks/${id}/submissions`, body),
+  submit: (id: string, body: { workspaceId: string; summary: string; testOutput: string; files: PackageFile[]; headSha: string }) => post<Submission>(`/api/tasks/${id}/submissions`, body),
   resumeSubmission: (id: string) => post<Submission>(`/api/submissions/${id}/resume`),
   accept: (submissionId: string) => post<Task>(`/api/submissions/${submissionId}/accept`),
   requestChanges: (submissionId: string, reason: string) =>

@@ -61,7 +61,7 @@ describe('LocalAgent', () => {
     await fs.writeFile(path.join(source, 'child.txt'), 'accepted child'); await git(['commit', '-am', 'child accepted']);
     const childHead = (await git(['rev-parse', 'HEAD'])).stdout.trim();
     const project = { id: 'project', name: 'fixture', repoOwner: 'local', repoName: 'fixture', cloneUrl: source, defaultBranch: 'main', sourceBranch: 'main', visibility: 'public' } as Project;
-    const task = { id: 'task', baseSha, githubIssueNumber: 1, assignee: { githubLogin: 'worker' }, scope: { revision: 1,
+    const task = { id: 'task', baseSha, workingBranch: makeTaskBranchName(1, 'worker'), githubIssueNumber: 1, assignee: { githubLogin: 'new-owner' }, scope: { revision: 1,
       editablePaths: ['parent.txt', 'child.txt'], readonlyPaths: [], deniedPaths: [], visibleTests: [],
       environment: { setupCommands: [], testCommands: ['node -e "console.log(123)"'], networkAllowlist: [] } } } as unknown as Task;
     const agent = new LocalAgent(path.join(root, 'agent')); const synced = await agent.syncProject(project, path.join(root, 'projects'));
