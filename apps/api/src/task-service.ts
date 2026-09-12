@@ -21,6 +21,7 @@ import { database, dataOrThrow, type TechunterDatabase } from './database.js';
 import { httpError, translateDatabaseError } from './errors.js';
 import { GitHubService } from './github-service.js';
 import { resolveTaskVersion } from './task-version.js';
+import { runTaskOperation } from './task-operation.js';
 
 type Row = Record<string, any>;
 
@@ -189,7 +190,7 @@ export class TaskService {
     if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
     if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
     const rows = dataOrThrow(await query) as Row[];
-    const summaries = await Promise.all(rows.map((row) => this.summaryFromRow(row)));
+    const summaries = await this.summariesFromRows(rows);
     const pending = dataOrThrow(await this.db().from('scope_requests').select('task_id').eq('status', 'pending')) as Row[];
     const pendingIds = new Set(pending.map((row) => String(row['task_id'])));
     for (const task of summaries) task.pendingScopeRequestCount = pendingIds.has(task.id) ? 1 : 0;
@@ -199,7 +200,7 @@ export class TaskService {
 
   async getTask(id: string): Promise<Task> {
     const row = await this.taskRow(id);
-    const [project, publisher, assignee, reviewer, workspaceResult, submissionResult, childrenResult] = await Promise.all([
+    const [project, publisher, assignee, reviewer, workspaceResult, submissionResult, childrenResult, publicationResult] = await Promise.all([
       this.getProject(String(row['project_id'])),
       this.getUser(String(row['publisher_id'])),
       row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
@@ -207,10 +208,12 @@ export class TaskService {
       this.db().from('workspaces').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
+      this.db().from('task_operations').select('payload').eq('id', id).eq('kind', 'publish').is('completed_at', null).maybeSingle(),
     ]);
     if (workspaceResult.error) throw new Error(workspaceResult.error.message);
     if (submissionResult.error) throw new Error(submissionResult.error.message);
     if (childrenResult.error) throw new Error(childrenResult.error.message);
+    if (publicationResult.error) throw new Error(publicationResult.error.message);
     const scope = jsonValue<TaskScope | null>(row['scope_json'], null);
     const acceptanceCriteria = jsonValue<string[]>(row['acceptance_json'], []);
     const analysis = jsonValue<TaskAnalysis | null>(row['analysis_json'], null);
@@ -225,6 +228,8 @@ export class TaskService {
     return {
       id: String(row['id']),
       projectId: project.id,
+      version: Number(row['lock_version']),
+      pendingPublication: publicationResult.data ? { rewardPoints: Number(publicationResult.data.payload.reward) } : null,
       projectName: project.name,
       parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
       rootTaskId: row['root_task_id'] ? String(row['root_task_id']) : null,
@@ -245,7 +250,7 @@ export class TaskService {
       scope,
       workspace: workspaceResult.data ? this.workspaceFromRow(workspaceResult.data as Row) : null,
       latestSubmission: submissionResult.data ? await this.submissionFromRow(submissionResult.data as Row) : null,
-      children: await Promise.all(((childrenResult.data ?? []) as Row[]).map((child) => this.summaryFromRow(child))),
+      children: await this.summariesFromRows((childrenResult.data ?? []) as Row[]),
       createdAt: String(row['created_at']),
       updatedAt: String(row['updated_at']),
     };
@@ -291,7 +296,7 @@ export class TaskService {
     const analysis = await this.agent.analyze({
       title: task.title,
       description: task.description,
-      project,
+      project: { ...project, headSha: task.baseSha },
       githubCredential,
       editableLimit: parent?.scope?.editablePaths,
       readonlyLimit: parent?.scope ? [...parent.scope.editablePaths, ...parent.scope.readonlyPaths] : undefined,
@@ -299,32 +304,31 @@ export class TaskService {
       modelCredential: authorization?.credential,
       modelAudience: authorization?.audience,
     });
-    const update = await this.db().from('tasks').update({
-      summary: analysis.summary,
-      acceptance_json: analysis.acceptanceCriteria,
-      scope_json: analysis.scope,
-      analysis_json: analysis,
-      reward_points: analysis.suggestedPoints,
-    }).eq('id', taskId);
-    if (update.error) throw new Error(update.error.message);
-    await this.audit(actor.id, 'task.analyzed', 'task', taskId, { confidence: analysis.confidence });
+    const update = await this.db().rpc('save_task_analysis', {
+      p_task_id: taskId, p_actor_id: actor.id, p_version: task.version,
+      p_parent_scope: parent?.scope ?? null, p_analysis: analysis,
+    });
+    if (update.error) translateDatabaseError(new Error(update.error.message));
     return analysis;
   }
 
   async publishTask(taskId: string, actor: User, rewardPoints: number | undefined, githubCredential?: string): Promise<Task> {
     const task = await this.getTask(taskId);
+    if (task.publisher.id !== actor.id && actor.role !== 'admin') throw httpError('当前账号没有发布该任务的权限。', 403);
+    if (task.githubIssueNumber && task.status !== 'draft') return task;
     if (task.status !== 'draft' || !task.scope) throw httpError('只有完成分析的草稿可以发布。', 400);
-    const reward = rewardPoints ?? task.analysis?.suggestedPoints ?? task.rewardPoints;
+    const reward = task.pendingPublication?.rewardPoints ?? rewardPoints ?? task.analysis?.suggestedPoints ?? task.rewardPoints;
     const project = await this.getProject(task.projectId);
-    const issue = await this.github.createIssue({ ...task, rewardPoints: reward }, project, githubCredential);
-    const result = await this.db().rpc('publish_task', {
-      p_task_id: taskId,
-      p_actor_id: actor.id,
-      p_reward: reward,
-      p_issue_number: issue.number,
-      p_issue_url: issue.url,
+    const result = await this.db().rpc('begin_task_publication', {
+      p_task_id: taskId, p_actor_id: actor.id, p_reward: reward, p_version: task.version,
     });
     if (result.error) translateDatabaseError(new Error(result.error.message));
+    await runTaskOperation(this.db(), taskId, actor.id, async (payload, token, checkpoint) => {
+      const issue = await this.github.createIssue({ ...task, rewardPoints: Number(payload['reward']) }, project, githubCredential, checkpoint);
+      await checkpoint();
+      const finished = await this.db().rpc('finish_task_publication', { p_id: taskId, p_token: token, p_issue_number: issue.number, p_issue_url: issue.url });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
     return this.getTask(taskId);
   }
 
@@ -333,6 +337,9 @@ export class TaskService {
     const task = await this.getTask(taskId);
     if (task.status === 'accepted') throw httpError('已验收结算的任务不能删除。', 409, 'TASK_ALREADY_SETTLED');
     if (task.status === 'cancelled') throw httpError('任务已经被取消。', 409, 'TASK_ALREADY_CANCELLED');
+    const pending = await this.db().from('task_operations').select('id').eq('task_id', taskId).is('completed_at', null).limit(1);
+    if (pending.error) throw new Error(pending.error.message);
+    if (pending.data.length) throw httpError('请先恢复正在处理的发布或提交，再移除任务。', 409, 'OPERATION_IN_PROGRESS');
 
     if (task.status !== 'draft') {
       const children = await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)');
@@ -404,7 +411,7 @@ export class TaskService {
     return this.workspaceFromRow(row);
   }
 
-  async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[] }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
+  async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[]; headSha: string }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id || !task.scope) throw httpError('只有任务执行者可以提交进行中的任务。', 400);
     const children = dataOrThrow(await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)')) as Row[];
@@ -412,6 +419,8 @@ export class TaskService {
     if (task.workspace?.status !== 'running') throw httpError('本机工作环境尚未准备完成。', 400);
     const files = normalizePackageFiles(input.files, task.scope);
     if (!files.length) throw httpError('editablePaths 范围内没有检测到任何改动。', 400);
+    const project = await this.getProject(task.projectId);
+    await this.github.assertSubmissionHead(task, project, input.headSha, githubCredential);
     // Model failures must leave the task retryable. The database revalidates the
     // assignee, scope and lifecycle after this potentially long-running call.
     const review = await this.agent.review({
@@ -424,27 +433,61 @@ export class TaskService {
       modelCredential: authorization?.credential,
       modelAudience: authorization?.audience,
     });
-    const project = await this.getProject(task.projectId);
-    const begun = await this.db().rpc('begin_submission', {
+    const begun = await this.db().rpc('begin_submission_operation', {
       p_task_id: taskId, p_author_id: user.id, p_scope: task.scope,
       p_summary: input.summary.trim(), p_test_output: input.testOutput.trim(), p_files: files, p_review: review,
+      p_head_sha: input.headSha,
     });
     if (begun.error) translateDatabaseError(new Error(begun.error.message));
     const submissionId = String(begun.data);
-    try {
-      const pullUrl = await this.github.publishSubmission({ ...task, status: 'submitted' }, project, files, review, githubCredential);
-      const finished = await this.db().rpc('finish_submission', { p_submission_id: submissionId, p_succeeded: true, p_pull_url: pullUrl });
-      if (finished.error) translateDatabaseError(new Error(finished.error.message));
-    } catch (error) {
-      const restored = await this.db().rpc('finish_submission', { p_submission_id: submissionId, p_succeeded: false, p_pull_url: null });
-      // A lost success response may mean the submission is already approved.
-      // The RPC refuses to reopen that submission or overwrite a newer one.
-      if (restored.error && !restored.error.message.includes('SUBMISSION_STATE_CONFLICT')) {
-        throw new AggregateError([error, new Error(restored.error.message)], '提交失败，恢复状态时数据库不可用，请刷新任务后重试。');
-      }
-      throw error;
-    }
+    await this.resumeSubmission(submissionId, user, githubCredential);
     await this.audit(user.id, 'submission.created', 'submission', submissionId, { taskId, changedFiles: files.map((file) => file.path) });
+    return this.getSubmission(submissionId);
+  }
+
+  async cancelPublication(taskId: string, actor: User, githubCredential?: string): Promise<Task> {
+    const task = await this.getTask(taskId);
+    if (task.publisher.id !== actor.id && actor.role !== 'admin') throw httpError('当前账号不能撤回该发布。', 403);
+    if (task.status !== 'draft' || !task.pendingPublication) throw httpError('任务没有待恢复的发布。', 409);
+    await runTaskOperation(this.db(), taskId, actor.id, async (_payload, token, checkpoint) => {
+      await this.github.cancelPublication(task, await this.getProject(task.projectId), githubCredential, checkpoint);
+      await checkpoint();
+      const result = await this.db().rpc('cancel_task_publication', { p_id: taskId, p_token: token });
+      if (result.error) translateDatabaseError(new Error(result.error.message));
+    });
+    return this.getTask(taskId);
+  }
+
+  async resumeSubmission(submissionId: string, user: User, githubCredential?: string): Promise<Submission> {
+    const submission = await this.getSubmission(submissionId);
+    if (submission.author.id !== user.id && user.role !== 'admin') throw httpError('当前账号不能恢复这个提交。', 403);
+    if (submission.status !== 'reviewing') return submission;
+    const prepared = await this.db().rpc('prepare_submission_recovery', { p_id: submissionId, p_actor_id: user.id });
+    if (prepared.error) translateDatabaseError(new Error(prepared.error.message));
+    const task = await this.getTask(submission.taskId);
+    const project = await this.getProject(task.projectId);
+    await runTaskOperation(this.db(), submissionId, user.id, async (payload, token, checkpoint) => {
+      const files = normalizePackageFiles(payload['files'], task.scope!);
+      let pullUrl: string | null;
+      try {
+        if (!payload['review']) throw httpError('旧提交缺少预审证据，请重新交付。', 409, 'SUBMISSION_REVIEW_MISSING');
+        pullUrl = await this.github.publishSubmission(task, project, files, payload['review'], githubCredential, {
+          id: submissionId, headSha: payload['headSha'] ?? task.baseSha, checkpoint,
+        });
+      } catch (error) {
+        // These checks happen before any branch mutation. A changed remote head
+        // needs a fresh workspace package, not retries of the stale snapshot.
+        if (['WORKSPACE_BEHIND', 'SUBMISSION_REVIEW_MISSING'].includes((error as { code?: string }).code ?? '')) {
+          await checkpoint();
+          const restored = await this.db().rpc('finish_submission_operation', { p_id: submissionId, p_token: token, p_pull_url: null, p_succeeded: false });
+          if (restored.error) translateDatabaseError(new Error(restored.error.message));
+        }
+        throw error;
+      }
+      await checkpoint();
+      const finished = await this.db().rpc('finish_submission_operation', { p_id: submissionId, p_token: token, p_pull_url: pullUrl });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
     return this.getSubmission(submissionId);
   }
 
@@ -554,7 +597,10 @@ export class TaskService {
     const result = await this.db().from('users').select('*').eq('id', id).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     if (!result.data) throw httpError('用户不存在。', 404);
-    const row = result.data as Row;
+    return this.userFromRow(result.data as Row);
+  }
+
+  private userFromRow(row: Row): User {
     return {
       id: String(row['id']), login: String(row['login']), name: String(row['name']),
       avatarUrl: row['avatar_url'] ? String(row['avatar_url']) : null,
@@ -564,19 +610,36 @@ export class TaskService {
     };
   }
 
-  private async summaryFromRow(row: Row): Promise<TaskSummary> {
-    const [project, publisher, assignee] = await Promise.all([
-      this.getProject(String(row['project_id'])),
-      this.getUser(String(row['publisher_id'])),
-      row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
+  private async summariesFromRows(rows: Row[]): Promise<TaskSummary[]> {
+    if (!rows.length) return [];
+    const userIds = [...new Set(rows.flatMap(row => [row['publisher_id'], row['assignee_id']]).filter(Boolean))];
+    const projectIds = [...new Set(rows.map(row => row['project_id']))];
+    const [projectRows, userRows] = await Promise.all([
+      this.rowsByIds('projects', 'id,name', projectIds),
+      this.rowsByIds('users', '*', userIds),
     ]);
-    return {
-      id: String(row['id']), projectId: project.id, projectName: project.name,
-      parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
-      title: String(row['title']), summary: String(row['summary'] || row['description']),
-      status: row['status'] as TaskSummary['status'], rewardPoints: Number(row['reward_points']),
-      publisher, assignee, createdAt: String(row['created_at']), updatedAt: String(row['updated_at']),
-    };
+    const projects = new Map(projectRows.map(row => [String(row['id']), String(row['name'])]));
+    const users = new Map(userRows.map(row => [String(row['id']), this.userFromRow(row)]));
+    return rows.map(row => {
+      const publisher = users.get(String(row['publisher_id']));
+      const projectName = projects.get(String(row['project_id']));
+      if (!publisher || projectName === undefined) throw new Error('任务关联的项目或用户不存在。');
+      return {
+        id: String(row['id']), projectId: String(row['project_id']), projectName,
+        parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
+        title: String(row['title']), summary: String(row['summary'] || row['description']),
+        status: row['status'] as TaskSummary['status'], rewardPoints: Number(row['reward_points']),
+        publisher, assignee: users.get(String(row['assignee_id'])) ?? null, createdAt: String(row['created_at']), updatedAt: String(row['updated_at']),
+      };
+    });
+  }
+
+  private async rowsByIds(table: string, columns: string, ids: string[]): Promise<Row[]> {
+    const batches: Array<PromiseLike<Row[]>> = [];
+    for (let start = 0; start < ids.length; start += 100) {
+      batches.push(this.db().from(table).select(columns).in('id', ids.slice(start, start + 100)).then(result => dataOrThrow(result) as Row[]));
+    }
+    return (await Promise.all(batches)).flat();
   }
 
   private workspaceFromRow(row: Row): Workspace {

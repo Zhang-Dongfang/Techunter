@@ -73,6 +73,10 @@ Conexus 与 GitHub 登录都在系统默认浏览器完成。GitHub 会直接复
 
 ## 验证
 
+当前版本提交时会校验本机已合入的远程任务版本。子任务成果合并后，点击「同步并检查环境」会将它们合入父任务工作区；本机冲突需要先处理，Agent 不会重置或覆盖未提交改动。交付面板可以运行任务的 `testCommands` 并收集输出；测试后代码变化会要求重跑。测试仍在执行者本机运行，中央预审会明确注明这一证据来源。
+
+发布或提交遇到断线时，重新打开任务可选择「恢复发布」或「恢复提交」。如果原 API 进程刚刚退出，最多等待 90 秒后再重试。待发布的赏金会保留；「撤回发布」会关闭已创建的 Issue 并释放预算占用。升级前请先应用 [持久化操作迁移](../../infra/supabase/migrations/202609120002_durable_task_operations.sql)，再更新 API 和 Desktop。
+
 ```powershell
 npm run typecheck --workspace @techunter/desktop
 npm run test --workspace @techunter/desktop

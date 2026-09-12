@@ -37,6 +37,7 @@ const workspaceUpdateBody = z.object({
 });
 const packageFile = z.object({ path: z.string().min(1).max(2_000), content: z.string().nullable(), encoding: z.enum(['utf-8', 'base64']) });
 const submitBody = z.object({
+  headSha: z.string().regex(/^[a-f0-9]{40,64}$/),
   summary: z.string().trim().min(3).max(10_000),
   testOutput: z.string().max(100_000).default(''),
   files: z.array(packageFile).max(1_000),
@@ -181,6 +182,7 @@ export async function buildApp() {
     return tasks.publishTask(id, request.currentUser, publishBody.parse(request.body ?? {}).rewardPoints, request.githubCredential);
   });
   app.post('/api/tasks/:id/claim', async (request) => tasks.claimTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
+  app.post('/api/tasks/:id/cancel-publication', async (request) => tasks.cancelPublication(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
   app.post('/api/tasks/:id/release', async (request) => tasks.releaseTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
   app.post('/api/tasks/:id/subtasks', async (request, reply) => {
     const parentId = idParams.parse(request.params).id;
@@ -201,6 +203,8 @@ export async function buildApp() {
     assertRole(request, ['admin', 'maintainer']);
     return tasks.acceptSubmission(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
   });
+  app.post('/api/submissions/:id/resume', async (request) =>
+    tasks.resumeSubmission(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
   app.post('/api/submissions/:id/request-changes', async (request) => {
     assertRole(request, ['admin', 'maintainer']);
     return tasks.requestChanges(idParams.parse(request.params).id, request.currentUser, changesBody.parse(request.body).reason, request.githubCredential);

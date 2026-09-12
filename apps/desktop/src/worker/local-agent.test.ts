@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { expandTaskScope, type Project, type Task } from '@techunter/core';
+import { expandTaskScope, makeTaskBranchName, type Project, type Task } from '@techunter/core';
 import { gitEnvironment, LocalAgent, remoteMatchesProject } from './local-agent.js';
 
 const exec = promisify(execFile);
@@ -20,6 +20,43 @@ afterEach(async () => {
 });
 
 describe('LocalAgent', () => {
+  it('merges accepted child work, rejects stale packages, and preserves conflicting local edits', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-')); cleanup.push(root);
+    const source = path.join(root, 'source'); await fs.mkdir(source);
+    const git = (args: string[]) => exec('git', args, { cwd: source });
+    await git(['init', '-b', 'main']); await git(['config', 'user.name', 'Fixture']); await git(['config', 'user.email', 'fixture@example.invalid']);
+    await fs.writeFile(path.join(source, 'parent.txt'), 'old parent'); await fs.writeFile(path.join(source, 'child.txt'), 'old child');
+    await git(['add', '.']); await git(['commit', '-m', 'base']);
+    const baseSha = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+    await git(['checkout', '-b', makeTaskBranchName(1, 'worker')]);
+    await fs.writeFile(path.join(source, 'child.txt'), 'accepted child'); await git(['commit', '-am', 'child accepted']);
+    const childHead = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+    const project = { id: 'project', name: 'fixture', repoOwner: 'local', repoName: 'fixture', cloneUrl: source, defaultBranch: 'main', sourceBranch: 'main', visibility: 'public' } as Project;
+    const task = { id: 'task', baseSha, githubIssueNumber: 1, assignee: { githubLogin: 'worker' }, scope: { revision: 1,
+      editablePaths: ['parent.txt', 'child.txt'], readonlyPaths: [], deniedPaths: [], visibleTests: [],
+      environment: { setupCommands: [], testCommands: ['node -e "console.log(123)"'], networkAllowlist: [] } } } as unknown as Task;
+    const agent = new LocalAgent(path.join(root, 'agent')); const synced = await agent.syncProject(project, path.join(root, 'projects'));
+    const workspace = await agent.provision(project, task);
+    {
+      expect(await fs.readFile(path.join(workspace.path, 'child.txt'), 'utf8')).toBe('accepted child');
+      await fs.writeFile(path.join(workspace.path, 'parent.txt'), 'local parent');
+      const changes = await agent.collectChanges(task);
+      expect(changes.headSha).toBe(childHead); expect(changes.files.map(file => file.content)).toContain('accepted child');
+      const tests = await agent.test(task); expect(tests.passed).toBe(true); expect(tests.output).toContain('123'); expect(tests.packageDigest).toBe(changes.packageDigest);
+      await fs.writeFile(path.join(source, 'child.txt'), 'second child'); await git(['commit', '-am', 'second child']);
+      await exec('git', ['fetch', 'origin'], { cwd: synced.path });
+      await expect(agent.collectChanges(task)).rejects.toThrow('尚未合入');
+      await agent.provision(project, task);
+      expect(await fs.readFile(path.join(workspace.path, 'parent.txt'), 'utf8')).toBe('local parent');
+      expect(await fs.readFile(path.join(workspace.path, 'child.txt'), 'utf8')).toBe('second child');
+      expect((await agent.collectChanges(task)).packageDigest).not.toBe(tests.packageDigest);
+    }
+    await fs.writeFile(path.join(workspace.path, 'child.txt'), 'unsaved local child');
+    await fs.writeFile(path.join(source, 'child.txt'), 'third child'); await git(['commit', '-am', 'third child']);
+    await expect(agent.provision(project, task)).rejects.toThrow('处理合并冲突');
+    expect(await fs.readFile(path.join(workspace.path, 'child.txt'), 'utf8')).toBe('unsaved local child');
+  });
+
   it('accepts only the exact GitHub repository over HTTPS or SSH', () => {
     const project = { cloneUrl: 'https://github.com/owner/repo.git', repoOwner: 'owner', repoName: 'repo' } as Project;
     for (const remote of ['https://github.com/owner/repo.git', 'git@github.com:owner/repo.git', 'ssh://git@github.com/owner/repo.git']) {

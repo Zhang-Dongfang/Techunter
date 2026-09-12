@@ -8,6 +8,11 @@ export function httpError(message: string, statusCode: number, code?: string): E
 export function translateDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const known: Record<string, [number, string]> = {
+    TASK_VERSION_CONFLICT: [409, '任务已更新或正在发布，请刷新后重试；旧分析结果未写入。'],
+    OPERATION_IN_PROGRESS: [409, '该任务的操作仍在处理，请稍后重试恢复操作。'],
+    OPERATION_LEASE_LOST: [409, '操作已由另一请求接续，请刷新任务。'],
+    OPERATION_NOT_FOUND: [404, '找不到待恢复的操作。'],
+    INVALID_REWARD: [400, '任务奖励必须是 1 到 100000 的整数。'],
     TASK_NOT_SUBMITTABLE: [409, '任务状态或执行者已变化，请刷新后重新提交。'],
     WORKSPACE_NOT_READY: [409, '本机工作环境尚未准备完成。'],
     SUBMISSION_STATE_CONFLICT: [409, '提交状态已变化，请刷新任务后重试。'],

@@ -46,7 +46,8 @@ export interface DesktopAgentApi {
   locateProject(projectId: string): Promise<{ path: string | null }>;
   provision(input: { project: Project; task: Task; accessToken?: string }): Promise<LocalWorkspaceResult>;
   locate(taskId: string): Promise<{ path: string | null }>;
-  collectChanges(input: { task: Task }): Promise<{ path: string; files: PackageFile[] }>;
+  collectChanges(input: { task: Task }): Promise<{ path: string; files: PackageFile[]; headSha: string; packageDigest: string }>;
+  test(input: { task: Task }): Promise<{ output: string; passed: boolean; packageDigest: string }>;
   run(input: { command: string; cwd?: string }): Promise<{ sessionId: string }>;
   cancel(sessionId: string): Promise<void>;
   onOutput(listener: (event: { sessionId: string; stream: 'stdout' | 'stderr'; data: string }) => void): () => void;

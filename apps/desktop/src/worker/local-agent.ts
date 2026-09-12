@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { isTaskPathEditable, normalizeScopePath, readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
+import { isTaskPathEditable, makeTaskBranchName, normalizeScopePath, readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
 import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
 
 const execFileAsync = promisify(execFile);
@@ -193,6 +193,16 @@ export class LocalAgent {
       const base = task.baseSha || `origin/${project.sourceBranch || project.defaultBranch}`;
       await execFileAsync('git', ['worktree', 'add', '-B', `techunter/${task.id}`, workspacePath, base], { cwd: repositoryPath, timeout: 5 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
     }
+    const remoteHead = await this.taskRemoteHead(task, workspacePath);
+    if (remoteHead) {
+      // Git preserves unrelated uncommitted work and refuses unsafe overwrites.
+      // Conflicts remain in this worktree for the user to resolve explicitly.
+      try {
+        await execFileAsync('git', ['-c', 'user.name=Techunter', '-c', 'user.email=agent@techunter.local', 'merge', '--no-edit', remoteHead], {
+          cwd: workspacePath, timeout: 60_000, windowsHide: true,
+        });
+      } catch (error) { throw new Error(`同步远程任务成果失败，请先保存本机改动并处理合并冲突，再重试环境准备。\n${(error as Error).message}`); }
+    }
     const headSha = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspacePath, timeout: 10_000 })).stdout.trim();
     const commands = task.scope.environment.setupCommands.length
       ? task.scope.environment.setupCommands
@@ -271,13 +281,43 @@ export class LocalAgent {
     return { path: fs.existsSync(candidate) ? candidate : null };
   }
 
-  async collectChanges(task: Task): Promise<{ path: string; files: PackageFile[] }> {
+  private async taskRemoteHead(task: Task, workspacePath: string): Promise<string | null> {
+    if (!task.githubIssueNumber || !task.assignee?.githubLogin) return null;
+    const ref = `refs/remotes/origin/${makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin)}`;
+    try { return (await execFileAsync('git', ['rev-parse', '--verify', ref], { cwd: workspacePath, timeout: 10_000 })).stdout.trim(); }
+    catch (error) { if ((error as { code?: number }).code === 128) return null; throw error; }
+  }
+
+  async test(task: Task): Promise<{ output: string; passed: boolean; packageDigest: string }> {
+    const before = await this.collectChanges(task);
+    const commands = task.scope?.environment.testCommands ?? [];
+    if (!commands.length) throw new Error('任务没有配置测试命令，请在命令台验证后填写测试结果。');
+    const log = [`本机测试 · ${new Date().toISOString()}`];
+    let passed = true;
+    for (const command of commands) {
+      log.push(`\n> ${command}`);
+      try { log.push(await runShell(command, before.path), '退出码：0'); }
+      catch (error) { passed = false; log.push((error as Error).message); }
+    }
+    const after = await this.collectChanges(task);
+    if (before.packageDigest !== after.packageDigest) throw new Error('测试期间交付文件发生变化，请检查生成的文件并重新测试。');
+    const output = log.join('\n');
+    return { output: output.length > 95_000 ? `${output.slice(0, 95_000)}\n[测试日志超出上限，后续内容未显示]` : output, passed, packageDigest: after.packageDigest };
+  }
+
+  async collectChanges(task: Task): Promise<{ path: string; files: PackageFile[]; headSha: string; packageDigest: string }> {
     if (!task.scope) throw new Error('任务缺少文件范围。');
     const workspacePath = path.join(this.workspacesRoot, task.id);
     if (!fs.existsSync(workspacePath)) throw new Error('本机没有这个任务的工作环境。');
     if ((await fsp.lstat(workspacePath)).isSymbolicLink()) throw new Error('任务工作区不能是目录链接。');
     const workspaceRealPath = await fsp.realpath(workspacePath);
     const base = task.baseSha || 'HEAD';
+    const remoteHead = await this.taskRemoteHead(task, workspacePath);
+    if (remoteHead) {
+      try { await execFileAsync('git', ['merge-base', '--is-ancestor', remoteHead, 'HEAD'], { cwd: workspacePath, timeout: 10_000 }); }
+      catch { throw new Error('工作区尚未合入远程任务成果，请先同步并处理冲突。'); }
+    }
+    const headSha = remoteHead || (await execFileAsync('git', ['rev-parse', base], { cwd: workspacePath, timeout: 10_000 })).stdout.trim();
     const [tracked, untracked] = await Promise.all([
       execFileAsync('git', ['diff', '--no-renames', '--name-only', '-z', base, '--'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
       execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
@@ -302,6 +342,7 @@ export class LocalAgent {
       const binary = data.includes(0);
       files.push({ path: relative, content: binary ? data.toString('base64') : data.toString('utf8'), encoding: binary ? 'base64' : 'utf-8' });
     }
-    return { path: workspacePath, files };
+    const packageDigest = createHash('sha256').update(JSON.stringify({ headSha, files })).digest('hex');
+    return { path: workspacePath, files, headSha, packageDigest };
   }
 }

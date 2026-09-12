@@ -227,6 +227,11 @@ function registerLocalAgentIpc(): void {
     if (!input || typeof input !== 'object' || !(input as { task?: unknown }).task) throw new Error('任务参数无效。');
     return localAgent.collectChanges((input as { task: Parameters<LocalAgent['collectChanges']>[0] }).task);
   });
+  ipcMain.handle('agent:test', (event, input: unknown) => {
+    assertTrustedSender(event);
+    if (!input || typeof input !== 'object' || !(input as { task?: unknown }).task) throw new Error('任务参数无效。');
+    return localAgent.test((input as { task: Parameters<LocalAgent['test']>[0] }).task);
+  });
 }
 
 function registerAuthenticationIpc(): void {

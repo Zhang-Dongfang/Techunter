@@ -43,6 +43,9 @@ const desktopApi: DesktopAgentApi = {
   collectChanges(input) {
     return ipcRenderer.invoke('agent:collect-changes', input);
   },
+  test(input) {
+    return ipcRenderer.invoke('agent:test', input);
+  },
   run(input) {
     return ipcRenderer.invoke('terminal:run', input);
   },

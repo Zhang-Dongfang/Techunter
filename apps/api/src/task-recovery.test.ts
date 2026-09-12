@@ -14,7 +14,7 @@ const db = new PGlite();
 const scope: TaskScope = { revision: 1, editablePaths: ['src/a.ts'], readonlyPaths: [], deniedPaths: [], visibleTests: [],
   environment: { setupCommands: [], testCommands: [], networkAllowlist: [] } };
 const review: DeliveryReview = { score: 100, verdict: 'approved', summary: 'approved', findings: [{ criterion: 'works', passed: true, evidence: 'fixture' }], risks: [], deliveryDocument: 'fixture' };
-const input = { summary: 'fixture delivery', testOutput: 'passed', files: [{ path: 'src/a.ts', content: 'changed', encoding: 'utf-8' as const }] };
+const input = { summary: 'fixture delivery', testOutput: 'passed', headSha: 'frozen-sha', files: [{ path: 'src/a.ts', content: 'changed', encoding: 'utf-8' as const }] };
 let worker: User, reviewer: User, repositoryId = 0;
 
 before(async () => {
@@ -63,6 +63,7 @@ async function fixture() {
     },
   } as unknown as TechunterDatabase;
   const github = {
+    async assertSubmissionHead() {},
     async publishSubmission() { if (publishFailure) throw new Error('GitHub unavailable'); return 'https://example.invalid/pull/1'; },
     async completeTask(task: Task) { if (!merged.has(task.id)) { merged.add(task.id); mergeCount++; } },
     async syncChangesNeeded() { changeCount++; if (changesFailure) throw new Error('GitHub unavailable'); },
@@ -77,7 +78,7 @@ async function fixture() {
     override async getTask(id: string) {
       const row = (await db.query<Row>('select * from techunter.tasks where id=$1', [id])).rows[0]!;
       const latest = (await db.query<Row>('select id from techunter.submissions where task_id=$1 order by created_at desc, id desc limit 1', [id])).rows[0];
-      return { ...row, id, projectId, title: row['title'], status: row['status'], baseSha: row['base_sha'], targetBranch: row['target_branch'],
+      return { ...row, id, version: row['lock_version'], projectId, title: row['title'], status: row['status'], baseSha: row['base_sha'], targetBranch: row['target_branch'],
         scope: row['scope_json'], parentTaskId: row['parent_task_id'], rewardPoints: Number(row['reward_points']), publisher: reviewer,
         assignee: worker, acceptanceCriteria: [], workspace: { status: 'running' }, latestSubmission: latest ? await this.getSubmission(latest['id']) : null } as unknown as Task;
     }
@@ -110,15 +111,16 @@ test('model failure leaves no pending submission and delivery can be retried', a
   assert.equal((await value.submit(id)).status, 'approved');
 });
 
-test('GitHub failure restores the task atomically and a late rollback cannot reopen a successful retry', async () => {
+test('GitHub failure preserves the package for recovery without another model call', async () => {
   const value = await fixture(), id = await value.createTask();
   value.setPublishFailure(true);
   await assert.rejects(() => value.submit(id), /GitHub unavailable/);
   const task = await value.service.getTask(id);
-  assert.equal(task.status, 'active');
-  assert.equal(task.latestSubmission?.status, 'changes_requested');
+  assert.equal(task.status, 'submitted');
+  assert.equal(task.latestSubmission?.status, 'reviewing');
   value.setPublishFailure(false);
-  await value.submit(id);
+  value.setModelFailure(true);
+  await value.service.resumeSubmission(task.latestSubmission!.id, worker);
   await assert.rejects(() => rpc('finish_submission', { p_submission_id: task.latestSubmission!.id, p_succeeded: false, p_pull_url: null }), /SUBMISSION_STATE_CONFLICT/);
   assert.equal((await value.service.getTask(id)).status, 'submitted');
 });

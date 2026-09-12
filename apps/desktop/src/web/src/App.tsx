@@ -365,12 +365,13 @@ function TaskDetail({
 }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [reward, setReward] = useState(task.rewardPoints);
+  const [reward, setReward] = useState(task.pendingPublication?.rewardPoints ?? task.rewardPoints);
   const [subtask, setSubtask] = useState(false);
   const [terminal, setTerminal] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [summary, setSummary] = useState('');
   const [testOutput, setTestOutput] = useState('');
+  const [testedPackage, setTestedPackage] = useState<string>();
   const [changeReason, setChangeReason] = useState('请根据验收标准补充实现与测试。');
   const [localPath, setLocalPath] = useState('');
   const [removeConfirm, setRemoveConfirm] = useState(false);
@@ -388,6 +389,8 @@ function TaskDetail({
       onChanged(await api.task(task.id));
     } catch (caught) {
       setError((caught as Error).message);
+      // A failed response can still leave a durable operation to resume.
+      await api.task(task.id).then(onChanged).catch(() => undefined);
     } finally {
       setBusy('');
     }
@@ -425,8 +428,18 @@ function TaskDetail({
     if (!desktop) throw new Error('交付必须从准备该环境的 Techunter Desktop 提交。');
     const latestTask = await api.task(task.id);
     const changes = await desktop.collectChanges({ task: latestTask });
+    if (testedPackage && testedPackage !== changes.packageDigest) throw new Error('交付代码在测试后发生变化，请重新运行任务测试。');
     setLocalPath(changes.path);
-    return api.submit(task.id, { summary, testOutput, files: changes.files });
+    return api.submit(task.id, { summary, testOutput, files: changes.files, headSha: changes.headSha });
+  }
+
+  async function runTaskTests() {
+    const desktop = window.techunterDesktop;
+    if (!desktop) throw new Error('请在 Techunter Desktop 运行本机测试。');
+    const result = await desktop.test({ task: await api.task(task.id) });
+    setTestOutput(result.output);
+    setTestedPackage(result.packageDigest);
+    if (!result.passed) throw new Error('任务测试未全部通过，输出已保留，请检查后继续处理。');
   }
 
   async function removeTask() {
@@ -473,7 +486,14 @@ function TaskDetail({
             {task.githubIssueUrl && <a className="github-box" href={task.githubIssueUrl} target="_blank" rel="noreferrer"><Github size={18} /><span><small>GitHub Issue</small>#{task.githubIssueNumber}</span><ExternalLink size={15} /></a>}
 
             <div className="action-stack">
-              {task.status === 'draft' && <><button className="button secondary full" disabled={Boolean(busy)} onClick={() => action('analyze', async () => (await api.analyze(task.id)).task)}>{busy === 'analyze' ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}重新分析</button><label className="reward-input">发布赏金<div><input type="number" min={1} value={reward} onChange={(event) => setReward(Number(event.target.value))} /><span>CP</span></div></label><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('publish', () => api.publish(task.id, reward))}>{busy === 'publish' ? <Loader2 className="spin" size={17} /> : <Activity size={17} />}确认并发布</button></>}
+              {task.status === 'submitted' && submission?.status === 'reviewing' && (mine || me.role === 'admin') && <><p className="muted">交付已保存。连接中断后可继续处理，无需重新运行模型审查。</p><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('resume', () => api.resumeSubmission(submission.id))}>{busy === 'resume' ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}恢复提交</button></>}
+              {task.status === 'draft' && <>
+                {task.pendingPublication && <p className="muted">发布进度已保存，可继续发布或撤回后调整任务。</p>}
+                <button className="button secondary full" disabled={Boolean(busy) || Boolean(task.pendingPublication)} onClick={() => action('analyze', async () => (await api.analyze(task.id)).task)}>{busy === 'analyze' ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}重新分析</button>
+                <label className="reward-input">发布赏金<div><input type="number" min={1} disabled={Boolean(task.pendingPublication)} value={task.pendingPublication?.rewardPoints ?? reward} onChange={(event) => setReward(Number(event.target.value))} /><span>CP</span></div></label>
+                <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('publish', () => api.publish(task.id, task.pendingPublication?.rewardPoints ?? reward))}>{busy === 'publish' ? <Loader2 className="spin" size={17} /> : <Activity size={17} />}{task.pendingPublication ? '恢复发布' : '确认并发布'}</button>
+                {task.pendingPublication && <button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('cancel-publication', () => api.cancelPublication(task.id))}>撤回发布</button>}
+              </>}
               {task.status === 'open' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}>{busy === 'claim' ? <Loader2 className="spin" size={17} /> : <CrosshairIcon />}认领这个任务</button>}
               {task.status === 'active' && mine && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{task.workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
               {task.status === 'submitted' && submission?.status === 'approved' && canReview && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}验收并结算</button><textarea className="compact-textarea" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} rows={3} /><button className="button danger full" disabled={Boolean(busy)} onClick={() => action('changes', () => api.requestChanges(submission.id, changeReason))}><XCircle size={17} />要求修改</button></>}
@@ -490,7 +510,7 @@ function TaskDetail({
           </aside>
         </div>
 
-        {submitOpen && <div className="inline-form"><div className="section-title"><Bot size={18} /><h3>提交给 Review Agent</h3></div><label>交付摘要<textarea value={summary} onChange={(event) => setSummary(event.target.value)} rows={3} placeholder="完成了什么、有哪些关键决策？" /></label><label>测试输出<textarea value={testOutput} onChange={(event) => setTestOutput(event.target.value)} rows={5} placeholder="粘贴 npm test、typecheck 或其他验证结果。" /></label><div className="form-actions"><button className="button ghost" onClick={() => setSubmitOpen(false)}>取消</button><button className="button primary" disabled={Boolean(busy) || summary.trim().length < 3} onClick={() => action('submit', submitDelivery)}>{busy === 'submit' ? <><Loader2 className="spin" size={17} />审查中</> : <><Bot size={17} />提交并自动审查</>}</button></div></div>}
+        {submitOpen && <div className="inline-form"><div className="section-title"><Bot size={18} /><h3>提交给 Review Agent</h3></div><label>交付摘要<textarea value={summary} onChange={(event) => setSummary(event.target.value)} rows={3} placeholder="完成了什么、有哪些关键决策？" /></label><button className="button secondary" disabled={Boolean(busy) || !task.scope?.environment.testCommands.length} onClick={() => action('tests', runTaskTests)}>{busy === 'tests' ? <Loader2 className="spin" size={17} /> : <TerminalSquare size={17} />}运行任务测试并收集输出</button><label>测试输出<textarea value={testOutput} onChange={(event) => { setTestOutput(event.target.value); setTestedPackage(undefined); }} rows={5} placeholder="粘贴 npm test、typecheck 或其他验证结果。" /></label><div className="form-actions"><button className="button ghost" onClick={() => setSubmitOpen(false)}>取消</button><button className="button primary" disabled={Boolean(busy) || summary.trim().length < 3} onClick={() => action('submit', submitDelivery)}>{busy === 'submit' ? <><Loader2 className="spin" size={17} />审查中</> : <><Bot size={17} />提交并自动审查</>}</button></div></div>}
       </div>
     </Modal>
     {subtask && <CreateTaskModal projects={projects} parent={task} onClose={() => setSubtask(false)} onCreated={(created) => { setSubtask(false); onOpenTask(created.id); }} />}

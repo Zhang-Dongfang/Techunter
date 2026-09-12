@@ -32,7 +32,7 @@ export class GitHubService {
     return Boolean(value.clientId || (value.appId && value.installationId && value.privateKey));
   }
 
-  private async installationClient(): Promise<{ octokit: Octokit; token: string; expiresAt: string }> {
+  private async installationClient(checkoutRepositoryId?: number): Promise<{ octokit: Octokit; token: string; expiresAt: string }> {
     const value = config().github;
     if (value.appId && value.installationId && value.privateKey) {
       const auth = createAppAuth({
@@ -40,14 +40,16 @@ export class GitHubService {
         installationId: Number(value.installationId),
         privateKey: value.privateKey,
       });
-      const installation = await auth({ type: 'installation' });
-      return { octokit: new Octokit({ auth: installation.token }), token: installation.token, expiresAt: installation.expiresAt };
+      const installation = await auth({ type: 'installation', ...(checkoutRepositoryId ? {
+        repositoryIds: [checkoutRepositoryId], permissions: { contents: 'read' as const },
+      } : {}) });
+      return { octokit: new Octokit({ auth: installation.token, request: { timeout: 30_000 } }), token: installation.token, expiresAt: installation.expiresAt };
     }
     throw httpError('没有可用于该 GitHub 仓库的授权。', 503, 'GITHUB_NOT_CONFIGURED');
   }
 
   private async client(userCredential?: string): Promise<Octokit> {
-    if (userCredential) return new Octokit({ auth: userCredential });
+    if (userCredential) return new Octokit({ auth: userCredential, request: { timeout: 30_000 } });
     return (await this.installationClient()).octokit;
   }
 
@@ -63,7 +65,7 @@ export class GitHubService {
     const value = config().github;
     if (value.appId && value.installationId && value.privateKey) {
       try {
-        const installation = await this.installationClient();
+        const installation = await this.installationClient(project.githubRepositoryId);
         await installation.octokit.repos.get({ owner: project.repoOwner, repo: project.repoName });
         return { token: installation.token, expiresAt: installation.expiresAt };
       } catch {
@@ -195,7 +197,10 @@ export class GitHubService {
   }
 
   async materialize(project: Project, userCredential?: string): Promise<{ root: string; cleanup(): Promise<void> }> {
+    if (!userCredential) throw httpError('读取仓库前请先连接有访问权限的 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     const octokit = await this.client(userCredential);
+    // The shared project catalog does not grant access to its private source.
+    await octokit.request('GET /repositories/{repository_id}', { repository_id: project.githubRepositoryId });
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-repo-'));
     const archive = path.join(tempRoot, 'repository.tar.gz');
     const root = path.join(tempRoot, 'repo');
@@ -218,8 +223,26 @@ export class GitHubService {
     }
   }
 
-  async createIssue(task: Task, project: Project, userCredential?: string): Promise<{ number: number; url: string }> {
+  async createIssue(task: Task, project: Project, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<{ number: number; url: string }> {
     const octokit = await this.client(userCredential);
+    const location = { owner: project.repoOwner, repo: project.repoName };
+    const marker = `<!-- techunter-task-id:${task.id} -->`;
+    const findIssues = async () => (await octokit.paginate(octokit.issues.listForRepo, { ...location, state: 'all', per_page: 100 }))
+      .filter(issue => !issue.pull_request && issue.body?.includes(marker)).sort((a, b) => a.number - b.number);
+    const reconcile = async () => {
+      const issues = await findIssues();
+      const canonical = issues[0];
+      if (canonical?.state === 'closed') {
+        await checkpoint();
+        await octokit.issues.update({ ...location, issue_number: canonical.number, state: 'open', labels: [taskLabels.available] });
+      }
+      for (const duplicate of issues.slice(1)) {
+        await checkpoint();
+        if (duplicate.state !== 'closed') await octokit.issues.update({ ...location, issue_number: duplicate.number, state: 'closed', state_reason: 'not_planned', labels: [] });
+      }
+      return canonical ? { number: canonical.number, url: canonical.html_url } : null;
+    };
+    const existing = await reconcile();
     await this.ensureLabels(octokit, project.repoOwner, project.repoName);
     if (!task.scope) throw httpError('任务缺少 Agent 生成的文件范围。', 400);
     const guide = task.analysis
@@ -233,6 +256,11 @@ export class GitHubService {
         rationale: task.description,
       });
     const body = withTaskMetadata({ body: guide, baseCommit: task.baseSha, targetBranch: task.targetBranch, taskId: task.id });
+    await checkpoint();
+    if (existing) {
+      await octokit.issues.update({ ...location, issue_number: existing.number, title: task.title, body, state: 'open', labels: [taskLabels.available] });
+      return existing;
+    }
     const { data } = await octokit.issues.create({
       owner: project.repoOwner,
       repo: project.repoName,
@@ -240,7 +268,17 @@ export class GitHubService {
       body,
       labels: [taskLabels.available],
     });
-    return { number: data.number, url: data.html_url };
+    return await reconcile() ?? { number: data.number, url: data.html_url };
+  }
+
+  async cancelPublication(task: Task, project: Project, userCredential: string | undefined, checkpoint: () => Promise<void>): Promise<void> {
+    const octokit = await this.client(userCredential);
+    const location = { owner: project.repoOwner, repo: project.repoName };
+    const issues = await octokit.paginate(octokit.issues.listForRepo, { ...location, state: 'all', per_page: 100 });
+    for (const issue of issues.filter(issue => !issue.pull_request && issue.body?.includes(`<!-- techunter-task-id:${task.id} -->`))) {
+      await checkpoint();
+      await octokit.issues.update({ ...location, issue_number: issue.number, state: 'closed', state_reason: 'not_planned', labels: [] });
+    }
   }
 
   async ensureTaskBranch(task: Task, project: Project, githubLogin: string, userCredential?: string): Promise<{ name: string; headSha: string; created: boolean }> {
@@ -297,13 +335,25 @@ export class GitHubService {
     await octokit.issues.createComment({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, body: `## 验收修改意见\n\n${reason}` });
   }
 
-  async publishSubmission(task: Task, project: Project, files: PackageFile[], review: DeliveryReview, userCredential?: string): Promise<string | null> {
+  private taskBranch(task: Task): string {
+    return task.githubIssueNumber && task.assignee?.githubLogin
+      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`;
+  }
+
+  async assertSubmissionHead(task: Task, project: Project, headSha: string, userCredential?: string): Promise<void> {
+    const octokit = await this.client(userCredential);
+    let current = task.baseSha;
+    try { current = (await octokit.git.getRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${this.taskBranch(task)}` })).data.object.sha; }
+    catch (error) { if ((error as { status?: number }).status !== 404) throw error; }
+    if (!headSha || headSha !== current) throw httpError('远程任务分支已有新成果，请先同步工作环境、处理冲突后重新提交。', 409, 'WORKSPACE_BEHIND');
+  }
+
+  async publishSubmission(task: Task, project: Project, files: PackageFile[], review: DeliveryReview, userCredential?: string,
+    operation?: { id: string; headSha: string; checkpoint(): Promise<void> }): Promise<string | null> {
     if (files.length === 0) return null;
     const octokit = await this.client(userCredential);
     const baseBranch = task.targetBranch || project.sourceBranch || project.defaultBranch;
-    const branch = task.githubIssueNumber && task.assignee?.githubLogin
-      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin)
-      : `task-${task.id.slice(0, 8)}`;
+    const branch = this.taskBranch(task);
     let branchExists = true;
     let workingSha: string;
     try {
@@ -327,18 +377,32 @@ export class GitHubService {
       return { path: file.path, mode: '100644' as const, type: 'blob' as const, sha: blob.data.sha };
     }));
     const tree = await octokit.git.createTree({ owner: project.repoOwner, repo: project.repoName, base_tree: baseCommit.data.tree.sha, tree: treeItems });
-    const commit = await octokit.git.createCommit({
-      owner: project.repoOwner,
-      repo: project.repoName,
-      message: `complete: ${task.title}`,
-      tree: tree.data.sha,
-      parents: [workingSha],
-    });
-    if (branchExists) await octokit.git.updateRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${branch}`, sha: commit.data.sha, force: false });
-    else await octokit.git.createRef({ owner: project.repoOwner, repo: project.repoName, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+    const currentCommit = operation ? (await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: workingSha })).data : null;
+    // A lost response after pushing is recovered by comparing the full tree.
+    // Otherwise only replace the head the submitting workspace actually synced.
+    const alreadyPushed = currentCommit?.tree.sha === tree.data.sha;
+    if (!alreadyPushed) {
+      if (operation && workingSha !== operation.headSha) throw httpError('远程任务分支已变化，请同步工作环境后重新交付。', 409, 'WORKSPACE_BEHIND');
+      await operation?.checkpoint();
+      const commit = await octokit.git.createCommit({
+        owner: project.repoOwner, repo: project.repoName,
+        message: `complete: ${task.title}${operation ? `\n\nTechunter-Submission: ${operation.id}` : ''}`,
+        tree: tree.data.sha, parents: [workingSha],
+      });
+      await operation?.checkpoint();
+      if (branchExists) await octokit.git.updateRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${branch}`, sha: commit.data.sha, force: false });
+      else await octokit.git.createRef({ owner: project.repoOwner, repo: project.repoName, ref: `refs/heads/${branch}`, sha: commit.data.sha });
+    }
     const pulls = await octokit.pulls.list({ owner: project.repoOwner, repo: project.repoName, state: 'open', head: `${project.repoOwner}:${branch}` });
-    let url = pulls.data[0]?.html_url;
+    let url: string | undefined = pulls.data[0]?.html_url;
+    if (!url && operation && alreadyPushed) {
+      // A maintainer may merge the PR while the original request is interrupted.
+      // Recover that exact snapshot, then let normal acceptance settle it.
+      const previous = await octokit.paginate(octokit.pulls.list, { owner: project.repoOwner, repo: project.repoName, state: 'closed', head: `${project.repoOwner}:${branch}`, base: baseBranch, per_page: 100 });
+      url = previous.find(pull => pull.merged_at && pull.head.sha === workingSha)?.html_url;
+    }
     if (!url) {
+      await operation?.checkpoint();
       const pull = await octokit.pulls.create({
         owner: project.repoOwner,
         repo: project.repoName,
@@ -359,8 +423,14 @@ export class GitHubService {
       url = pull.data.html_url;
     }
     if (task.githubIssueNumber) {
+      await operation?.checkpoint();
       await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, labels: [review.verdict === 'approved' ? taskLabels.inReview : taskLabels.changesNeeded] });
-      await octokit.issues.createComment({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, body: `## AI 预审 · ${review.score}/100\n\n${review.summary}\n\nPR: ${url}` });
+      const marker = operation ? `<!-- techunter-submission:${operation.id} -->` : '';
+      const comments = operation ? await octokit.paginate(octokit.issues.listComments, { owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, per_page: 100 }) : [];
+      if (!marker || !comments.some(comment => comment.body?.includes(marker))) {
+        await operation?.checkpoint();
+        await octokit.issues.createComment({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, body: `## AI 预审 · ${review.score}/100\n\n${review.summary}\n\nPR: ${url}\n${marker}` });
+      }
     }
     return url ?? null;
   }

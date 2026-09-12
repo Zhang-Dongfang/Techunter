@@ -91,6 +91,8 @@ export type TaskAnalysis = TaskSpec;
 
 export interface Task {
   id: string;
+  version: number;
+  pendingPublication?: { rewardPoints: number } | null;
   projectId: string;
   projectName: string;
   parentTaskId: string | null;

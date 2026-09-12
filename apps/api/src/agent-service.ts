@@ -33,6 +33,15 @@ export interface ReviewInput {
   modelAudience?: string;
 }
 
+export function reviewEvidence(input: ReviewInput) {
+  // Never silently review only a file prefix. Reject an oversized package before
+  // calling the model, so the submitter can split it into smaller deliveries.
+  const evidence = input.changedFiles.map(file => ({ path: file.path, content: file.content, encoding: file.encoding }));
+  const length = JSON.stringify({ ...input, modelCredential: undefined, modelAudience: undefined, changedFiles: evidence }).length;
+  if (length > 250_000) throw httpError('完整交付证据超过本次模型审查上限，请拆分任务或缩小交付；文件内容未截断。', 413, 'REVIEW_EVIDENCE_TOO_LARGE');
+  return evidence;
+}
+
 export class AgentService {
   constructor(private readonly github: GitHubService) {}
 
@@ -62,16 +71,19 @@ export class AgentService {
     }
   }
 
-  review(input: ReviewInput): Promise<DeliveryReview> {
-    return reviewDeliveryWithAgent({
+  async review(input: ReviewInput): Promise<DeliveryReview> {
+    const evidence = reviewEvidence(input);
+    const review = await reviewDeliveryWithAgent({
       config: this.aiConfig(input.modelCredential, input.modelAudience),
       title: input.title,
       description: input.description,
       acceptanceCriteria: input.acceptanceCriteria,
-      changedFiles: input.changedFiles.map((file) => ({ path: file.path, content: file.content?.slice(0, 30_000) ?? null })),
+      changedFiles: evidence,
       testOutput: input.testOutput,
       summary: input.summary,
     });
+    review.risks = [...new Set([...review.risks, '测试输出来自执行者本机，中央服务未独立复跑测试。'])];
+    return review;
   }
 
   private aiConfig(modelCredential?: string, modelAudience?: string) {

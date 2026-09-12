@@ -103,6 +103,7 @@ export const api = {
   removeTask: (id: string) => request<{ id: string; disposition: 'deleted' | 'cancelled' }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   analyze: (id: string) => post<{ analysis: TaskAnalysis; task: Task }>(`/api/tasks/${id}/analyze`),
   publish: (id: string, rewardPoints: number) => post<Task>(`/api/tasks/${id}/publish`, { rewardPoints }),
+  cancelPublication: (id: string) => post<Task>(`/api/tasks/${id}/cancel-publication`),
   claim: (id: string) => post<Task>(`/api/tasks/${id}/claim`),
   release: (id: string) => post<Task>(`/api/tasks/${id}/release`),
   scopeRequests: (id: string) => request<{ requests: ScopeRequest[] }>(`/api/tasks/${id}/scope-requests`),
@@ -114,7 +115,8 @@ export const api = {
   workspace: (id: string, body: { deviceId: string; deviceLabel: string }) => post<Workspace>(`/api/tasks/${id}/workspaces`, body),
   updateWorkspace: (id: string, body: { status: 'provisioning' | 'running' | 'failed'; headSha?: string; setupLog?: string; error?: string | null }) =>
     request<Workspace>(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  submit: (id: string, body: { summary: string; testOutput: string; files: PackageFile[] }) => post<Submission>(`/api/tasks/${id}/submissions`, body),
+  submit: (id: string, body: { summary: string; testOutput: string; files: PackageFile[]; headSha: string }) => post<Submission>(`/api/tasks/${id}/submissions`, body),
+  resumeSubmission: (id: string) => post<Submission>(`/api/submissions/${id}/resume`),
   accept: (submissionId: string) => post<Task>(`/api/submissions/${submissionId}/accept`),
   requestChanges: (submissionId: string, reason: string) =>
     post<Task>(`/api/submissions/${submissionId}/request-changes`, { reason }),
