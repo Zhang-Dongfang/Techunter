@@ -10,6 +10,26 @@ import type { PackageFile, Task } from './platform-types.js';
 
 const execFileAsync = promisify(execFile);
 
+async function repositoryBlob(root: string, relative: string, data: Buffer): Promise<Buffer> {
+  // Apply Git's check-in conversion to the already validated bytes. --path selects
+  // attributes; stdin avoids rereading a path that could have changed into a link.
+  // Writing an unreferenced blob never alters the user's index or worktree.
+  const hashed = execFileAsync('git', ['hash-object', '-w', `--path=${relative}`, '--stdin'], {
+    cwd: root, timeout: 30_000, windowsHide: true,
+  });
+  hashed.child.stdin!.on('error', () => {}); // The process rejection reports failed filters.
+  hashed.child.stdin!.end(data);
+  const sha = (await hashed).stdout.trim();
+  if (!/^[a-f0-9]{40,64}$/.test(sha)) throw new Error(`Git 未返回有效的交付对象：${relative}`);
+  const blob = await execFileAsync('git', ['cat-file', 'blob', sha], {
+    cwd: root, timeout: 30_000, windowsHide: true, encoding: 'buffer', maxBuffer: 2 * 1024 * 1024 + 1,
+  });
+  if (blob.stdout.toString('utf8', 0, 100).startsWith('version https://git-lfs.github.com/spec/v1\n')) {
+    throw new Error(`Git LFS 文件需要单独上传对象，当前交付接口尚不支持：${relative}`);
+  }
+  return blob.stdout;
+}
+
 async function readWorkspaceFile(root: string, relative: string): Promise<Buffer | null> {
   let current = root;
   // Reject aliases even when they point inside the workspace: they can bypass deniedPaths.
@@ -78,8 +98,10 @@ export async function collectTaskChanges(workspacePath: string, task: Task): Pro
   for (const relative of changed) {
     const absolute = path.resolve(workspacePath, relative);
     if (!absolute.startsWith(`${path.resolve(workspacePath)}${path.sep}`)) throw new Error(`文件越出工作区：${relative}`);
-    const data = await readWorkspaceFile(workspaceRealPath, relative);
-    if (data === null) { files.push({ path: relative, content: null, encoding: 'utf-8' }); continue; }
+    const worktreeData = await readWorkspaceFile(workspaceRealPath, relative);
+    if (worktreeData === null) { files.push({ path: relative, content: null, encoding: 'utf-8' }); continue; }
+    if (worktreeData.length > 2 * 1024 * 1024) throw new Error('提交文件超过大小限制。');
+    const data = await repositoryBlob(workspaceRealPath, relative, worktreeData);
     totalBytes += data.length;
     if (data.length > 2 * 1024 * 1024 || totalBytes > 15 * 1024 * 1024) throw new Error('提交文件超过大小限制。');
     const indexedMode = modes.get(relative);

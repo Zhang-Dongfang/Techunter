@@ -11,7 +11,22 @@ Add `techunter` to **Project Settings → API → Exposed schemas**. The migrati
 
 Do not put `SUPABASE_SERVICE_ROLE_KEY` in the desktop or Web environment.
 
-The current release requires all migrations in filename order, ending with [`202609120005_claim_recovery_and_drafts.sql`](migrations/202609120005_claim_recovery_and_drafts.sql). Stop old API task writes, apply the migration, replace API processes, and update Desktop. Submissions require the UUID `workspaceId` of the current user's running workspace; old clients must be upgraded.
+The current release requires all migrations in filename order, ending with [`202609120006_role_sources_and_merged_reviews.sql`](migrations/202609120006_role_sources_and_merged_reviews.sql). Stop old API writes (including authentication), apply the migration, replace API processes, and update Desktop. Submissions require the UUID `workspaceId` of the current user's running workspace; old clients must be upgraded.
+
+Migration 006 separates `users.local_role` from `users.conexus_admin`; `role` is the effective role maintained by a trigger. Successful Conexus login/authorization refresh updates the Conexus flag in either direction. A locally granted maintainer/admin role survives Conexus demotion. This is synchronization at login/refresh, not a new upstream revocation webhook.
+
+Historical connected admins have no recorded grant provenance. The migration keeps their current effective admin role but treats its source as Conexus, with `local_role='member'`. Existing maintainers and admins without a Conexus ID retain their local role. Before resuming API traffic, inspect the following rows; for accounts that have an independently granted local admin role, explicitly set `local_role='admin'` for their verified ID. Do not blanket-convert all inherited admins into permanent local admins, which would retain the original demotion defect.
+
+```sql
+select id, login, conexus_user_id, role, local_role, conexus_admin
+from techunter.users where conexus_admin;
+-- Only for a verified independent local grant:
+-- update techunter.users set local_role='admin' where id='<verified-user-uuid>';
+```
+
+Changes requests now check the PR before and after GitHub Issue synchronization. A merged PR leaves the approved submission available for acceptance. For a latest delivery that was approved by the model but is now active/changes_requested, **核对合并并恢复验收** uses the acceptance endpoint to verify the already merged PR and restore a durable acceptance operation. It requires the original current assignee, unchanged task version, saved approved review and matching Git tree/scope, and never merges an unmerged PR. Recovery with mismatched evidence retains the known merge intent and forbids a refund; older records with reassignment, newer submissions or missing evidence need repository reconciliation.
+
+After an operation's original reviewer is demoted, an authorized reviewer (or admin for cancellation) may adopt it once its lease is released or expired. The original actor, chosen action and merge phase remain recorded; a live lease cannot be taken over. New helper functions remain unavailable to browser database roles.
 
 New claims check the caller's GitHub repository write permission before occupying a task. Existing pending claims can be resumed by their assignee or an administrator using **恢复认领**; administrator recovery preserves the original assignee. Either may choose **撤销认领** (`POST /api/tasks/:id/release`) after the current request releases its lease or the 90-second crash lease expires. This creates a separate durable release operation and keeps the task occupied until GitHub synchronization succeeds. If the original user no longer has permission, an administrator with repository write access can use **恢复释放**. Branch history and the reserved reward are preserved. Do not clear pending operations directly in the database to bypass an uncertain external result.
 

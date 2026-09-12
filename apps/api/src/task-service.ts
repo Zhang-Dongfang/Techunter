@@ -490,12 +490,18 @@ export class TaskService {
   }
 
   async acceptSubmission(submissionId: string, reviewer: User, githubCredential?: string): Promise<Task> {
-    const submission = await this.getSubmission(submissionId);
-    const task = await this.getTask(submission.taskId);
-    if (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
+    let submission = await this.getSubmission(submissionId);
+    let task = await this.getTask(submission.taskId);
+    const recoverMerged = task.status === 'active' && submission.status === 'changes_requested'
+      && submission.review?.verdict === 'approved' && submission.author.id === task.assignee?.id;
+    if ((!recoverMerged && (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status))) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
-    const result = await this.db().rpc('begin_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_action: 'accept' });
+    if (recoverMerged) await this.github.assertSubmissionMerged(task, await this.getProject(task.projectId), submission.pullRequestUrl, githubCredential);
+    const result = recoverMerged
+      ? await this.db().rpc('begin_merged_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_version: task.version })
+      : await this.db().rpc('begin_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_action: 'accept' });
     if (result.error) translateDatabaseError(new Error(result.error.message));
+    if (recoverMerged) { submission = await this.getSubmission(submissionId); task = await this.getTask(task.id); }
     if (result.data) await runTaskOperation(this.db(), String(result.data), reviewer.id, async (payload, token, checkpoint) => {
       let mergeAttempted = payload['phase'] !== 'ready';
       const mark = async (phase: 'merging' | 'merged') => {
@@ -513,7 +519,7 @@ export class TaskService {
           treeSha = await this.github.submissionTree(task, project, files.map(file => ({ ...file, mode: '100644' })), githubCredential);
         }
         await this.github.completeTask(task, project, submission.pullRequestUrl, githubCredential, {
-          treeSha, checkpoint,
+          treeSha, checkpoint, mergedOnly: payload['mergedOnly'] === true,
           beforeMerge: async () => { await checkpoint(); await mark('merging'); mergeAttempted = true; },
           onMerged: async () => { mergeAttempted = true; await checkpoint(); await mark('merged'); },
         });
@@ -545,7 +551,16 @@ export class TaskService {
     if (result.error) translateDatabaseError(new Error(result.error.message));
     await runTaskOperation(this.db(), String(result.data), reviewer.id, async (payload, token, checkpoint) => {
       await checkpoint();
-      await this.github.syncChangesNeeded(task, await this.getProject(task.projectId), String(payload['reason']), githubCredential, { id: String(result.data), checkpoint });
+      try {
+        await this.github.syncChangesNeeded(task, await this.getProject(task.projectId), String(payload['reason']), githubCredential, { id: String(result.data), checkpoint });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'PULL_ALREADY_MERGED') {
+          await checkpoint();
+          const aborted = await this.db().rpc('abort_task_changes', { p_id: result.data, p_token: token });
+          if (aborted.error) translateDatabaseError(new Error(aborted.error.message));
+        }
+        throw error;
+      }
       await checkpoint();
       const finished = await this.db().rpc('finish_task_review', { p_id: result.data, p_token: token });
       if (finished.error) translateDatabaseError(new Error(finished.error.message));

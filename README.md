@@ -44,7 +44,7 @@ Desktop / 本机 Agent ── HTTPS ── API (Railway)
 
 源码和环境位于本机；共享项目、任务状态和贡献点由中央 API 管理。Supabase service-role key 仅存放在 API。
 
-升级时先停止旧 API 的任务写入，按顺序应用 [数据库迁移](infra/supabase/README.md)，包括 `202609120005_claim_recovery_and_drafts.sql`，然后更新 API 和 Desktop。提交接口必须携带当前工作区 `workspaceId`。管理员可恢复或撤销未完成的认领；草稿作者可删除自己尚未发布的任务。
+升级时先停止旧 API 写入，按顺序应用 [数据库迁移](infra/supabase/README.md)，包括 `202609120006_role_sources_and_merged_reviews.sql`，然后更新 API 和 Desktop。本次迁移区分本地角色与 Conexus 管理员身份，历史管理员来源的核对方式见迁移文档。已在 GitHub 合并却被退回的原交付，可从任务详情核对并恢复验收。提交接口必须携带当前工作区 `workspaceId`。
 
 本仓库已移除终端应用与 MCP 服务。当前入口为 Desktop；旧终端安装不再属于受支持的客户端。
 

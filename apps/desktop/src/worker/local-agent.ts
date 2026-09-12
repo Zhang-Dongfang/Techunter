@@ -146,7 +146,7 @@ export class LocalAgent {
       });
     }
 
-    const status = (await execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, timeout: 30_000 })).stdout;
+    const status = (await execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, env: gitEnvironment(project, accessToken), timeout: 30_000 })).stdout;
     const headSha = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repositoryPath, timeout: 10_000 })).stdout.trim();
     await this.saveProjectLocation(project.id, repositoryPath);
     return { projectId: project.id, path: repositoryPath, headSha, outcome, workingTreeClean: status.trim().length === 0 };
@@ -168,7 +168,7 @@ export class LocalAgent {
 
     if (!fs.existsSync(workspacePath)) {
       const base = task.baseSha || `origin/${project.sourceBranch || project.defaultBranch}`;
-      await execFileAsync('git', ['worktree', 'add', '-B', `techunter/${task.id}`, workspacePath, base], { cwd: repositoryPath, timeout: 5 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+      await execFileAsync('git', ['worktree', 'add', '-B', `techunter/${task.id}`, workspacePath, base], { cwd: repositoryPath, env: gitEnvironment(project, accessToken), timeout: 5 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
     }
     const remoteHead = await taskRemoteHead(task, workspacePath);
     if (remoteHead) {
@@ -176,7 +176,7 @@ export class LocalAgent {
       // Conflicts remain in this worktree for the user to resolve explicitly.
       try {
         await execFileAsync('git', ['-c', 'user.name=Techunter', '-c', 'user.email=agent@techunter.local', 'merge', '--no-edit', remoteHead], {
-          cwd: workspacePath, timeout: 60_000, windowsHide: true,
+          cwd: workspacePath, env: gitEnvironment(project, accessToken), timeout: 60_000, windowsHide: true,
         });
       } catch (error) { throw new Error(`同步远程任务成果失败，请先保存本机改动并处理合并冲突，再重试环境准备。\n${(error as Error).message}`); }
     }
@@ -241,11 +241,12 @@ export class LocalAgent {
     if (!updateWorkingTree) return 'fetched';
     const [branch, status] = await Promise.all([
       execFileAsync('git', ['branch', '--show-current'], { cwd: repositoryPath, timeout: 10_000 }),
-      execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, timeout: 30_000 }),
+      execFileAsync('git', ['status', '--porcelain'], { cwd: repositoryPath, env: gitEnvironment(project, accessToken), timeout: 30_000 }),
     ]);
     if (branch.stdout.trim() !== project.defaultBranch || status.stdout.trim()) return 'fetched';
     await execFileAsync('git', ['merge', '--ff-only', `origin/${project.defaultBranch}`], {
       cwd: repositoryPath,
+      env: gitEnvironment(project, accessToken),
       timeout: 5 * 60_000,
       windowsHide: true,
       maxBuffer: 4 * 1024 * 1024,

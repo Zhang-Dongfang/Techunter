@@ -18,7 +18,11 @@ API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包�
 
 ## 版本升级
 
-最新修复需要按顺序应用全部迁移，最后应用 `202609120005_claim_recovery_and_drafts.sql`，再更新 API 和 Desktop。认领前验证 GitHub 写权限；未完成认领允许本人撤销或管理员恢复，撤销使用持久化释放流程并保留分支成果。`DELETE /api/tasks/:id` 允许作者删除未发布且没有进行中操作的草稿；已发布任务仍由管理员取消。具体恢复条件和历史数据检查见 [Supabase README](../../infra/supabase/README.md)。
+当前版本先停止旧 API 写入，按顺序应用全部迁移，最后应用 `202609120006_role_sources_and_merged_reviews.sql`，再更新 API 和 Desktop。用户成功登录或续期 Conexus 授权时，会刷新来自 Conexus 的管理员身份；本地角色单独保存。历史已连接 Conexus 的 admin 默认视为来自 Conexus 的授权，如有独立本地授权，需按 [Supabase 升级说明](../../infra/supabase/README.md) 显式记录。
+
+退回修改前后会检查 PR 是否已合并；已合并时保留 approved 提交供验收结算。对于已经处于 active/changes_requested 的旧交付，`POST /api/submissions/:id/accept` 可核对外部合并后恢复结算，但不会合并一个尚未合并的 PR；仍要求当前执行者、最新交付、已通过的原预审、相同审核快照与有效范围。原审核人降权后，当前有权限的审核人可接续其租约已释放或到期的操作。
+
+上一轮的 `202609120005_claim_recovery_and_drafts.sql` 在认领前验证 GitHub 写权限；未完成认领允许本人撤销或管理员恢复，撤销使用持久化释放流程并保留分支成果。`DELETE /api/tasks/:id` 允许作者删除未发布且没有进行中操作的草稿；已发布任务仍由管理员取消。具体恢复条件和历史数据检查见 [Supabase README](../../infra/supabase/README.md)。
 
 此前的 `202609120004_task_coordination.sql` 统一认领、审核、取消的持久化互斥与恢复，固定任务集成分支，并在提交事务中校验工作区。`POST /api/tasks/:id/submissions` 必须携带 UUID `workspaceId`；旧客户端必须同步升级。
 
