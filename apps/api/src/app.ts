@@ -162,7 +162,6 @@ export async function buildApp() {
     return { synced: true };
   });
   app.delete('/api/tasks/:id', async (request) => {
-    assertRole(request, ['admin']);
     return tasks.removeTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
   });
   app.post('/api/tasks', async (request, reply) => {

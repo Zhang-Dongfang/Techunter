@@ -467,7 +467,8 @@ function TaskDetail({
   }
 
   const pendingKind = task.pendingOperation?.kind;
-  const canRemove = me.role === 'admin' && !['accepted', 'cancelled'].includes(task.status) && (!pendingKind || pendingKind === 'cancel');
+  const canRemove = (me.role === 'admin' || (task.status === 'draft' && task.publisher.id === me.id))
+    && !['accepted', 'cancelled'].includes(task.status) && (!pendingKind || pendingKind === 'cancel');
   const removeLabel = pendingKind === 'cancel' ? '恢复取消' : task.status === 'draft' ? '删除草稿' : '取消并移除任务';
 
   return <>
@@ -508,8 +509,12 @@ function TaskDetail({
                 {task.pendingPublication && <button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('cancel-publication', () => api.cancelPublication(task.id))}>撤回发布</button>}
               </>}
               {task.status === 'open' && !pendingKind && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}>{busy === 'claim' ? <Loader2 className="spin" size={17} /> : <CrosshairIcon />}认领这个任务</button>}
-              {task.status === 'active' && mine && task.pendingOperation?.kind === 'claim' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}><RefreshCw size={17} />恢复认领</button>}
-              {task.status === 'active' && mine && task.pendingOperation?.kind === 'release' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}><RefreshCw size={17} />恢复释放</button>}
+              {task.status === 'active' && (mine || me.role === 'admin') && pendingKind === 'claim' && <>
+                <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('claim', () => api.claim(task.id))}><RefreshCw size={17} />恢复认领</button>
+                <button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>撤销认领</button>
+                <p className="muted">撤销会保留任务分支成果。GitHub 同步成功后，任务重新开放认领；权限不足时可由管理员继续处理。</p>
+              </>}
+              {task.status === 'active' && (mine || me.role === 'admin') && pendingKind === 'release' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}><RefreshCw size={17} />恢复释放</button>}
               {task.status === 'active' && mine && !task.pendingOperation && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
               {task.status === 'submitted' && submission?.status === 'approved' && canReview && <>
                 {(!pendingKind || pendingKind === 'accept') && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}{pendingKind === 'accept' ? '恢复验收结算' : '验收并结算'}</button>}

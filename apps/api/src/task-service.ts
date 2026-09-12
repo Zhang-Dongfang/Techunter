@@ -319,13 +319,14 @@ export class TaskService {
   }
 
   async removeTask(taskId: string, actor: User, githubCredential?: string): Promise<{ id: string; disposition: 'deleted' | 'cancelled' }> {
-    if (actor.role !== 'admin') throw httpError('只有管理员可以删除任务。', 403);
     const task = await this.getTask(taskId);
     if (task.status === 'draft') {
-      const result = await this.db().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
+      if (task.publisher.id !== actor.id && actor.role !== 'admin') throw httpError('只有草稿作者或管理员可以删除草稿。', 403);
+      const result = await this.db().rpc('delete_task_draft', { p_task_id: taskId, p_actor_id: actor.id });
       if (result.error) translateDatabaseError(new Error(result.error.message));
       return { id: taskId, disposition: 'deleted' };
     }
+    if (actor.role !== 'admin') throw httpError('只有管理员可以取消已发布的任务。', 403);
     const result = await this.db().rpc('begin_task_cancel', { p_task_id: taskId, p_actor_id: actor.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     if (result.data) await runTaskOperation(this.db(), String(result.data), actor.id, async (_payload, token, checkpoint) => {
@@ -349,13 +350,16 @@ export class TaskService {
 
   async claimTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     if (!user.githubLogin || !githubCredential) throw httpError('认领任务前请先连接 GitHub 账号。', 400);
+    const current = await this.getTask(taskId);
+    await this.github.assertClaimPermission(await this.getProject(current.projectId), githubCredential);
     const result = await this.db().rpc('begin_task_claim', { p_task_id: taskId, p_actor_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     if (result.data) await runTaskOperation(this.db(), String(result.data), user.id, async (_payload, token, checkpoint) => {
       const task = await this.getTask(taskId);
       const project = await this.getProject(task.projectId);
+      if (!task.assignee?.githubLogin) throw httpError('原执行者尚未连接 GitHub，请撤销认领后重新分配。', 409);
       await checkpoint();
-      await this.github.syncClaim(task, project, user.githubLogin!, githubCredential, checkpoint);
+      await this.github.syncClaim(task, project, task.assignee.githubLogin, githubCredential, checkpoint);
       await checkpoint();
       const finished = await this.db().rpc('finish_task_claim', { p_id: result.data, p_token: token });
       if (finished.error) translateDatabaseError(new Error(finished.error.message));
@@ -365,12 +369,14 @@ export class TaskService {
 
   async releaseTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     const task = await this.getTask(taskId);
-    if (task.status !== 'active' || task.assignee?.id !== user.id) throw httpError('只能释放自己正在执行的任务。', 400);
+    const adminRecovery = user.role === 'admin' && ['claim', 'release'].includes(task.pendingOperation?.kind ?? '');
+    if (task.status !== 'active' || (task.assignee?.id !== user.id && !adminRecovery)) throw httpError('只能释放自己的任务，或由管理员恢复未完成的认领和释放。', 403);
     const result = await this.db().rpc('begin_task_release', { p_task_id: taskId, p_actor_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     await runTaskOperation(this.db(), String(result.data), user.id, async (_payload, token, checkpoint) => {
+      const project = await this.getProject(task.projectId);
       await checkpoint();
-      await this.github.syncRelease(task, await this.getProject(task.projectId), githubCredential);
+      await this.github.syncRelease(task, project, githubCredential, checkpoint);
       await checkpoint();
       const finished = await this.db().rpc('finish_task_release', { p_id: result.data, p_token: token });
       if (finished.error) translateDatabaseError(new Error(finished.error.message));

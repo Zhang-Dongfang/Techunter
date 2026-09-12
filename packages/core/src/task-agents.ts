@@ -2,6 +2,7 @@ import { minimatch } from 'minimatch';
 
 import { runAgentLoop } from './agent-runtime.js';
 import { createRepositoryTools, listRepositoryFiles, repositoryDefaultDeniedPatterns } from './repository-tools.js';
+import { matchesScopePath, normalizeScopePath } from './scope-policy.js';
 import type { AgentHooks, AiConfig, DeliveryReview, RepositoryAccess, TaskScope, TaskSpec } from './types.js';
 
 function jsonFromText<T>(text: string): T {
@@ -32,10 +33,20 @@ async function normalizeScope(raw: Partial<TaskScope> | undefined, repository: R
   let editable = safePaths(raw?.editablePaths).filter((file) => !matchAny(file, denied));
   let readonly = safePaths(raw?.readonlyPaths).filter((file) => !matchAny(file, denied));
   if (repository.editablePatterns || repository.readonlyPatterns) {
-    const visibleEditable = await listRepositoryFiles({ ...repository, readonlyPatterns: [] });
-    const visibleReadonly = await listRepositoryFiles({ ...repository, editablePatterns: repository.readonlyPatterns, readonlyPatterns: [] });
-    editable = visibleEditable.filter((file) => matchAny(file, editable));
-    readonly = visibleReadonly.filter((file) => matchAny(file, readonly) && !editable.includes(file));
+    const editableLimit = repository.editablePatterns ?? [];
+    const readonlyLimit = repository.readonlyPatterns ?? [];
+    const visibleEditable = editableLimit.length ? await listRepositoryFiles({ ...repository, readonlyPatterns: [] }) : [];
+    const visibleReadonly = readonlyLimit.length ? await listRepositoryFiles({ ...repository, editablePatterns: readonlyLimit, readonlyPatterns: [] }) : [];
+    const allowed = (file: string, limit: string[]) => matchesScopePath(file, limit)
+      && !matchesScopePath(file, denied, true) && !file.split('/').some(part => part.toLowerCase() === '.git');
+    // A parent's explicit permission also covers files that do not exist yet.
+    // Expand legacy model globs only over existing visible files; new grants are concrete.
+    const concrete = editable.flatMap(file => {
+      try { return [normalizeScopePath(file)]; } catch { return []; }
+    });
+    editable = [...new Set([...visibleEditable.filter(file => matchesScopePath(file, editable)), ...concrete])]
+      .filter(file => allowed(file, editableLimit));
+    readonly = visibleReadonly.filter(file => matchesScopePath(file, readonly) && allowed(file, readonlyLimit) && !editable.includes(file));
   }
   if (!editable.length) throw new Error('Agent 没有给出有效的 editablePaths，任务未发布。');
   return {

@@ -18,7 +18,9 @@ API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包�
 
 ## 版本升级
 
-最新修复需要按顺序应用全部迁移，最后应用 `202609120004_task_coordination.sql`，再更新 API 和 Desktop。它统一认领、审核、取消的持久化互斥与恢复，固定任务集成分支，并在提交事务中校验工作区。`POST /api/tasks/:id/submit` 新增必填 UUID `workspaceId`；旧客户端必须同步升级。具体恢复条件和历史数据检查见 [Supabase README](../../infra/supabase/README.md)。
+最新修复需要按顺序应用全部迁移，最后应用 `202609120005_claim_recovery_and_drafts.sql`，再更新 API 和 Desktop。认领前验证 GitHub 写权限；未完成认领允许本人撤销或管理员恢复，撤销使用持久化释放流程并保留分支成果。`DELETE /api/tasks/:id` 允许作者删除未发布且没有进行中操作的草稿；已发布任务仍由管理员取消。具体恢复条件和历史数据检查见 [Supabase README](../../infra/supabase/README.md)。
+
+此前的 `202609120004_task_coordination.sql` 统一认领、审核、取消的持久化互斥与恢复，固定任务集成分支，并在提交事务中校验工作区。`POST /api/tasks/:id/submissions` 必须携带 UUID `workspaceId`；旧客户端必须同步升级。
 
 当前版本还需要先应用 `202609120002_durable_task_operations.sql`，然后更新 API 和 Desktop。任务分析会固定读取任务 `baseSha`，通过版本校验写回；发布和提交进度存入数据库，可以在 API 重启后从 Desktop 恢复。发布失败保留预算占用，撤回发布时先关闭对应 Issue 再释放占用。恢复提交不再要求重新运行模型。完整升级和旧提交恢复说明见 [Supabase README](../../infra/supabase/README.md)。
 

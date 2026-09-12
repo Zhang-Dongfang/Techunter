@@ -171,6 +171,7 @@ test('task reassignment keeps accepted child work on the same integration branch
   const f = await fixture(), refs = new Map();
   let failFirstSync = true;
   const github = new GitHubService();
+  github.assertClaimPermission = async () => {};
   github.client = async () => ({ git: {
     async getRef({ ref }) { if (!refs.has(ref)) throw Object.assign(new Error('missing ref'), { status: 404 }); return { data: { object: { sha: refs.get(ref) } } }; },
     async createRef({ ref, sha }) { refs.set(ref.replace(/^refs\//, ''), sha); return { data: { object: { sha } } }; },
@@ -195,9 +196,10 @@ test('task reassignment keeps accepted child work on the same integration branch
 
 test('claim read failure is recoverable after restart and cannot be stolen or duplicated', async () => {
   const f = await fixture(); let githubCalls = 0;
-  const github = { async syncClaim() { githubCalls++; } };
+  const github = { async assertClaimPermission() {}, async syncClaim() { githubCalls++; } };
   const broken = new TaskService(github, {}, () => port);
-  broken.getTask = async () => { throw new Error('transient database read failure'); };
+  const getTask = broken.getTask.bind(broken); let reads = 0;
+  broken.getTask = async id => { if (++reads === 2) throw new Error('transient database read failure'); return getTask(id); };
   await assert.rejects(() => broken.claimTask(f.task, alice, 'fixture-token'), /transient database/);
   const service = new TaskService(github, {}, () => port);
   await assert.rejects(() => service.claimTask(f.task, bob, 'fixture-token'), { code: 'OPERATION_IN_PROGRESS' });
@@ -237,7 +239,7 @@ test('same-user reclaim invalidates every old device workspace including failed 
   const f = await fixture(); await rpc('claim_task', { p_task_id: f.task, p_user_id: alice.id });
   const old = await rpc('create_task_workspace', { p_task_id: f.task, p_user_id: alice.id, p_device_id: 'A', p_device_label: 'A' });
   await rpc('update_task_workspace', { p_id: old, p_actor_id: alice.id, p_update: { status: 'failed' } });
-  const service = new TaskService({ async syncRelease() {}, async syncClaim() {} }, {}, () => port);
+  const service = new TaskService({ async assertClaimPermission() {}, async syncRelease() {}, async syncClaim() {} }, {}, () => port);
   await service.releaseTask(f.task, alice, 'fixture-token');
   await service.claimTask(f.task, alice, 'fixture-token');
   await assert.rejects(() => service.updateWorkspace(old, alice, { status: 'running' }));

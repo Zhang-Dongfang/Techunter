@@ -271,6 +271,19 @@ export class GitHubService {
     return await reconcile() ?? { number: data.number, url: data.html_url };
   }
 
+  async assertClaimPermission(project: Project, userCredential: string): Promise<void> {
+    const octokit = await this.client(userCredential);
+    try {
+      const { data } = await octokit.request('GET /repositories/{repository_id}', { repository_id: project.githubRepositoryId });
+      if (!data.permissions?.push) throw httpError('认领任务需要该仓库的写入权限，请先获得授权。', 403, 'GITHUB_WRITE_REQUIRED');
+    } catch (error) {
+      if ([401, 403, 404].includes((error as { status?: number }).status ?? 0)) {
+        throw httpError('无法确认该仓库的写入权限，请检查 GitHub 授权后重试。', 403, 'GITHUB_WRITE_REQUIRED');
+      }
+      throw error;
+    }
+  }
+
   async cancelPublication(task: Task, project: Project, userCredential: string | undefined, checkpoint: () => Promise<void>): Promise<void> {
     const octokit = await this.client(userCredential);
     const location = { owner: project.repoOwner, repo: project.repoName };
@@ -317,9 +330,10 @@ export class GitHubService {
     await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [githubLogin], labels: [taskLabels.claimed] });
   }
 
-  async syncRelease(task: Task, project: Project, userCredential?: string): Promise<void> {
+  async syncRelease(task: Task, project: Project, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<void> {
     if (!task.githubIssueNumber) return;
     const octokit = await this.client(userCredential);
+    await checkpoint();
     await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [], labels: [taskLabels.available] });
   }
 
