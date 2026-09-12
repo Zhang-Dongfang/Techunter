@@ -22,7 +22,7 @@ import { httpError, translateDatabaseError } from './errors.js';
 import { GitHubService } from './github-service.js';
 import { resolveTaskVersion } from './task-version.js';
 import { runTaskOperation } from './task-operation.js';
-import { readAllRows } from './database-pagination.js';
+import { readRowsById } from './database-pagination.js';
 
 type Row = Record<string, any>;
 
@@ -62,8 +62,11 @@ export class TaskService {
   ) {}
 
   async projects(): Promise<Project[]> {
-    const rows = await readAllRows<Row>((from, to) => this.db().from('projects').select('*', { count: 'exact' }).order('name').order('id').range(from, to));
-    return Promise.all(rows.map((row) => this.projectFromRow(row)));
+    const rows = await readRowsById<Row>(after => {
+      const query = this.db().from('projects').select('*', { count: 'exact' }).order('id').limit(500);
+      return after ? query.gt('id', after) : query;
+    });
+    return Promise.all(rows.sort((a, b) => String(a['name']).localeCompare(String(b['name']))).map((row) => this.projectFromRow(row)));
   }
 
   async importProject(repository: GitHubRepositoryCandidate & { headSha: string }, actor: User): Promise<Project> {
@@ -155,16 +158,19 @@ export class TaskService {
   }
 
   async listTasks(filters: { status?: string; assigneeId?: string; search?: string } = {}): Promise<TaskSummary[]> {
-    const rows = await readAllRows<Row>((from, to) => {
-      let query = this.db().from('tasks').select('*', { count: 'exact' }).order('updated_at', { ascending: false }).order('id', { ascending: false });
+    const rows = await readRowsById<Row>(after => {
+      let query = this.db().from('tasks').select('*', { count: 'exact' }).order('id').limit(500);
       if (filters.status && filters.status !== 'all') query = query.eq('status', filters.status);
       else query = query.neq('status', 'cancelled');
       if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
       if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
-      return query.range(from, to);
+      return after ? query.gt('id', after) : query;
     });
     const summaries = await this.summariesFromRows(rows);
-    const pending = await readAllRows<Row>((from, to) => this.db().from('scope_requests').select('task_id', { count: 'exact' }).eq('status', 'pending').order('id').range(from, to));
+    const pending = await readRowsById<Row>(after => {
+      const query = this.db().from('scope_requests').select('id,task_id', { count: 'exact' }).eq('status', 'pending').order('id').limit(500);
+      return after ? query.gt('id', after) : query;
+    });
     const pendingIds = new Set(pending.map((row) => String(row['task_id'])));
     for (const task of summaries) task.pendingScopeRequestCount = pendingIds.has(task.id) ? 1 : 0;
     const order: Record<string, number> = { active: 0, open: 1, submitted: 2 };
@@ -179,7 +185,9 @@ export class TaskService {
       row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
       row['reviewer_id'] ? this.getUser(String(row['reviewer_id'])) : Promise.resolve(null),
       this.db().from('workspaces').select('*').eq('task_id', id).eq('user_id', row['assignee_id'] ?? '00000000-0000-0000-0000-000000000000').order('created_at', { ascending: false }).order('id', { ascending: false }),
-      this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
+      row['settlement_submission_id']
+        ? this.db().from('submissions').select('*').eq('id', row['settlement_submission_id']).single()
+        : this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
       this.db().from('task_operations').select('id,kind,payload').eq('task_id', id).is('completed_at', null).maybeSingle(),
     ]);
@@ -370,7 +378,15 @@ export class TaskService {
     await runTaskOperation(this.db(), String(result.data), user.id, async (_payload, token, checkpoint) => {
       const project = await this.getProject(task.projectId);
       await checkpoint();
-      await this.github.syncRelease(task, project, githubCredential, checkpoint);
+      try { await this.github.syncRelease(task, project, githubCredential, checkpoint); }
+      catch (error) {
+        if ((error as { code?: string }).code === 'PULL_ALREADY_MERGED') {
+          await checkpoint();
+          const aborted = await this.db().rpc('abort_task_release', { p_id: result.data, p_token: token });
+          if (aborted.error) translateDatabaseError(new Error(aborted.error.message));
+        }
+        throw error;
+      }
       await checkpoint();
       const finished = await this.db().rpc('finish_task_release', { p_id: result.data, p_token: token });
       if (finished.error) translateDatabaseError(new Error(finished.error.message));
@@ -492,16 +508,23 @@ export class TaskService {
   async acceptSubmission(submissionId: string, reviewer: User, githubCredential?: string): Promise<Task> {
     let submission = await this.getSubmission(submissionId);
     let task = await this.getTask(submission.taskId);
-    const recoverMerged = task.status === 'active' && submission.status === 'changes_requested'
-      && submission.review?.verdict === 'approved' && submission.author.id === task.assignee?.id;
-    if ((!recoverMerged && (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status))) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
-    if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
+    const recoverMerged = ['open', 'active'].includes(task.status) && submission.status === 'changes_requested'
+      && submission.review?.verdict === 'approved';
+    if (!recoverMerged && (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status) || task.latestSubmission?.id !== submissionId)) throw httpError('只有通过预审的待验收提交可以验收。', 409);
+    if (task.assignee?.id === reviewer.id || submission.author.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
     if (recoverMerged) {
       const project = await this.getProject(task.projectId);
       if (!submission.pullRequestUrl && submission.reviewedTreeSha) {
         submission = { ...submission, pullRequestUrl: await this.github.mergedSubmissionUrl(task, project, submission.reviewedTreeSha, githubCredential) };
       }
       await this.github.assertSubmissionMerged(task, project, submission.pullRequestUrl, githubCredential);
+      // Validate old authors' evidence before restoring task ownership.
+      if (submission.author.id !== task.assignee?.id || task.latestSubmission?.id !== submissionId) {
+        if (!submission.reviewedTreeSha) throw httpError('该历史交付缺少已审核快照，不能恢复归属。', 409, 'PULL_REVIEW_MISSING');
+        await this.github.completeTask(task, project, submission.pullRequestUrl, githubCredential, {
+          treeSha: submission.reviewedTreeSha, mergedOnly: true, verifyOnly: true, beforeMerge: async () => {},
+        });
+      }
     }
     const result = recoverMerged
       ? await this.db().rpc('begin_merged_task_review_with_pull', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_version: task.version, p_pull_url: submission.pullRequestUrl })
@@ -651,6 +674,17 @@ export class TaskService {
     return this.userFromRow(result.data as Row);
   }
 
+  async recoverySubmissions(taskId: string): Promise<Submission[]> {
+    const task = await this.getTask(taskId);
+    if (!['open', 'active'].includes(task.status)) return [];
+    const rows = await readRowsById<Row>(after => {
+      const query = this.db().from('submissions').select('*', { count: 'exact' }).eq('task_id', taskId)
+        .eq('status', 'changes_requested').eq('review_json->>verdict', 'approved').order('id').limit(100);
+      return after ? query.gt('id', after) : query;
+    });
+    return Promise.all(rows.map(row => this.submissionFromRow(row)));
+  }
+
   private userFromRow(row: Row): User {
     return {
       id: String(row['id']), login: String(row['login']), name: String(row['name']),
@@ -674,7 +708,7 @@ export class TaskService {
     return rows.map(row => {
       const publisher = users.get(String(row['publisher_id']));
       const projectName = projects.get(String(row['project_id']));
-      if (!publisher || projectName === undefined) throw new Error('任务关联的项目或用户不存在。');
+      if (!publisher || projectName === undefined || (row['assignee_id'] && !users.has(String(row['assignee_id'])))) throw new Error('任务关联的项目或用户不存在。');
       return {
         id: String(row['id']), projectId: String(row['project_id']), projectName,
         parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
@@ -688,7 +722,11 @@ export class TaskService {
   private async rowsByIds(table: string, columns: string, ids: string[]): Promise<Row[]> {
     const batches: Array<PromiseLike<Row[]>> = [];
     for (let start = 0; start < ids.length; start += 100) {
-      batches.push(this.db().from(table).select(columns).in('id', ids.slice(start, start + 100)).then(result => dataOrThrow(result) as Row[]));
+      const batch = ids.slice(start, start + 100);
+      batches.push(readRowsById<Row>(after => {
+        const query = this.db().from(table).select(columns, { count: 'exact' }).in('id', batch).order('id').limit(100);
+        return after ? query.gt('id', after) : query;
+      }));
     }
     return (await Promise.all(batches)).flat();
   }

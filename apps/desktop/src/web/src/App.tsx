@@ -37,7 +37,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import type { DashboardResponse, GitHubBranch, GitHubRepositoryCandidate, LedgerEntry, Project, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
+import type { DashboardResponse, GitHubBranch, GitHubRepositoryCandidate, LedgerEntry, Project, Submission, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
 import type { DesktopUpdateState } from '../../shared/desktop-contracts';
 import { AgentDock } from './AgentDock';
 import { ApiError, api } from './api';
@@ -406,6 +406,17 @@ function TaskDetail({
   const canReview = ['admin', 'maintainer'].includes(me.role) && !mine;
   const submission = task.latestSubmission;
   const workspace = deviceWorkspace(task, me.id, deviceId);
+  const [recoverySubmissions, setRecoverySubmissions] = useState<Submission[]>([]);
+  useEffect(() => {
+    let active = true;
+    setRecoverySubmissions([]);
+    if (canReview && ['open', 'active'].includes(task.status)) {
+      api.recoverySubmissions(task.id).then(result => {
+        if (active) setRecoverySubmissions(result.submissions.filter(item => item.author.id !== me.id));
+      }).catch(caught => { if (active) setError((caught as Error).message); });
+    }
+    return () => { active = false; };
+  }, [task.id, task.version, task.status, canReview, me.id]);
 
   async function provisionWorkspace() {
     const desktop = window.techunterDesktop;
@@ -516,7 +527,7 @@ function TaskDetail({
               </>}
               {task.status === 'active' && (mine || me.role === 'admin') && pendingKind === 'release' && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}><RefreshCw size={17} />恢复释放</button>}
               {task.status === 'active' && mine && !task.pendingOperation && <><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('workspace', provisionWorkspace)}>{busy === 'workspace' ? <Loader2 className="spin" size={17} /> : <Command size={17} />}{localPath ? '同步并检查环境' : '让 Agent 准备环境'}</button><button className="button secondary full" onClick={() => setSubtask(true)}><GitBranch size={17} />发布子任务</button>{workspace?.status === 'running' && localPath && <button className="button secondary full" onClick={() => setSubmitOpen((value) => !value)}><CheckCircle2 size={17} />提交交付</button>}<button className="button ghost full" disabled={Boolean(busy)} onClick={() => action('release', () => api.release(task.id))}>释放任务</button></>}
-              {task.status === 'active' && submission?.status === 'changes_requested' && submission.review?.verdict === 'approved' && canReview && !task.pendingOperation && <><p className="muted">若此交付已在 GitHub 合并，可核对原审核快照并恢复结算。</p><button className="button secondary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}><RefreshCw size={17} />核对合并并恢复验收</button></>}
+              {!task.pendingOperation && recoverySubmissions.map(delivery => <div key={delivery.id}><p className="muted">{delivery.author.name} · {new Date(delivery.createdAt).toLocaleString('zh-CN')}<br />若此交付已在 GitHub 合并，可按原审核快照恢复验收，奖励归原作者。</p><button className="button secondary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(delivery.id))}><RefreshCw size={17} />核对合并并恢复验收</button></div>)}
               {task.status === 'submitted' && submission?.status === 'approved' && canReview && <>
                 {(!pendingKind || pendingKind === 'accept') && <button className="button primary full" disabled={Boolean(busy)} onClick={() => action('accept', () => api.accept(submission.id))}>{busy === 'accept' ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}{pendingKind === 'accept' ? '恢复验收结算' : '验收并结算'}</button>}
                 {(!pendingKind || pendingKind === 'request_changes') && <><textarea className="compact-textarea" value={changeReason} disabled={pendingKind === 'request_changes'} onChange={(event) => setChangeReason(event.target.value)} rows={3} /><button className="button danger full" disabled={Boolean(busy)} onClick={() => action('changes', () => api.requestChanges(submission.id, changeReason))}><XCircle size={17} />{pendingKind === 'request_changes' ? '恢复退回修改' : '要求修改'}</button></>}

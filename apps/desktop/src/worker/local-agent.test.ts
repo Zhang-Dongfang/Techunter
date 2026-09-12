@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { expandTaskScope, makeTaskBranchName, type Project, type Task } from '@techunter/core';
 import { gitEnvironment, LocalAgent, remoteMatchesProject } from './local-agent.js';
 
@@ -20,6 +20,37 @@ afterEach(async () => {
 });
 
 describe('LocalAgent', () => {
+  it.skipIf(process.platform !== 'win32')('task test timeouts terminate the native child and preserve the package', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-')); cleanup.push(root);
+    const workspace = path.join(root, 'agent', 'workspaces', 'fixture'); await fs.mkdir(workspace, { recursive: true });
+    const git = (args: string[]) => exec('git', args, { cwd: workspace });
+    await git(['init', '-b', 'main']); await fs.writeFile(path.join(workspace, 'file.txt'), 'fixture');
+    await git(['add', '.']); await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture']);
+    const marker = path.join(root, 'late.txt'), pidFile = path.join(root, 'pid.txt'), helper = path.join(root, 'helper.cjs');
+    await fs.writeFile(helper, "const fs=require('node:fs'); fs.writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => fs.writeFileSync(process.argv[3], 'late'), 10000);");
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    const task = { id: 'fixture', baseSha: (await git(['rev-parse', 'HEAD'])).stdout.trim(), scope: {
+      editablePaths: ['file.txt'], readonlyPaths: [], deniedPaths: [], environment: {
+        testCommands: [`& ${quote(process.execPath)} ${quote(helper)} ${quote(pidFile)} ${quote(marker)}`], setupCommands: [], networkAllowlist: [],
+      },
+    } } as unknown as Task;
+    const originalTimer = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      originalTimer(callback, ms === 15 * 60_000 ? 6000 : ms, ...args)) as typeof setTimeout);
+    let pid: number | undefined;
+    try {
+      const result = await new LocalAgent(path.join(root, 'agent')).test(task);
+      pid = Number(await fs.readFile(pidFile, 'utf8'));
+      expect(result.passed).toBe(false); expect(result.output).toContain('超时或取消');
+      expect(() => process.kill(pid!, 0)).toThrow();
+      expect(await fs.stat(marker).catch(() => null)).toBeNull();
+      expect(await fs.readFile(path.join(workspace, 'file.txt'), 'utf8')).toBe('fixture');
+    } finally {
+      timer.mockRestore();
+      if (pid) { try { process.kill(pid); } catch { /* already stopped */ } }
+    }
+  });
+
   it('round-trips non-UTF-8 bytes and preserves executable modes in delivery packages', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-')); cleanup.push(root);
     const workspace = path.join(root, 'workspaces', 'fixture'); await fs.mkdir(workspace, { recursive: true });

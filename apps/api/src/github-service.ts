@@ -333,8 +333,28 @@ export class GitHubService {
   async syncRelease(task: Task, project: Project, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<void> {
     if (!task.githubIssueNumber) return;
     const octokit = await this.client(userCredential);
+    // Retain the task branch, but close delivery PRs before releasing ownership.
+    // Read again after every write: an external merge may win the close race.
+    const pulls = await this.taskPulls(octokit, task, project);
+    const numbers = new Set(pulls.map(pull => pull.number));
+    if (task.latestSubmission?.pullRequestUrl) numbers.add(this.submissionPull(project, task.latestSubmission.pullRequestUrl).pull_number);
+    const assertUnmerged = async (number: number) => {
+      const pull = (await octokit.pulls.get({ owner: project.repoOwner, repo: project.repoName, pull_number: number })).data;
+      if (pull.merged) throw httpError('交付 PR 已合并，请恢复原交付的验收结算，不能释放任务。', 409, 'PULL_ALREADY_MERGED');
+      return pull;
+    };
+    for (const number of numbers) {
+      const pull = await assertUnmerged(number);
+      if (pull.state === 'open') {
+        await checkpoint();
+        try { await octokit.pulls.update({ owner: project.repoOwner, repo: project.repoName, pull_number: number, state: 'closed' }); }
+        catch (error) { await assertUnmerged(number); throw error; }
+      }
+      await assertUnmerged(number);
+    }
     await checkpoint();
     await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, assignees: [], labels: [taskLabels.available] });
+    for (const number of numbers) await assertUnmerged(number);
   }
 
   async syncChangesNeeded(task: Task, project: Project, reason: string, userCredential?: string, operation?: { id: string; checkpoint(): Promise<void> }): Promise<void> {
@@ -512,7 +532,7 @@ export class GitHubService {
   }
 
   async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string,
-    reviewed?: { treeSha: string; mergedOnly?: boolean; beforeMerge(): Promise<void>; onMerged?(): Promise<void>; checkpoint?(): Promise<void> }): Promise<void> {
+    reviewed?: { treeSha: string; mergedOnly?: boolean; verifyOnly?: boolean; beforeMerge(): Promise<void>; onMerged?(): Promise<void>; checkpoint?(): Promise<void> }): Promise<void> {
     const octokit = await this.client(userCredential);
     const match = pullRequestUrl?.match(/\/pull\/(\d+)/);
     if (!match || !task.scope) throw httpError('任务缺少可校验的 PR 或文件范围。', 409);
@@ -534,6 +554,10 @@ export class GitHubService {
     // Reject concurrent pushes during pagination and pin the merge to the checked head.
     const latest = (await octokit.pulls.get(location)).data;
     if (latest.head.sha !== pull.head.sha || latest.base.sha !== pull.base.sha || latest.base.ref !== pull.base.ref) throw httpError('PR 在范围校验期间发生变化，请重新验收。', 409);
+    if (reviewed?.verifyOnly) {
+      if (!latest.merged) throw httpError('PR 尚未合并，不能恢复结算。', 409, 'PULL_NOT_MERGED');
+      return;
+    }
     if (!latest.merged) {
       await reviewed?.beforeMerge();
       try {

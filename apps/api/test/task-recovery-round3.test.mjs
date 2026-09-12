@@ -23,6 +23,7 @@ function from(table) {
   const builder = {
     select(value = '*') { columns = value; return builder; },
     eq(key, value) { filters.push(`${ident(key)} = ${bind(value)}`); return builder; },
+    gt(key, value) { filters.push(`${ident(key)} > ${bind(value)}`); return builder; },
     neq(key, value) { filters.push(`${ident(key)} <> ${bind(value)}`); return builder; },
     is(key, value) { assert.equal(value, null); filters.push(`${ident(key)} is null`); return builder; },
     in(key, value) { filters.push(`${ident(key)} in (${value.map(bind).join(',')})`); return builder; },
@@ -103,6 +104,7 @@ test('a partial claim becomes a retryable release and an admin can complete it w
   const f = await fixture(), refs = new Map(); let assignees = [], denyOwner = false, loseResponse = true;
   const github = new GitHubService();
   github.client = async credential => ({
+    pulls: { list() {} }, paginate: async () => [],
     request: async () => ({ data: { permissions: { push: true } } }),
     git: {
       getRef: async ({ ref }) => { if (!refs.has(ref)) throw Object.assign(new Error('no branch'), { status: 404 }); return { data: { object: { sha: refs.get(ref) } } }; },

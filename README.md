@@ -44,7 +44,7 @@ Desktop / 本机 Agent ── HTTPS ── API (Railway)
 
 源码和环境位于本机；共享项目、任务状态和贡献点由中央 API 管理。Supabase service-role key 仅存放在 API。
 
-升级时先停止旧 API 写入（包括登录与 GitHub 授权），按顺序应用 [数据库迁移](infra/supabase/README.md)，包括 `202609120007_delivery_and_connection_recovery.sql`，然后更新 API 和 Desktop。本次增加 PR 恢复记录及 GitHub 连接并发控制；分支删除后仍可核对已合并交付，断开授权会等待刷新并撤销当前令牌。任务列表分批读取完整数据，审核数量由数据库聚合。历史管理员来源及已错误退款记录的核对方式见迁移文档。提交接口必须携带当前工作区 `workspaceId`。
+升级时先停止旧 API 写入（包括登录与 GitHub 授权），按顺序应用 [数据库迁移](infra/supabase/README.md)，包括 `202609120008_release_settlement_recovery.sql`，然后更新 API 和 Desktop。释放任务会关闭并核对交付 PR；已合并的历史交付支持按原作者恢复结算，包括释放、转交及更新提交后的记录。列表按不可变 ID 分页，关联用户与项目也处理数据库返回上限。Desktop 的准备、测试及命令台共用进程清理，Windows 超时或取消会停止整个命令进程树。历史管理员来源及已错误退款记录仍需按迁移文档核对。提交接口必须携带当前工作区 `workspaceId`。
 
 本仓库已移除终端应用与 MCP 服务。当前入口为 Desktop；旧终端安装不再属于受支持的客户端。
 

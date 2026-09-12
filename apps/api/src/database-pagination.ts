@@ -1,15 +1,21 @@
 import { dataOrThrow } from './database.js';
 
-/** Keep the existing complete-list contract even with a lower server row cap. */
-export async function readAllRows<T>(page: (from: number, to: number) => PromiseLike<{
+/** Each query orders by the immutable primary key and filters id > after. */
+export async function readRowsById<T>(page: (after: string | null) => PromiseLike<{
   data: T[] | null; error: { message: string; code?: string } | null; count?: number | null;
 }>): Promise<T[]> {
   const rows: T[] = [];
+  let after: string | null = null;
   for (;;) {
-    const result = await page(rows.length, rows.length + 499);
+    const result = await page(after);
     const next = dataOrThrow(result);
-    rows.push(...next);
-    // A short page may be the server's cap, not the end of the result set.
-    if (!next.length || (result.count != null && rows.length >= result.count)) return rows;
+    for (const row of next) {
+      const id = (row as { id?: unknown }).id;
+      if (typeof id !== 'string' || (after !== null && id <= after)) throw new Error('数据库分页游标未前进。');
+      after = id;
+      rows.push(row);
+    }
+    // count describes this cursor's remaining set, not an offset from a prior snapshot.
+    if (!next.length || (result.count != null && next.length >= result.count)) return rows;
   }
 }

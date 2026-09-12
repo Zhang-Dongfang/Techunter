@@ -136,6 +136,10 @@ export async function buildApp() {
     return { tasks: await tasks.listTasks({ status: query.status, assigneeId: query.mine === 'true' ? request.currentUser.id : undefined, search: query.search }) };
   });
   app.get('/api/tasks/:id', async (request) => tasks.getTask(idParams.parse(request.params).id));
+  app.get('/api/tasks/:id/submissions/recovery', async (request) => {
+    assertRole(request, ['admin', 'maintainer']);
+    return { submissions: await tasks.recoverySubmissions(idParams.parse(request.params).id) };
+  });
   app.get('/api/tasks/:id/scope-requests', async (request) => ({ requests: await scopeRequests.list(idParams.parse(request.params).id, request.currentUser) }));
   app.post('/api/tasks/:id/scope-requests', async (request, reply) => reply.code(201).send(
     await scopeRequests.create(idParams.parse(request.params).id, request.currentUser, request.body as Parameters<ScopeRequestService['create']>[2]),

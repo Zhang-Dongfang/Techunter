@@ -18,9 +18,9 @@ API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包�
 
 ## 版本升级
 
-当前版本须先停止旧 API 写入（包括认证），按顺序应用迁移至 `202609120007_delivery_and_connection_recovery.sql`，再替换 API。该迁移保存已创建的 PR 地址，并为 GitHub 连接增加数据库租约及连接版本；刷新、绑定、断开在多个实例间共享互斥。旧的浏览器 GitHub 授权页面需要重新发起，已有 Techunter 登录和保存的凭据保留。
+当前版本须先停止旧 API 写入（包括认证），按顺序应用迁移至 `202609120008_release_settlement_recovery.sql`，再替换 API 和 Desktop。008 为历史交付固定结算依据，恢复已释放或转交的任务时奖励归原提交作者，并保留原执行者和恢复操作审计。007 引入的 GitHub 连接租约与版本控制继续有效。
 
-恢复提交先核对已合并 PR 的原始 HEAD/tree，支持远程分支已删除的情况；取消会检查任务分支关联的历史 PR，缺少数据库 PR 地址不会绕过合并保护。未退款的旧 active/changes_requested 交付可通过原验收入口找回 PR；已经错误退款或取消的历史任务需要人工核对账本，本迁移不会自动补扣款。任务及项目列表在 API 内分批取全，保持现有 Desktop/助手接口；审核计数由 PostgreSQL 聚合，不受单次查询行数上限截断。
+恢复提交先核对已合并 PR 的原始 HEAD/tree，支持远程分支已删除。释放先关闭旧交付 PR，并在远端写入前后检查是否已经合并；发现已合并就终止释放并保留归属，网络失败则保留待恢复操作。`GET /api/tasks/:id/submissions/recovery` 向维护者和管理员列出 open/active 任务的历史合格交付；原验收入口核对合并、快照、范围和任务版本后恢复结算，不能自审，不能通过历史恢复发起新合并。已错误退款或取消的任务仍需人工核对账本。任务、项目及关联用户查询采用不可变 ID 游标，不会因 updated_at 排序移动而跳过任务；保持现有完整列表契约，审核计数仍在 PostgreSQL 中聚合。
 
 此前的 `202609120006_role_sources_and_merged_reviews.sql` 区分角色来源。用户成功登录或续期 Conexus 授权时，会刷新来自 Conexus 的管理员身份；本地角色单独保存。历史已连接 Conexus 的 admin 默认视为来自 Conexus 的授权，如有独立本地授权，需按 [Supabase 升级说明](../../infra/supabase/README.md) 显式记录。
 

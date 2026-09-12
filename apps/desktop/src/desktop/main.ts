@@ -1,4 +1,3 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
@@ -8,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } f
 import { LocalAgent } from '../worker/local-agent';
 import { authorizeConexusInBrowser, type ConexusBrowserAuthInput } from './browser-auth';
 import { registerAutoUpdates } from './updates';
+import { startCommand, stopAllCommands, type ManagedCommand } from '../shared/command-process';
 
 try {
   const envPath = app.isPackaged
@@ -19,7 +19,7 @@ try {
 }
 
 type TerminalSession = {
-  process: ChildProcessWithoutNullStreams;
+  command: ManagedCommand;
   owner: Electron.WebContents;
 };
 
@@ -122,19 +122,6 @@ function resolveWorkingDirectory(candidate?: string): string {
   return cwd;
 }
 
-function shellInvocation(command: string): { executable: string; args: string[] } {
-  if (process.platform === 'win32') {
-    return {
-      executable: 'powershell.exe',
-      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command],
-    };
-  }
-  return {
-    executable: process.env['SHELL'] || '/bin/sh',
-    args: ['-lc', command],
-  };
-}
-
 function registerTerminalIpc(): void {
   ipcMain.handle('terminal:run', (event, rawInput: unknown) => {
     assertTrustedSender(event);
@@ -145,23 +132,18 @@ function registerTerminalIpc(): void {
     if (input.cwd !== undefined && typeof input.cwd !== 'string') throw new Error('工作目录无效。');
 
     const cwd = resolveWorkingDirectory(input.cwd);
-    const invocation = shellInvocation(input.command);
     const sessionId = randomUUID();
-    const child = spawn(invocation.executable, invocation.args, {
-      cwd,
-      env: process.env,
-      windowsHide: true,
-      stdio: 'pipe',
-    });
+    const command = startCommand(input.command, cwd);
+    const child = command.process;
 
-    terminalSessions.set(sessionId, { process: child, owner: event.sender });
+    terminalSessions.set(sessionId, { command, owner: event.sender });
     child.stdout.on('data', (chunk: Buffer) => {
       if (!event.sender.isDestroyed()) event.sender.send('terminal:output', { sessionId, stream: 'stdout', data: chunk.toString() });
     });
     child.stderr.on('data', (chunk: Buffer) => {
       if (!event.sender.isDestroyed()) event.sender.send('terminal:output', { sessionId, stream: 'stderr', data: chunk.toString() });
     });
-    child.on('error', (error) => {
+    void command.completed.catch((error: Error) => {
       if (!event.sender.isDestroyed()) event.sender.send('terminal:output', { sessionId, stream: 'stderr', data: `${error.message}\n` });
     });
     child.on('close', (exitCode) => {
@@ -172,11 +154,11 @@ function registerTerminalIpc(): void {
     return { sessionId };
   });
 
-  ipcMain.handle('terminal:cancel', (event, sessionId: unknown) => {
+  ipcMain.handle('terminal:cancel', async (event, sessionId: unknown) => {
     assertTrustedSender(event);
     if (typeof sessionId !== 'string') return;
     const session = terminalSessions.get(sessionId);
-    if (session?.owner === event.sender) session.process.kill();
+    if (session?.owner === event.sender) await session.command.cancel();
   });
 }
 
@@ -333,10 +315,22 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+let shutdownComplete = false;
+let shutdownPending = false;
+app.on('before-quit', event => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownPending) return;
+  shutdownPending = true;
   autoUpdates.stop();
-  for (const session of terminalSessions.values()) session.process.kill();
-  terminalSessions.clear();
-  localUiServer?.close();
-  localUiServer = undefined;
+  void stopAllCommands().then(() => {
+    terminalSessions.clear();
+    localUiServer?.close();
+    localUiServer = undefined;
+    shutdownComplete = true;
+    app.quit();
+  }).catch((error: Error) => {
+    shutdownPending = false;
+    dialog.showErrorBox('命令尚未停止', error.message);
+  });
 });

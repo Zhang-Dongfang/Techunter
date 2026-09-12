@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { collectTaskChanges, taskRemoteHead, type Project, type Task } from '@techunter/core';
 import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
+import { startCommand } from '../shared/command-process.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,12 +62,9 @@ export function remoteMatchesProject(remote: string, project: Project): boolean 
 type ProjectLocations = { version: 1; projects: Record<string, string> };
 
 async function runShell(command: string, cwd: string, timeoutMs = 15 * 60_000): Promise<string> {
-  const executable = process.platform === 'win32' ? 'powershell.exe' : (process.env['SHELL'] || '/bin/sh');
-  const args = process.platform === 'win32'
-    ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command]
-    : ['-lc', command];
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, env: process.env, windowsHide: true, stdio: 'pipe' });
+    const managed = startCommand(command, cwd, timeoutMs);
+    const child = managed.process;
     const chunks: string[] = [];
     let size = 0;
     const append = (chunk: Buffer) => {
@@ -77,14 +75,11 @@ async function runShell(command: string, cwd: string, timeoutMs = 15 * 60_000): 
     };
     child.stdout.on('data', append);
     child.stderr.on('data', append);
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
+    void managed.completed.then(({ exitCode: code, cancelled }) => {
       const output = chunks.join('').trim();
-      if (code === 0) resolve(output);
-      else reject(new Error(`命令失败 (${code ?? 'unknown'}): ${command}\n${output}`));
-    });
+      if (code === 0 && !cancelled) resolve(output);
+      else reject(new Error(`${cancelled ? '命令已超时或取消' : '命令失败'} (${code ?? 'unknown'}): ${command}\n${output}`));
+    }, reject);
   });
 }
 

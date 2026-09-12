@@ -85,6 +85,7 @@ export const api = {
   dashboard: () => request<DashboardResponse>('/api/dashboard'),
   tasks: (query = '') => request<{ tasks: TaskSummary[] }>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
+  recoverySubmissions: (id: string) => request<{ submissions: Submission[] }>(`/api/tasks/${id}/submissions/recovery`),
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   githubRepositories: () => request<{ repositories: GitHubRepositoryCandidate[] }>('/api/github/repositories'),
   importProject: (githubRepositoryId: number) => post<Project>('/api/projects/import', { githubRepositoryId }),
