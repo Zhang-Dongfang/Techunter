@@ -36,7 +36,7 @@ export interface ReviewInput {
 export function reviewEvidence(input: ReviewInput) {
   // Never silently review only a file prefix. Reject an oversized package before
   // calling the model, so the submitter can split it into smaller deliveries.
-  const evidence = input.changedFiles.map(file => ({ path: file.path, content: file.content, encoding: file.encoding }));
+  const evidence = input.changedFiles.map(file => ({ path: file.path, content: file.content, encoding: file.encoding, ...(file.mode ? { mode: file.mode } : {}) }));
   const length = JSON.stringify({ ...input, modelCredential: undefined, modelAudience: undefined, changedFiles: evidence }).length;
   if (length > 250_000) throw httpError('完整交付证据超过本次模型审查上限，请拆分任务或缩小交付；文件内容未截断。', 413, 'REVIEW_EVIDENCE_TOO_LARGE');
   return evidence;

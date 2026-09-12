@@ -3,6 +3,28 @@ import test from 'node:test';
 import type { DeliveryReview, Project, Task } from '@techunter/core';
 import { GitHubService } from './github-service.js';
 
+test('Git tree creation preserves legacy executable modes and honors explicit chmod and binary data', async () => {
+  let tree: Array<{ path: string; mode: string }> = [];
+  const blobs: Array<{ content: string; encoding: string }> = [];
+  const client = { git: {
+    getCommit: async () => ({ data: { tree: { sha: 'base-tree' } } }),
+    getTree: async () => ({ data: { tree: [{ path: 'run.sh', mode: '100755' }] } }),
+    createBlob: async (input: { content: string; encoding: string }) => { blobs.push(input); return { data: { sha: 'blob' } }; },
+    createTree: async (input: { tree: typeof tree }) => { tree = input.tree; return { data: { sha: 'tree' } }; },
+  } };
+  const service = new GitHubService(); Object.defineProperty(service, 'client', { value: async () => client });
+  const task = { baseSha: 'base' } as Task, project = { repoOwner: 'test', repoName: 'fixture' } as Project;
+  await service.submissionTree(task, project, [{ path: 'run.sh', content: 'echo hello', encoding: 'utf-8' }]);
+  assert.equal(tree[0]?.mode, '100755');
+  await service.submissionTree(task, project, [
+    { path: 'run.sh', content: 'echo hello', encoding: 'utf-8', mode: '100644' },
+    { path: 'new.sh', content: 'echo new', encoding: 'utf-8', mode: '100755' },
+    { path: 'legacy.txt', content: 'gqCCog==', encoding: 'base64', mode: '100644' },
+  ]);
+  assert.deepEqual(tree.map(file => file.mode), ['100644', '100755', '100644']);
+  assert.equal(blobs.at(-1)?.encoding, 'base64'); assert.equal(blobs.at(-1)?.content, 'gqCCog==');
+});
+
 test('resubmission restores reverted edits and deletions while keeping commit ancestry', async () => {
   const base = { 'src/a.ts': 'base A', 'src/b.ts': 'base B', 'src/deleted.ts': 'restore me' };
   const blobs = new Map<string, string>();
@@ -14,6 +36,7 @@ test('resubmission restores reverted edits and deletions while keeping commit an
     git: {
       getRef: async () => ({ data: { object: { sha: head } } }),
       getCommit: async ({ commit_sha }: { commit_sha: string }) => ({ data: commits.get(commit_sha) }),
+      getTree: async () => ({ data: { tree: Object.keys(base).map(path => ({ path, mode: '100644' })) } }),
       createBlob: async ({ content }: { content: string }) => { const sha = `blob-${++serial}`; blobs.set(sha, content); return { data: { sha } }; },
       createTree: async (input: { base_tree: string; tree: Array<{ path: string; sha: string | null }> }) => {
         const tree = { ...trees.get(input.base_tree) };

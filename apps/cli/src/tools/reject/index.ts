@@ -6,6 +6,7 @@ import { postComment, rejectTask, getAuthenticatedUser, getTask } from '../../li
 import { renderMarkdown } from '../../lib/markdown.js';
 import { generateRejectionComment } from './comment-generator.js';
 import { getStatus } from '../../lib/display.js';
+import { isCentralTask, rejectCentralTask } from '../../lib/central-api.js';
 
 export const definition = {
   type: 'function',
@@ -38,7 +39,7 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     getAuthenticatedUser(config),
     getTask(config, issueNumber),
   ]);
-  if (issue.author && issue.author !== me) {
+  if (!isCentralTask(issue) && issue.author && issue.author !== me) {
     return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
   }
 
@@ -56,6 +57,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     }
   }
   if (!feedback.trim()) return 'Cancelled.';
+  if (isCentralTask(issue)) {
+    if (!await select({ message: `要求中央任务 #${issueNumber} 修改？`, choices: [{ name: '要求修改', value: true }, { name: '取消', value: false }] })) return 'Cancelled.';
+    await rejectCentralTask(config, issue, feedback);
+    return `中央任务 #${issueNumber} 已要求修改。`;
+  }
 
   const divider = chalk.dim('-'.repeat(70));
 
@@ -132,6 +138,10 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     getAuthenticatedUser(config),
     getTask(config, issueNumber),
   ]);
+  if (isCentralTask(issue)) {
+    await rejectCentralTask(config, issue, feedback);
+    return `中央任务 #${issueNumber} 已要求修改。`;
+  }
   if (issue.author && issue.author !== me) {
     return `Permission denied: only the task author (@${issue.author}) can reject task #${issueNumber}.`;
   }

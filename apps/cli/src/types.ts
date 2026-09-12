@@ -9,6 +9,8 @@ export interface AssetVcsConfig {
 }
 
 export interface TechunterConfig extends AiConfig {
+  centralApiUrl?: string;
+  centralDeviceId?: string;
   conexusRefreshToken?: string;
   conexusTicketExpiresAt?: string;
   conexusAccountEmail?: string;

@@ -11,6 +11,7 @@ test('central API requires Supabase and keeps Desktop renderer origins explicit'
     TECHUNTER_WEB_ORIGINS: 'https://techunter.example,http://127.0.0.1:5173',
   });
   assert.equal(value.publicUrl, 'https://api.techunter.example');
+  assert.equal(value.cliAudience, 'http://127.0.0.1:4310');
   assert.deepEqual(value.webOrigins, ['https://techunter.example', 'http://127.0.0.1:5173']);
   assert.equal(value.ai.accessMode, 'conexus');
 });

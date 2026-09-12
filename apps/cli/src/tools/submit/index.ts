@@ -40,6 +40,7 @@ import {
   summarizeTaskTransitionPlan,
 } from '../../lib/task-transition.js';
 import { taskLabels } from '@techunter/core';
+import { isCentralTask, submitCentralTask } from '../../lib/central-api.js';
 
 const SUBMITTABLE_LABELS = new Set<string>([taskLabels.claimed, taskLabels.changesNeeded]);
 
@@ -49,7 +50,19 @@ type SubmitOutcome = {
 };
 
 function isSubmittableTask(issue: GitHubIssue): boolean {
-  return issue.labels.some((label) => SUBMITTABLE_LABELS.has(label));
+  return issue.labels.some((label) => SUBMITTABLE_LABELS.has(label)) || (isCentralTask(issue) && issue.labels.includes(taskLabels.inReview));
+}
+
+async function submitManaged(issue: GitHubIssue, config: TechunterConfig, interactive: boolean, input: Record<string, unknown> = {}): Promise<string> {
+  try {
+    const summary = typeof input['commit_message'] === 'string' ? input['commit_message'] : interactive
+      ? await promptInput({ message: '交付摘要：', default: `完成 ${issue.title}` }) : `完成 ${issue.title}`;
+    const testOutput = typeof input['test_output'] === 'string' ? input['test_output'] : interactive
+      ? await promptInput({ message: '测试结果（如实填写，可留空）：' }) : '';
+    if (interactive && !await select({ message: `提交 #${issue.number} 给中央服务审查？`, choices: [{ name: '提交', value: true }, { name: '取消', value: false }] })) return 'Cancelled.';
+    const submission = await submitCentralTask(config, issue, summary, testOutput);
+    return `中央任务 #${issue.number}：${submission.status}\n${submission.review?.summary ?? ''}\n${submission.pullRequestUrl ?? ''}`;
+  } catch (error) { return `提交失败：${(error as Error).message}`; }
 }
 
 async function resolveIssueNumberFromBranch(
@@ -392,6 +405,7 @@ export const definition = {
       properties: {
         issue_number: { type: 'number', description: 'Task number to submit. Defaults to the task inferred from the current branch.' },
         commit_message: { type: 'string', description: 'Commit message (optional - defaults to "complete: {task title}").' },
+        test_output: { type: 'string', description: 'Actual test output for central task review; do not invent results.' },
         carry_current_work: {
           type: 'boolean',
           description: 'When submitting a different task from the current branch, bring your current branch work to that task before submitting.',
@@ -419,6 +433,7 @@ export async function run(_input: Record<string, unknown>, config: TechunterConf
   if (!selectedTask) {
     return `No claimed or changes-needed tasks assigned to @${username}.`;
   }
+  if (isCentralTask(selectedTask)) return submitManaged(selectedTask, config, true);
 
   let branch: string;
   let notices: string[];
@@ -486,6 +501,7 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
   }
 
   const issue = await getTask(config, issueNumber);
+  if (isCentralTask(issue)) return submitManaged(issue, config, false, input);
   if (!isSubmittableTask(issue)) {
     return `Task #${issue.number} is not in a submittable state (${getStatus(issue)}).`;
   }

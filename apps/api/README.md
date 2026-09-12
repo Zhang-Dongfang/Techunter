@@ -18,6 +18,8 @@ API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包�
 
 ## 修改范围复议升级
 
+最新系统修复需要先应用 `202609120003_system_integrity.sql`，再更新 API、Desktop 和 CLI。它增加子任务归属校验、释放操作恢复、审核代码快照、按执行者隔离的工作环境，以及原子的项目导入和 Conexus 用户初始化。CLI 的中央任务配置见[根 README](../../README.md#central-tasks-shared-with-desktop)。
+
 当前版本还需要先应用 `202609120002_durable_task_operations.sql`，然后更新 API 和 Desktop。任务分析会固定读取任务 `baseSha`，通过版本校验写回；发布和提交进度存入数据库，可以在 API 重启后从 Desktop 恢复。发布失败保留预算占用，撤回发布时先关闭对应 Issue 再释放占用。恢复提交不再要求重新运行模型。完整升级和旧提交恢复说明见 [Supabase README](../../infra/supabase/README.md)。
 
 部署带有复议接口的 API 前，先应用 `infra/supabase/migrations/202609080001_scope_requests.sql`。接取者在 Desktop 任务详情提交逐文件申请，发布者或管理员在审核中心审批；批准后更新范围版本并尝试同步 GitHub Issue。同步失败可以单独重试，不会撤销授权。完整边界、流程与接口见 [复议机制设计](../../docs/scope-reconsideration.md)。

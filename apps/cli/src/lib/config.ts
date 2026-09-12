@@ -3,6 +3,8 @@ import type { TechunterConfig } from '../types.js';
 import { getTechunterConfigStore } from '@techunter/core';
 
 const configSchema = z.object({
+  centralApiUrl: z.string().url().optional(),
+  centralDeviceId: z.string().uuid().optional(),
   aiApiKey: z.string().min(1),
   aiAccessMode: z.enum(['direct', 'conexus']).optional(),
   aiBaseUrl: z.string().optional(),
@@ -57,6 +59,8 @@ export function getConfig(): TechunterConfig {
 
 export function setConfig(partial: Partial<TechunterConfig>): void {
   const current = store.store as unknown as Record<string, unknown>;
+  if (partial.centralApiUrl !== undefined) current['centralApiUrl'] = partial.centralApiUrl;
+  if (partial.centralDeviceId !== undefined) current['centralDeviceId'] = partial.centralDeviceId;
 
   if (partial.github) {
     current['github'] = {

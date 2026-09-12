@@ -90,6 +90,11 @@ test('submission survives a process interruption and restores stale packages saf
   const token = randomUUID();
   const result = (await lease(sub, token, worker)).rows[0]!['lease_task_operation'] as { files: unknown; headSha: string };
   assert.deepEqual(result.files, files); assert.equal(result.headSha, 'remote-head');
+  await assert.rejects(() => db.query('select techunter.record_submission_tree($1,$2,$3)', [sub, randomUUID(), 'a'.repeat(40)]), /OPERATION_LEASE_LOST/);
+  await assert.rejects(() => db.query('select techunter.record_submission_tree($1,$2,null)', [sub, token]), /SUBMISSION_STATE_CONFLICT/);
+  await db.query('select techunter.record_submission_tree($1,$2,$3)', [sub, token, 'a'.repeat(40)]);
+  await db.query('select techunter.record_submission_tree($1,$2,$3)', [sub, token, 'a'.repeat(40)]);
+  await assert.rejects(() => db.query('select techunter.record_submission_tree($1,$2,$3)', [sub, token, 'b'.repeat(40)]), /SUBMISSION_STATE_CONFLICT/);
   await assert.rejects(() => db.query('select techunter.admin_remove_task($1,$2)', [f.id, publisher]), /OPERATION_IN_PROGRESS/);
   await db.query('select techunter.finish_submission_operation($1,$2,null,false)', [sub, token]);
   assert.equal((await db.query<{ status: string }>('select status from techunter.tasks where id=$1', [f.id])).rows[0]!.status, 'active');

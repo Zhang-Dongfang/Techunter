@@ -1,6 +1,7 @@
 import type { GitHubIssue, TaskSubmitExecutionResult, TaskSubmitPlan, TechunterConfig } from '../types.js';
 import { buildTaskFinalizePlan, executeTaskFinalizePlan, summarizeTaskFinalizePlan } from './task-finalize.js';
 import { buildTaskPublishPlan, executeTaskPublishPlan, summarizeTaskPublishPlan } from './task-publish.js';
+import { isCentralTask } from './central-api.js';
 
 export function buildTaskSubmitPlan(options: {
   issue: GitHubIssue;
@@ -35,6 +36,7 @@ export async function executeTaskSubmitPlan(
   issue: GitHubIssue,
   review: string,
 ): Promise<TaskSubmitExecutionResult> {
+  if (isCentralTask(issue)) throw new Error('中央任务必须通过中央 API 提交交付包。');
   const publishResult = await executeTaskPublishPlan(plan.publish);
   if (!publishResult.ok) {
     return { ok: false, phase: 'publish', step: publishResult.step, message: publishResult.message };

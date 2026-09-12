@@ -35,7 +35,7 @@ const workspaceUpdateBody = z.object({
   setupLog: z.string().max(100_000).optional(),
   error: z.string().max(10_000).nullable().optional(),
 });
-const packageFile = z.object({ path: z.string().min(1).max(2_000), content: z.string().nullable(), encoding: z.enum(['utf-8', 'base64']) });
+const packageFile = z.object({ path: z.string().min(1).max(2_000), content: z.string().nullable(), encoding: z.enum(['utf-8', 'base64']), mode: z.enum(['100644', '100755']).optional() });
 const submitBody = z.object({
   headSha: z.string().regex(/^[a-f0-9]{40,64}$/),
   summary: z.string().trim().min(3).max(10_000),
@@ -99,6 +99,7 @@ export async function buildApp() {
   }));
 
   app.get('/api/projects', async () => ({ projects: await tasks.projects() }));
+  app.get('/api/projects/:id', async (request) => tasks.getProject(idParams.parse(request.params).id));
   app.get('/api/github/repositories', async (request) => {
     if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     const projects = await tasks.projects();

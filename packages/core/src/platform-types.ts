@@ -182,6 +182,8 @@ export interface PackageFile {
   path: string;
   content: string | null;
   encoding: 'utf-8' | 'base64';
+  /** Omitted by older clients; preserve the frozen tree's mode in that case. */
+  mode?: '100644' | '100755';
 }
 
 export interface Submission {
@@ -192,6 +194,7 @@ export interface Submission {
   summary: string;
   testOutput: string;
   pullRequestUrl: string | null;
+  reviewedTreeSha?: string | null;
   review: DeliveryReview | null;
   createdAt: string;
   updatedAt: string;

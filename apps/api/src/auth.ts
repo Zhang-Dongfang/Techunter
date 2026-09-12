@@ -128,7 +128,7 @@ function setSessionCookie(reply: FastifyReply, token: string, expiresAt: string)
 function allowedAudience(value: string): boolean {
   try {
     const origin = new URL(value).origin;
-    return [config().publicUrl, ...config().webOrigins].some((candidate) => new URL(candidate).origin === origin);
+    return [config().publicUrl, config().cliAudience, ...config().webOrigins].some((candidate) => new URL(candidate).origin === origin);
   } catch {
     return false;
   }
@@ -139,21 +139,12 @@ function githubAuthorizationCompletePage(): string {
 }
 
 async function ensureUser(authorization: ConexusAuthorization): Promise<User> {
-  const existing = await database().from('users').select('*').eq('conexus_user_id', authorization.user.id).maybeSingle();
-  if (existing.error) throw new Error(existing.error.message);
-  const login = authorization.user.email.split('@')[0] || `hunter-${authorization.user.id.slice(0, 8)}`;
-  const role = authorization.user.role === 'admin' ? 'admin' : (existing.data?.role ?? 'member');
-  const payload = {
-    conexus_user_id: authorization.user.id,
-    login: existing.data?.login ?? login,
-    name: authorization.user.name || existing.data?.name || login,
-    email: authorization.user.email,
-    role,
-  };
-  const row = existing.data
-    ? dataOrThrow(await database().from('users').update(payload).eq('id', existing.data.id).select('*').single())
-    : dataOrThrow(await database().from('users').insert(payload).select('*').single());
-  return mapUser(row as unknown as Row);
+  const result = await database().rpc('upsert_conexus_user', {
+    p_id: authorization.user.id, p_email: authorization.user.email,
+    p_name: authorization.user.name, p_admin: authorization.user.role === 'admin',
+  });
+  if (result.error) throw new Error(result.error.message);
+  return mapUser(result.data as Row);
 }
 
 function authorizationInput(body: unknown): { runTicket: string; audience: string } {

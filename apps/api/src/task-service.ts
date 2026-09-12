@@ -44,6 +44,7 @@ export function normalizePackageFiles(files: PackageFile[], scope: TaskScope): P
       throw httpError(`提交文件超出 editablePaths：${normalized}`, 400);
     }
     if (file.encoding !== 'utf-8' && file.encoding !== 'base64') throw httpError(`不支持的文件编码：${normalized}`, 400);
+    if (file.mode !== undefined && file.mode !== '100644' && file.mode !== '100755') throw httpError(`不支持的 Git 文件模式：${normalized}`, 400);
     const bytes = file.content === null ? 0 : Buffer.byteLength(file.content, file.encoding === 'base64' ? 'base64' : 'utf8');
     if (bytes > 2 * 1024 * 1024) throw httpError(`单个提交文件超过 2 MiB：${normalized}`, 400);
     totalBytes += bytes;
@@ -66,35 +67,11 @@ export class TaskService {
 
   async importProject(repository: GitHubRepositoryCandidate & { headSha: string }, actor: User): Promise<Project> {
     if (!repository.permissions.pull) throw httpError('当前 GitHub 账号没有读取该仓库的权限。', 403);
-    const payload = {
-      github_repository_id: repository.githubRepositoryId,
-      name: repository.name,
-      description: repository.description,
-      repo_owner: repository.owner,
-      repo_name: repository.name,
-      clone_url: repository.cloneUrl,
-      html_url: repository.htmlUrl,
-      default_branch: repository.defaultBranch,
-      source_branch: repository.defaultBranch,
-      visibility: repository.visibility,
-      head_sha: repository.headSha,
-      imported_by: actor.id,
-    };
-    const existing = await this.db().from('projects').select('id').eq('github_repository_id', repository.githubRepositoryId).maybeSingle();
-    if (existing.error) throw new Error(existing.error.message);
-    let row: Row;
-    if (existing.data) {
-      row = dataOrThrow(await this.db().from('projects').update(payload).eq('id', existing.data.id).select('*').single()) as Row;
-    } else {
-      row = dataOrThrow(await this.db().from('projects').insert(payload).select('*').single()) as Row;
-      const allocation = await this.db().rpc('allocate_project_points', {
-        p_project_id: row['id'],
-        p_amount: config().initialProjectPoints,
-      });
-      if (allocation.error) throw new Error(allocation.error.message);
-    }
-    await this.audit(actor.id, 'project.imported', 'project', String(row['id']), { githubRepositoryId: repository.githubRepositoryId });
-    return this.projectFromRow(row);
+    const result = await this.db().rpc('import_project', {
+      p_repository: repository, p_actor_id: actor.id, p_points: config().initialProjectPoints,
+    });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
+    return this.getProject(String(result.data));
   }
 
   async syncProject(projectId: string, actor: User, githubCredential: string): Promise<Project> {
@@ -205,7 +182,7 @@ export class TaskService {
       this.getUser(String(row['publisher_id'])),
       row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
       row['reviewer_id'] ? this.getUser(String(row['reviewer_id'])) : Promise.resolve(null),
-      this.db().from('workspaces').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      this.db().from('workspaces').select('*').eq('task_id', id).eq('user_id', row['assignee_id'] ?? '00000000-0000-0000-0000-000000000000').order('created_at', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
       this.db().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
       this.db().from('task_operations').select('payload').eq('id', id).eq('kind', 'publish').is('completed_at', null).maybeSingle(),
@@ -262,7 +239,9 @@ export class TaskService {
     if (input.parentTaskId) {
       parent = await this.getTask(input.parentTaskId);
       if (parent.projectId !== input.projectId) throw httpError('子任务必须与父任务属于同一项目。', 400);
-      if (!['active', 'submitted'].includes(parent.status)) throw httpError('只有进行中的任务可以创建子任务。', 400);
+      if (parent.status !== 'active') throw httpError('只有进行中的任务可以创建子任务。', 400);
+      const publisher = await this.getUser(input.publisherId);
+      if (parent.assignee?.id !== input.publisherId && publisher.role !== 'admin') throw httpError('只有父任务执行者或管理员可以创建子任务。', 403);
       if (parent.githubIssueNumber === null || !parent.assignee?.githubLogin) throw httpError('母任务还没有可同步的远程任务分支。', 409);
     }
     const version = await resolveTaskVersion(project, parent, async (parentBranch) => {
@@ -271,7 +250,7 @@ export class TaskService {
       if (branch.name !== parentBranch) throw new Error('母任务分支解析不一致。');
       return branch.headSha;
     });
-    const row = dataOrThrow(await this.db().from('tasks').insert({
+    const inserted = await this.db().from('tasks').insert({
       project_id: project.id,
       parent_task_id: parent?.id ?? null,
       root_task_id: parent ? (parent.rootTaskId ?? parent.id) : null,
@@ -280,7 +259,9 @@ export class TaskService {
       publisher_id: input.publisherId,
       base_sha: version.baseSha,
       target_branch: version.targetBranch,
-    }).select('id').single()) as Row;
+    }).select('id').single();
+    if (inserted.error) translateDatabaseError(new Error(inserted.error.message));
+    const row = inserted.data as Row;
     await this.audit(input.publisherId, 'task.created', 'task', String(row['id']), { parentTaskId: parent?.id ?? null });
     return this.getTask(String(row['id']));
   }
@@ -372,43 +353,34 @@ export class TaskService {
   async releaseTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id) throw httpError('只能释放自己正在执行的任务。', 400);
-    const result = await this.db().rpc('release_task', { p_task_id: taskId, p_user_id: user.id });
+    const result = await this.db().rpc('begin_task_release', { p_task_id: taskId, p_actor_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
-    await this.github.syncRelease(task, await this.getProject(task.projectId), githubCredential);
+    await runTaskOperation(this.db(), String(result.data), user.id, async (_payload, token, checkpoint) => {
+      await checkpoint();
+      await this.github.syncRelease(task, await this.getProject(task.projectId), githubCredential);
+      await checkpoint();
+      const finished = await this.db().rpc('finish_task_release', { p_id: result.data, p_token: token });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
+    });
     return this.getTask(taskId);
   }
 
   async createWorkspace(taskId: string, user: User, device: { deviceId: string; deviceLabel: string }): Promise<Workspace> {
     const task = await this.getTask(taskId);
-    if (task.assignee?.id !== user.id && user.role !== 'admin') throw httpError('当前账号不能创建这个工作环境。', 403);
+    if (task.assignee?.id !== user.id) throw httpError('当前账号不能创建这个工作环境。', 403);
     if (task.status !== 'active' || !task.scope) throw httpError('只有进行中的有效任务可以创建工作环境。', 400);
-    const existing = await this.db().from('workspaces').select('*').eq('task_id', taskId).eq('device_id', device.deviceId)
-      .in('status', ['queued', 'provisioning', 'running']).order('created_at', { ascending: false }).limit(1).maybeSingle();
-    if (existing.error) throw new Error(existing.error.message);
-    if (existing.data) return this.workspaceFromRow(existing.data as Row);
-    const row = dataOrThrow(await this.db().from('workspaces').insert({
-      task_id: taskId,
-      user_id: user.id,
-      status: 'queued',
-      provider: 'local_agent',
-      device_id: device.deviceId,
-      device_label: device.deviceLabel,
-    }).select('*').single()) as Row;
-    await this.audit(user.id, 'workspace.queued', 'workspace', String(row['id']), { taskId, deviceId: device.deviceId });
+    const result = await this.db().rpc('create_task_workspace', {
+      p_task_id: taskId, p_user_id: user.id, p_device_id: device.deviceId, p_device_label: device.deviceLabel,
+    });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
+    const row = dataOrThrow(await this.db().from('workspaces').select('*').eq('id', result.data).single()) as Row;
     return this.workspaceFromRow(row);
   }
 
   async updateWorkspace(workspaceId: string, user: User, input: { status: 'provisioning' | 'running' | 'failed'; headSha?: string; setupLog?: string; error?: string | null }): Promise<Workspace> {
-    const existing = dataOrThrow(await this.db().from('workspaces').select('*').eq('id', workspaceId).single()) as Row;
-    if (String(existing['user_id']) !== user.id && user.role !== 'admin') throw httpError('当前账号不能更新这个工作环境。', 403);
-    const row = dataOrThrow(await this.db().from('workspaces').update({
-      status: input.status,
-      head_sha: input.headSha ?? existing['head_sha'],
-      setup_log: (input.setupLog ?? existing['setup_log'] ?? '').slice(0, 100_000),
-      error: input.error ?? null,
-    }).eq('id', workspaceId).select('*').single()) as Row;
-    await this.audit(user.id, `workspace.${input.status}`, 'workspace', workspaceId, { taskId: row['task_id'], deviceId: row['device_id'] });
-    return this.workspaceFromRow(row);
+    const result = await this.db().rpc('update_task_workspace', { p_id: workspaceId, p_actor_id: user.id, p_update: input });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
+    return this.workspaceFromRow(result.data as Row);
   }
 
   async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[]; headSha: string }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
@@ -473,6 +445,11 @@ export class TaskService {
         if (!payload['review']) throw httpError('旧提交缺少预审证据，请重新交付。', 409, 'SUBMISSION_REVIEW_MISSING');
         pullUrl = await this.github.publishSubmission(task, project, files, payload['review'], githubCredential, {
           id: submissionId, headSha: payload['headSha'] ?? task.baseSha, checkpoint,
+          recordTree: async (treeSha) => {
+            await checkpoint();
+            const saved = await this.db().rpc('record_submission_tree', { p_id: submissionId, p_token: token, p_tree_sha: treeSha });
+            if (saved.error) translateDatabaseError(new Error(saved.error.message));
+          },
         });
       } catch (error) {
         // These checks happen before any branch mutation. A changed remote head
@@ -496,9 +473,20 @@ export class TaskService {
     const task = await this.getTask(submission.taskId);
     if (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
-    await this.startReview(submissionId, reviewer, 'accept');
-    if (task.status === 'accepted') return task;
-    await this.github.completeTask(task, await this.getProject(task.projectId), submission.pullRequestUrl, githubCredential);
+    if (task.status === 'accepted') { await this.startReview(submissionId, reviewer, 'accept'); return task; }
+    const project = await this.getProject(task.projectId);
+    let treeSha = submission.reviewedTreeSha;
+    if (!treeSha) {
+      // Legacy approved submissions predate persisted tree IDs. Rebuild only from
+      // their saved review package, using the old publisher's 100644 semantics.
+      const row = dataOrThrow(await this.db().from('submissions').select('files_json').eq('id', submissionId).single()) as Row;
+      const files = normalizePackageFiles(jsonValue<PackageFile[]>(row['files_json'], []), task.scope!);
+      if (!files.length) throw httpError('该旧提交缺少可验证的审核快照，请要求重新交付。', 409);
+      treeSha = await this.github.submissionTree(task, project, files.map(file => ({ ...file, mode: '100644' })), githubCredential);
+    }
+    await this.github.completeTask(task, project, submission.pullRequestUrl, githubCredential, {
+      treeSha, beforeMerge: () => this.startReview(submissionId, reviewer, 'accept'),
+    });
     const result = await this.db().rpc('accept_task', { p_submission_id: submissionId, p_reviewer_id: reviewer.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     return this.getTask(task.id);
@@ -657,6 +645,7 @@ export class TaskService {
       id: String(row['id']), taskId: String(row['task_id']), author: await this.getUser(String(row['author_id'])),
       status: row['status'] as Submission['status'], summary: String(row['summary']), testOutput: String(row['test_output']),
       pullRequestUrl: row['pull_request_url'] ? String(row['pull_request_url']) : null,
+      reviewedTreeSha: row['reviewed_tree_sha'] ? String(row['reviewed_tree_sha']) : null,
       review: jsonValue(row['review_json'], null), createdAt: String(row['created_at']), updatedAt: String(row['updated_at']),
     };
   }

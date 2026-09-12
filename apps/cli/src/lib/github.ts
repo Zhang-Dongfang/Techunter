@@ -3,6 +3,8 @@ import type { TechunterConfig, GitHubIssue, TaskGuide } from '../types.js';
 import { fetch as undiciFetch } from 'undici';
 import { getUndiciProxyAgent } from './proxy.js';
 import { makeTaskBranchName } from './git.js';
+import { acquireClaimLock, claimLockRef } from './claim-lock.js';
+import { acceptCentralTask, centralTask, isCentralTask, rejectCentralTask } from './central-api.js';
 import {
   extractBaseCommit,
   extractTargetBranch,
@@ -122,6 +124,10 @@ export async function createTask(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
+  const parentNumber = targetBranch?.match(/^task-(\d+)-/)?.[1];
+  if (parentNumber && isCentralTask(await getTask(config, Number(parentNumber)))) {
+    throw new Error('中央任务的子任务需要通过 Desktop 创建，以校验父任务权限、文件范围和预算。');
+  }
   await ensureLabels(config);
 
   const finalBody = withTaskMetadata({ body: body ?? '', baseCommit, targetBranch });
@@ -179,40 +185,35 @@ export async function claimTask(
   const { owner, repo } = config.github;
 
   const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  if (isCentralTask({ body: issue.body ?? null })) {
+    const { client, task } = await centralTask(config, { body: issue.body ?? null, number });
+    await client.request(`/api/tasks/${task.id}/claim`, 'POST', {});
+    return;
+  }
   const issueLabels = getIssueLabels(issue.labels as Array<{ name?: string } | string>);
   const currentStatus = getTaskStatusFromLabels(issue.labels as Array<{ name?: string } | string>);
 
   if (!issueLabels.includes(LABEL_AVAILABLE)) {
+    if (issue.state === 'open' && issue.assignee?.login === username && issueLabels.includes(LABEL_CLAIMED)) return;
     throw new Error(`Task #${number} is not available to claim (current status: ${currentStatus}).`);
   }
   if (issue.assignee?.login && issue.assignee.login !== username) {
     throw new Error(`Task #${number} is already assigned to @${issue.assignee.login}.`);
   }
 
+  await acquireClaimLock(octokit, owner, repo, number, username);
+  const latest = (await octokit.issues.get({ owner, repo, issue_number: number })).data;
+  const latestStatus = getTaskStatusFromLabels(latest.labels);
+  if (latest.state !== 'open' || (latest.assignee?.login && latest.assignee.login !== username)
+    || (latestStatus !== 'available' && !(latestStatus === 'claimed' && latest.assignee?.login === username))) {
+    throw new Error(`Task #${number} changed while claiming; refresh before continuing.`);
+  }
   await octokit.issues.update({
     owner,
     repo,
     issue_number: number,
     assignees: [username],
-  });
-
-  // Remove available label, add claimed label
-  try {
-    await octokit.issues.removeLabel({
-      owner,
-      repo,
-      issue_number: number,
-      name: LABEL_AVAILABLE,
-    });
-  } catch {
-    // Label might not exist, that's fine
-  }
-
-  await octokit.issues.addLabels({
-    owner,
-    repo,
-    issue_number: number,
-    labels: [LABEL_CLAIMED],
+    labels: [...getIssueLabels(latest.labels).filter(label => !techunterTaskLabels.has(label)), LABEL_CLAIMED],
   });
 }
 
@@ -335,6 +336,7 @@ export async function markInReview(
   config: TechunterConfig,
   number: number
 ): Promise<void> {
+  if (isCentralTask(await getTask(config, number))) throw new Error('中央任务必须通过中央 API 提交交付包。');
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
@@ -359,6 +361,11 @@ export async function closeTask(config: TechunterConfig, number: number): Promis
   const { owner, repo } = config.github;
 
   const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  if (isCentralTask({ body: issue.body ?? null })) {
+    const { client, task } = await centralTask(config, { body: issue.body ?? null, number });
+    await client.request(`/api/tasks/${task.id}`, 'DELETE');
+    return;
+  }
   const techunterLabels = (issue.labels as Array<{ name?: string }>)
     .map((l) => l.name ?? '')
     .filter((label) => techunterTaskLabels.has(label));
@@ -368,6 +375,7 @@ export async function closeTask(config: TechunterConfig, number: number): Promis
   for (const label of techunterLabels) {
     await octokit.issues.removeLabel({ owner, repo, issue_number: number, name: label });
   }
+  await octokit.git.deleteRef({ owner, repo, ref: claimLockRef(number) }).catch(() => undefined);
 }
 
 export interface IssueComment {
@@ -451,16 +459,17 @@ export async function listTasksForReview(
   const data = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
-    creator: username,
     labels: LABEL_IN_REVIEW,
     state: 'open',
     per_page: 100,
   });
 
-  return data.map(parseIssue).sort((a, b) => a.number - b.number);
+  return data.map(parseIssue).filter(issue => issue.author === username || (isCentralTask(issue) && issue.assignee !== username)).sort((a, b) => a.number - b.number);
 }
 
-export async function rejectTask(config: TechunterConfig, number: number): Promise<void> {
+export async function rejectTask(config: TechunterConfig, number: number, reason = '请根据审核意见修改后重新交付。'): Promise<void> {
+  const issue = await getTask(config, number);
+  if (isCentralTask(issue)) { await rejectCentralTask(config, issue, reason); return; }
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
 
@@ -509,6 +518,7 @@ export async function editTask(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
   const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: number });
+  if (isCentralTask({ body: issue.body ?? null })) throw new Error('中央任务的规格和范围由 API 管理，请在 Desktop 中申请范围复议。');
   const finalBody = withTaskMetadata({
     body,
     baseCommit: extractBaseCommit(issue.body ?? null),
@@ -611,6 +621,9 @@ export async function moveTask(
   const octokit = createOctokit(config.githubToken);
   const { owner, repo } = config.github;
   const { data } = await octokit.issues.get({ owner, repo, issue_number: issueNumber });
+  if (isCentralTask({ body: data.body ?? null })) throw new Error('中央任务的来源版本和目标分支已经冻结，不能移动。');
+  const parentNumber = newTargetBranch.match(/^task-(\d+)-/)?.[1];
+  if (parentNumber && isCentralTask(await getTask(config, Number(parentNumber)))) throw new Error('不能把独立 GitHub 任务移动到中央任务下，请通过 Desktop 创建受预算和范围约束的子任务。');
   const body = withTaskMetadata({ body: data.body ?? '', baseCommit: newBaseCommit, targetBranch: newTargetBranch });
   await octokit.issues.update({ owner, repo, issue_number: issueNumber, body });
 }
@@ -686,6 +699,11 @@ export async function acceptTask(
   issueNumber: number
 ): Promise<{ prNumber: number; prUrl: string; sha: string; baseBranch: string }> {
   const issue = await getTask(config, issueNumber);
+  if (isCentralTask(issue)) {
+    const task = await acceptCentralTask(config, issue);
+    const url = task.latestSubmission?.pullRequestUrl ?? '';
+    return { prNumber: Number(url.match(/\/pull\/(\d+)/)?.[1]), prUrl: url, sha: '', baseBranch: task.targetBranch };
+  }
   const expectedHeadBranch = issue.assignee ? makeTaskBranchName(issueNumber, issue.assignee) : undefined;
   const pr = await getTaskPR(config, issueNumber, expectedHeadBranch);
   if (!pr) {

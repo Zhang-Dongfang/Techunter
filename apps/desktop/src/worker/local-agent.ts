@@ -1,11 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { isTaskPathEditable, makeTaskBranchName, normalizeScopePath, readLocalTechunterConfig, type PackageFile, type Project, type Task } from '@techunter/core';
+import { collectTaskChanges, taskRemoteHead, readLocalTechunterConfig, type Project, type Task } from '@techunter/core';
 import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/desktop-contracts.js';
 
 const execFileAsync = promisify(execFile);
@@ -56,29 +56,6 @@ export function remoteMatchesProject(remote: string, project: Project): boolean 
   };
   const expected = `${project.repoOwner}/${project.repoName}`.toLowerCase();
   return githubPath(project.cloneUrl) === expected && githubPath(remote) === expected;
-}
-
-async function readWorkspaceFile(root: string, relative: string): Promise<Buffer | null> {
-  let current = root;
-  // Reject aliases even when they point inside the workspace: they can bypass deniedPaths.
-  for (const component of relative.split('/')) {
-    current = path.join(current, component);
-    let stat;
-    try { stat = await fsp.lstat(current); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    }
-    if (stat.isSymbolicLink()) throw new Error(`提交文件不能经过符号链接或目录链接：${relative}`);
-  }
-  const real = await fsp.realpath(current);
-  const resolved = path.relative(root, real);
-  if (resolved.startsWith('..') || path.isAbsolute(resolved)) throw new Error(`文件越出工作区：${relative}`);
-  const file = await fsp.open(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-  try {
-    if (!(await file.stat()).isFile()) throw new Error(`提交路径不是普通文件：${relative}`);
-    return await file.readFile();
-  } finally { await file.close(); }
 }
 
 type ProjectLocations = { version: 1; projects: Record<string, string> };
@@ -193,7 +170,7 @@ export class LocalAgent {
       const base = task.baseSha || `origin/${project.sourceBranch || project.defaultBranch}`;
       await execFileAsync('git', ['worktree', 'add', '-B', `techunter/${task.id}`, workspacePath, base], { cwd: repositoryPath, timeout: 5 * 60_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
     }
-    const remoteHead = await this.taskRemoteHead(task, workspacePath);
+    const remoteHead = await taskRemoteHead(task, workspacePath);
     if (remoteHead) {
       // Git preserves unrelated uncommitted work and refuses unsafe overwrites.
       // Conflicts remain in this worktree for the user to resolve explicitly.
@@ -281,13 +258,6 @@ export class LocalAgent {
     return { path: fs.existsSync(candidate) ? candidate : null };
   }
 
-  private async taskRemoteHead(task: Task, workspacePath: string): Promise<string | null> {
-    if (!task.githubIssueNumber || !task.assignee?.githubLogin) return null;
-    const ref = `refs/remotes/origin/${makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin)}`;
-    try { return (await execFileAsync('git', ['rev-parse', '--verify', ref], { cwd: workspacePath, timeout: 10_000 })).stdout.trim(); }
-    catch (error) { if ((error as { code?: number }).code === 128) return null; throw error; }
-  }
-
   async test(task: Task): Promise<{ output: string; passed: boolean; packageDigest: string }> {
     const before = await this.collectChanges(task);
     const commands = task.scope?.environment.testCommands ?? [];
@@ -305,44 +275,7 @@ export class LocalAgent {
     return { output: output.length > 95_000 ? `${output.slice(0, 95_000)}\n[测试日志超出上限，后续内容未显示]` : output, passed, packageDigest: after.packageDigest };
   }
 
-  async collectChanges(task: Task): Promise<{ path: string; files: PackageFile[]; headSha: string; packageDigest: string }> {
-    if (!task.scope) throw new Error('任务缺少文件范围。');
-    const workspacePath = path.join(this.workspacesRoot, task.id);
-    if (!fs.existsSync(workspacePath)) throw new Error('本机没有这个任务的工作环境。');
-    if ((await fsp.lstat(workspacePath)).isSymbolicLink()) throw new Error('任务工作区不能是目录链接。');
-    const workspaceRealPath = await fsp.realpath(workspacePath);
-    const base = task.baseSha || 'HEAD';
-    const remoteHead = await this.taskRemoteHead(task, workspacePath);
-    if (remoteHead) {
-      try { await execFileAsync('git', ['merge-base', '--is-ancestor', remoteHead, 'HEAD'], { cwd: workspacePath, timeout: 10_000 }); }
-      catch { throw new Error('工作区尚未合入远程任务成果，请先同步并处理冲突。'); }
-    }
-    const headSha = remoteHead || (await execFileAsync('git', ['rev-parse', base], { cwd: workspacePath, timeout: 10_000 })).stdout.trim();
-    const [tracked, untracked] = await Promise.all([
-      execFileAsync('git', ['diff', '--no-renames', '--name-only', '-z', base, '--'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
-      execFileAsync('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
-    ]);
-    const changed = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean).map((file) => {
-      const normalized = normalizeScopePath(file);
-      if (normalized !== file) throw new Error(`文件名不是规范的任务相对路径：${file}`);
-      return normalized;
-    }))];
-    for (const file of changed) {
-      if (!isTaskPathEditable(file, task.scope)) throw new Error(`本机改动超出任务 editablePaths：${file}。请先在任务详情提交范围复议，批准后刷新任务再交付。`);
-    }
-    const files: PackageFile[] = [];
-    let totalBytes = 0;
-    for (const relative of changed) {
-      const absolute = path.resolve(workspacePath, relative);
-      if (!absolute.startsWith(`${path.resolve(workspacePath)}${path.sep}`)) throw new Error(`文件越出工作区：${relative}`);
-      const data = await readWorkspaceFile(workspaceRealPath, relative);
-      if (data === null) { files.push({ path: relative, content: null, encoding: 'utf-8' }); continue; }
-      totalBytes += data.length;
-      if (data.length > 2 * 1024 * 1024 || totalBytes > 15 * 1024 * 1024) throw new Error('提交文件超过大小限制。');
-      const binary = data.includes(0);
-      files.push({ path: relative, content: binary ? data.toString('base64') : data.toString('utf8'), encoding: binary ? 'base64' : 'utf-8' });
-    }
-    const packageDigest = createHash('sha256').update(JSON.stringify({ headSha, files })).digest('hex');
-    return { path: workspacePath, files, headSha, packageDigest };
+  async collectChanges(task: Task) {
+    return collectTaskChanges(path.join(this.workspacesRoot, task.id), task);
   }
 }

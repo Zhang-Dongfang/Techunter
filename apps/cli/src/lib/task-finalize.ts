@@ -5,6 +5,7 @@ import type {
   TaskFinalizeStepKind,
   TechunterConfig,
 } from '../types.js';
+import { isCentralTask } from './central-api.js';
 import {
   closeTask,
   createPR,
@@ -66,6 +67,7 @@ export async function executeTaskFinalizePlan(
   issue: GitHubIssue,
   review: string,
 ): Promise<TaskFinalizeExecutionResult> {
+  if (isCentralTask(issue)) throw new Error('中央任务必须通过中央 API 提交和验收。');
   if (plan.mode === 'self-submit') {
     let finalBranch = plan.targetBranch;
 

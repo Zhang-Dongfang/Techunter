@@ -14,7 +14,9 @@ test('review submission reuses an existing PR and still creates one for a first 
     const method = init?.method ?? 'GET';
     calls.push(`${method} ${url.pathname}`);
     let body: unknown;
-    if (method === 'GET' && url.pathname.endsWith('/pulls')) {
+    if (method === 'GET' && url.pathname.endsWith('/issues/1')) {
+      body = { number: 1, title: 'fixture', body: 'fixture', labels: [], user: { login: 'worker' }, created_at: '', updated_at: '' };
+    } else if (method === 'GET' && url.pathname.endsWith('/pulls')) {
       body = existing ? [{ number: 8, html_url: 'https://example.invalid/pull/8', body: 'Closes #1', base: { ref: 'main' }, head: { ref: 'task-1-worker' } }] : [];
     } else if (method === 'GET' && url.pathname.includes('/branches/')) {
       body = { name: 'main', commit: { sha: 'base' } };

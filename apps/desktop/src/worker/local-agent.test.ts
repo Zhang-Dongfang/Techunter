@@ -20,6 +20,35 @@ afterEach(async () => {
 });
 
 describe('LocalAgent', () => {
+  it('round-trips non-UTF-8 bytes and preserves executable modes in delivery packages', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-')); cleanup.push(root);
+    const workspace = path.join(root, 'workspaces', 'fixture'); await fs.mkdir(workspace, { recursive: true });
+    const git = (args: string[]) => exec('git', args, { cwd: workspace });
+    await git(['init', '-b', 'main']);
+    await fs.writeFile(path.join(workspace, 'run.sh'), '#!/bin/sh\necho old\n');
+    await git(['add', '.']); await git(['update-index', '--chmod=+x', 'run.sh']);
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'base']);
+    const task = { id: 'fixture', baseSha: (await git(['rev-parse', 'HEAD'])).stdout.trim(), scope: { editablePaths: ['**'], readonlyPaths: [], deniedPaths: [] } } as unknown as Task;
+    const bytes = Buffer.from('82a082a2', 'hex');
+    await fs.writeFile(path.join(workspace, 'legacy.txt'), bytes);
+    await fs.writeFile(path.join(workspace, 'binary.dat'), Buffer.from([0, 1, 255]));
+    await fs.writeFile(path.join(workspace, 'utf8.txt'), '中文🙂');
+    await fs.writeFile(path.join(workspace, 'run.sh'), '#!/bin/sh\necho changed\n');
+    if (process.platform !== 'win32') await fs.chmod(path.join(workspace, 'run.sh'), 0o755);
+    const agent = new LocalAgent(root);
+    const changes = await agent.collectChanges(task);
+    const legacy = changes.files.find(file => file.path === 'legacy.txt')!;
+    expect(legacy.encoding).toBe('base64'); expect(Buffer.from(legacy.content!, 'base64')).toEqual(bytes);
+    expect(changes.files.find(file => file.path === 'binary.dat')?.encoding).toBe('base64');
+    expect(changes.files.find(file => file.path === 'utf8.txt')).toMatchObject({ encoding: 'utf-8', content: '中文🙂' });
+    expect(changes.files.find(file => file.path === 'run.sh')?.mode).toBe('100755');
+    await git(['update-index', '--chmod=-x', 'run.sh']);
+    if (process.platform !== 'win32') await fs.chmod(path.join(workspace, 'run.sh'), 0o644);
+    const demoted = await agent.collectChanges(task);
+    expect(demoted.files.find(file => file.path === 'run.sh')?.mode).toBe('100644');
+    expect(demoted.packageDigest).not.toBe(changes.packageDigest);
+  });
+
   it('merges accepted child work, rejects stale packages, and preserves conflicting local edits', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-local-agent-')); cleanup.push(root);
     const source = path.join(root, 'source'); await fs.mkdir(source);
@@ -151,7 +180,7 @@ describe('LocalAgent', () => {
     expect(result.setupLog).toContain('ready');
     await fs.writeFile(path.join(result.path, 'src', 'feature.ts'), 'export const enabled = true;\n');
     const changes = await agent.collectChanges(task);
-    expect(changes.files).toEqual([{ path: 'src/feature.ts', content: 'export const enabled = true;\n', encoding: 'utf-8' }]);
+    expect(changes.files).toEqual([{ path: 'src/feature.ts', content: 'export const enabled = true;\n', encoding: 'utf-8', mode: '100644' }]);
     await fs.writeFile(path.join(result.path, 'README.md'), '# changed\n');
     await expect(agent.collectChanges(task)).rejects.toThrow('超出任务 editablePaths');
     const approvedTask = { ...task, scope: expandTaskScope(task.scope!, ['README.md']) };

@@ -5,15 +5,17 @@ import { GitHubService } from './github-service.js';
 
 const project = { githubRepositoryId: 1, repoOwner: 'test', repoName: 'fixture' } as Project;
 const task = { id: 'task', targetBranch: 'main', githubIssueNumber: 12, assignee: { githubLogin: 'worker' },
+  latestSubmission: { reviewedTreeSha: 'reviewed-tree' },
   scope: { revision: 2, editablePaths: ['src/feature.ts', 'README.md'], readonlyPaths: [], deniedPaths: [], visibleTests: [], environment: { setupCommands: [], testCommands: [], networkAllowlist: [] } },
 } as unknown as Task;
 
-function fixture(options: { headChanged?: boolean; outOfScope?: boolean; merged?: boolean; alreadyMerged?: boolean; closed?: boolean; closeFailsOnce?: boolean } = {}) {
+function fixture(options: { treeChanged?: boolean; headChanged?: boolean; outOfScope?: boolean; merged?: boolean; alreadyMerged?: boolean; closed?: boolean; closeFailsOnce?: boolean } = {}) {
   let reads = 0, closes = 0;
   let isMerged = options.alreadyMerged ?? false;
   const merges: Array<Record<string, unknown>> = [];
   const service = new GitHubService();
   const client = {
+    git: { async getCommit() { return { data: { tree: { sha: options.treeChanged ? 'unreviewed-tree' : 'reviewed-tree' } } }; } },
     pulls: {
       async get() { reads += 1; return { data: { state: isMerged || options.closed ? 'closed' : 'open', merged: isMerged, changed_files: 1,
         head: { sha: options.headChanged && reads > 1 ? 'new-head' : 'checked-head', ref: makeTaskBranchName(12, 'worker'), repo: { id: 1 } },
@@ -49,6 +51,18 @@ test('an unmerged PR does not advance issue closure or task settlement', async (
   const value = fixture({ merged: false });
   await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'), /尚未合并/);
   assert.equal(value.closes(), 0);
+});
+
+test('in-scope changes pushed after review cannot merge or lock an acceptance decision', async () => {
+  for (const alreadyMerged of [false, true]) {
+    const value = fixture({ treeChanged: true, alreadyMerged });
+    let locked = false;
+    await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8', undefined,
+      { treeSha: 'reviewed-tree', beforeMerge: async () => { locked = true; } }), /预审后变化/);
+    assert.equal(locked, false);
+    assert.equal(value.merges.length, 0);
+    assert.equal(value.closes(), 0);
+  }
 });
 
 test('retry resumes issue closure after the PR was merged without merging again', async () => {

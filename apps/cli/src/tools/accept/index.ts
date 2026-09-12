@@ -15,6 +15,7 @@ import { getStatus } from '../../lib/display.js';
 import { generateWiki } from '../wiki/wiki-generator.js';
 import { formatCleanupSuggestions } from '../../lib/conflict-advisor.js';
 import { resolveAcceptConflict } from '../../lib/conflict-resolver.js';
+import { acceptCentralTask, isCentralTask } from '../../lib/central-api.js';
 
 function isConflictError(message: string): boolean {
   return message.includes('conflict') || message.includes('mergeable') || message.includes('409');
@@ -129,6 +130,11 @@ export async function run(input: Record<string, unknown>, config: TechunterConfi
     return `Error: ${(err as Error).message}`;
   }
 
+  if (isCentralTask(issue)) {
+    if (!await select({ message: `验收中央任务 #${issueNumber} 并结算贡献点？`, choices: [{ name: '验收', value: true }, { name: '取消', value: false }] })) return 'Cancelled.';
+    const accepted = await acceptCentralTask(config, issue);
+    return `中央任务 #${issueNumber} 已验收并结算。目标分支：${accepted.targetBranch}`;
+  }
   if (issue.author && issue.author !== me2) {
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }
@@ -250,6 +256,10 @@ export async function execute(input: Record<string, unknown>, config: TechunterC
     getTask(config, issueNumber),
   ]);
 
+  if (isCentralTask(issue)) {
+    const accepted = await acceptCentralTask(config, issue);
+    return `中央任务 #${issueNumber} 已验收并结算。目标分支：${accepted.targetBranch}`;
+  }
   if (issue.author && issue.author !== me) {
     return `Permission denied: only the task author (@${issue.author}) can accept task #${issueNumber}.`;
   }

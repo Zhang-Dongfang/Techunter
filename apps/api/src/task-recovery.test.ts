@@ -37,7 +37,7 @@ async function rpc(name: string, args: Record<string, unknown>) {
 async function fixture() {
   const projectId = (await db.query<Row>("insert into techunter.projects(github_repository_id,name,repo_owner,repo_name,clone_url,html_url) values ($1,'fixture','test',$2,'https://example.invalid/repo.git','https://example.invalid/repo') returning id", [++repositoryId, `fixture-${repositoryId}`])).rows[0]!['id'] as string;
   await rpc('allocate_project_points', { p_project_id: projectId, p_amount: 1000 });
-  let modelFailure = false, publishFailure = false, changesFailure = false, settlementFailure = false;
+  let modelFailure = false, publishFailure = false, changesFailure = false, settlementFailure = false, releaseFailure = false;
   let mergeCount = 0, changeCount = 0;
   const merged = new Set<string>();
   const port = {
@@ -47,7 +47,12 @@ async function fixture() {
       catch (error) { return { data: null, error: { message: (error as Error).message } }; }
     },
     from(table: string) {
-      // Only the child check and audit write are needed by these service flows.
+      if (table === 'submissions') {
+        let id: string;
+        const builder = { select() { return builder; }, eq(_column: string, value: string) { id = value; return builder; },
+          async single() { return { data: (await db.query<Row>('select files_json from techunter.submissions where id=$1', [id])).rows[0], error: null }; } };
+        return builder;
+      }
       if (table === 'audit_events') return { async insert(row: Row) {
         await db.query('insert into techunter.audit_events(actor_id,action,entity_type,entity_id,payload_json) values ($1,$2,$3,$4,$5)', [row['actor_id'], row['action'], row['entity_type'], row['entity_id'], JSON.stringify(row['payload_json'])]);
         return { error: null };
@@ -64,23 +69,36 @@ async function fixture() {
   } as unknown as TechunterDatabase;
   const github = {
     async assertSubmissionHead() {},
-    async publishSubmission() { if (publishFailure) throw new Error('GitHub unavailable'); return 'https://example.invalid/pull/1'; },
-    async completeTask(task: Task) { if (!merged.has(task.id)) { merged.add(task.id); mergeCount++; } },
+    async submissionTree(...args: Parameters<GitHubService['submissionTree']>) {
+      assert.ok(args[2].length > 0); assert.ok(args[2].every(file => file.mode === '100644'));
+      return 'c'.repeat(40);
+    },
+    async publishSubmission(...args: Parameters<GitHubService['publishSubmission']>) {
+      if (publishFailure) throw new Error('GitHub unavailable');
+      await args[5]?.recordTree?.('c'.repeat(40));
+      return 'https://example.invalid/pull/1';
+    },
+    async completeTask(...args: Parameters<GitHubService['completeTask']>) {
+      assert.equal(args[4]?.treeSha, 'c'.repeat(40));
+      await args[4]?.beforeMerge();
+      const task = args[0]; if (!merged.has(task.id)) { merged.add(task.id); mergeCount++; }
+    },
     async syncChangesNeeded() { changeCount++; if (changesFailure) throw new Error('GitHub unavailable'); },
+    async syncRelease() { if (releaseFailure) throw new Error('GitHub unavailable'); },
   } as unknown as GitHubService;
   const agent = { async review() { if (modelFailure) throw new Error('model timeout / invalid JSON'); return review; } } as unknown as AgentService;
   class FixtureService extends TaskService {
     override async getProject() { return { id: projectId, repoOwner: 'test', repoName: 'fixture' } as Project; }
     override async getSubmission(id: string) {
       const row = (await db.query<Row>('select * from techunter.submissions where id=$1', [id])).rows[0]!;
-      return { id, taskId: row['task_id'], status: row['status'], author: worker, pullRequestUrl: row['pull_request_url'], review: row['review_json'] } as Submission;
+      return { id, taskId: row['task_id'], status: row['status'], author: worker, pullRequestUrl: row['pull_request_url'], review: row['review_json'], reviewedTreeSha: row['reviewed_tree_sha'] } as Submission;
     }
     override async getTask(id: string) {
       const row = (await db.query<Row>('select * from techunter.tasks where id=$1', [id])).rows[0]!;
       const latest = (await db.query<Row>('select id from techunter.submissions where task_id=$1 order by created_at desc, id desc limit 1', [id])).rows[0];
       return { ...row, id, version: row['lock_version'], projectId, title: row['title'], status: row['status'], baseSha: row['base_sha'], targetBranch: row['target_branch'],
         scope: row['scope_json'], parentTaskId: row['parent_task_id'], rewardPoints: Number(row['reward_points']), publisher: reviewer,
-        assignee: worker, acceptanceCriteria: [], workspace: { status: 'running' }, latestSubmission: latest ? await this.getSubmission(latest['id']) : null } as unknown as Task;
+        assignee: row['assignee_id'] ? worker : null, acceptanceCriteria: [], workspace: { status: 'running' }, latestSubmission: latest ? await this.getSubmission(latest['id']) : null } as unknown as Task;
     }
   }
   const service = new FixtureService(github, agent, () => port);
@@ -97,6 +115,7 @@ async function fixture() {
   return { projectId, service, createTask, submit, accept, reserved,
     setModelFailure: (value: boolean) => { modelFailure = value; }, setPublishFailure: (value: boolean) => { publishFailure = value; },
     setChangesFailure: (value: boolean) => { changesFailure = value; }, setSettlementFailure: (value: boolean) => { settlementFailure = value; },
+    setReleaseFailure: (value: boolean) => { releaseFailure = value; },
     mergeCount: () => mergeCount, changeCount: () => changeCount };
 }
 
@@ -111,6 +130,23 @@ test('model failure leaves no pending submission and delivery can be retried', a
   assert.equal((await value.submit(id)).status, 'approved');
 });
 
+test('failed release keeps the claim reserved and resumes after restart before allowing a new claim', async () => {
+  const value = await fixture(), id = await value.createTask();
+  value.setReleaseFailure(true);
+  await assert.rejects(() => value.service.releaseTask(id, worker), /GitHub unavailable/);
+  assert.equal((await value.service.getTask(id)).status, 'active');
+  await assert.rejects(() => rpc('claim_task', { p_task_id: id, p_user_id: reviewer.id }), /TASK_ALREADY_CLAIMED/);
+  await assert.rejects(() => value.submit(id), /仍在处理|状态或执行者/);
+  const pending = (await db.query<Row>("select * from techunter.task_operations where task_id=$1 and kind='release'", [id])).rows[0]!;
+  assert.equal(pending['completed_at'], null);
+  assert.equal(pending['lease_token'], null);
+  value.setReleaseFailure(false);
+  assert.equal((await value.service.releaseTask(id, worker)).status, 'open');
+  assert.equal((await db.query("select id from techunter.workspaces where task_id=$1 and status<>'stopped'", [id])).rows.length, 0);
+  await rpc('claim_task', { p_task_id: id, p_user_id: reviewer.id });
+  assert.equal((await db.query("select id from techunter.task_operations where task_id=$1 and kind='release'", [id])).rows.length, 1);
+});
+
 test('GitHub failure preserves the package for recovery without another model call', async () => {
   const value = await fixture(), id = await value.createTask();
   value.setPublishFailure(true);
@@ -123,6 +159,14 @@ test('GitHub failure preserves the package for recovery without another model ca
   await value.service.resumeSubmission(task.latestSubmission!.id, worker);
   await assert.rejects(() => rpc('finish_submission', { p_submission_id: task.latestSubmission!.id, p_succeeded: false, p_pull_url: null }), /SUBMISSION_STATE_CONFLICT/);
   assert.equal((await value.service.getTask(id)).status, 'submitted');
+});
+
+test('legacy approved deliveries reconstruct their saved snapshot before acceptance', async () => {
+  const value = await fixture(), id = await value.createTask();
+  const submission = await value.submit(id);
+  await db.query('update techunter.submissions set reviewed_tree_sha=null where id=$1', [submission.id]);
+  assert.equal((await value.service.acceptSubmission(submission.id, reviewer)).status, 'accepted');
+  assert.equal(value.mergeCount(), 1);
 });
 
 test('concurrent delivery attempts create only one active submission', async () => {

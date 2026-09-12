@@ -13,10 +13,12 @@ import {
 import {
   getCurrentBranch,
   getCurrentCommit,
+  getRemoteHeadSha,
   makeTaskBranchName,
   pushBranch,
 } from '../../lib/git.js';
 import { extractBaseCommit } from '../../lib/github.js';
+import { isCentralTask } from '../../lib/central-api.js';
 import { getConfig, setConfig } from '../../lib/config.js';
 import { getStatus, colorStatus, printTaskDetail } from '../../lib/display.js';
 import { launchClaudeCode } from '../../lib/launch.js';
@@ -138,6 +140,7 @@ async function claimAndSwitchTask(
 ): Promise<{ baseCommit: string; notices: string[]; taskBranch: string }> {
   await claimTask(config, issue.number, username);
   const taskBranch = makeTaskBranchName(issue.number, username);
+  if (isCentralTask(issue)) await getRemoteHeadSha(taskBranch);
   const { baseCommit, notices } = await transitionToTaskContext(
     config,
     issue,
@@ -146,7 +149,7 @@ async function claimAndSwitchTask(
     { returnToOriginalBranch: false, restoreStashOnTarget: false },
   );
   try {
-    await pushBranch(taskBranch);
+    if (!isCentralTask(issue)) await pushBranch(taskBranch);
   } catch {
     notices.push(`Could not push ${taskBranch} yet. It will be pushed on submit.`);
   }

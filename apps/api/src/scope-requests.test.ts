@@ -148,6 +148,7 @@ test('withdrawal, release, submission, reassignment and scope edits make old req
 
 test('children cannot acquire parent readonly files; parent changes invalidate the API validation snapshot', async () => {
   const parentId = await createTask();
+  await db.query('update techunter.tasks set assignee_id=$1 where id=$2', [publisher.id, parentId]);
   const childId = await createTask(parentId);
   await assert.rejects(() => service.create(childId, worker, input()), /父任务/);
   const expandedParent = { ...scope, revision: 2, editablePaths: [...scope.editablePaths, 'README.md', 'src/new.ts'] };

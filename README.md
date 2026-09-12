@@ -71,6 +71,14 @@ tch
 
 ## Workflow
 
+### Central tasks shared with Desktop
+
+For tasks published by Desktop, run `tch config`, set **Central API** to your Techunter API HTTPS origin, and sign in with **Conexus**. Alternatively set `TECHUNTER_API_URL`. Connect the same GitHub account in Desktop and the CLI. If you customize the CLI's Conexus audience, set the API's `TECHUNTER_CLI_AUDIENCE` to the same origin.
+
+The CLI recognizes the central task ID in the Issue and sends claims, submissions, acceptance, changes requests, and cancellation through the API. Submissions package only changes allowed by the task scope, preserve file bytes and executable modes, and use central review and settlement. Switch to the task branch before submitting; provide actual test output when prompted or via the MCP tool's `test_output`. A pending submission can be resumed by submitting the task again. API errors stop the operation; they do not fall back to GitHub writes. Create central subtasks and manage their scope in Desktop.
+
+Independent GitHub tasks retain the original workflow. Concurrent claims use an atomic `techunter-claims/issue-<number>` Git ref; the same owner can retry an interrupted claim. Closing the task cleans up this ref. All participating CLI clients must be updated; direct GitHub edits and older CLI versions do not honor the claim lock or central settlement rules.
+
 ### 1. Create a task
 
 ```

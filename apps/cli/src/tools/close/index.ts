@@ -6,6 +6,7 @@ import { listTasks, closeTask, getTask, getAuthenticatedUser } from '../../lib/g
 import { getConfig, setConfig } from '../../lib/config.js';
 import { getStatus } from '../../lib/display.js';
 import { svnUnlock } from '../../lib/svn.js';
+import { isCentralTask } from '../../lib/central-api.js';
 
 async function unlockSvnAssets(assetVcs: AssetVcsConfig, interactive: boolean): Promise<void> {
   const spinner = interactive ? ora('Unlocking SVN assets...').start() : undefined;
@@ -34,6 +35,7 @@ function clearActiveTaskIfMatches(issueNumber: number): void {
 }
 
 function getCloseError(issue: Awaited<ReturnType<typeof getTask>>, username: string): string | null {
+  if (isCentralTask(issue)) return null; // The API authorizes and refunds central cancellations.
   const status = getStatus(issue);
   if (status === 'in-review') {
     return `Task #${issue.number} is in review. Use /accept or /reject instead of /close.`;

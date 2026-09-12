@@ -17,6 +17,7 @@ function fixture() {
     git: {
       getRef: async () => ({ data: { object: { sha: head } } }),
       getCommit: async ({ commit_sha }: { commit_sha: string }) => ({ data: commits.get(commit_sha) }),
+      getTree: async () => ({ data: { tree: Object.keys(base).map(path => ({ path, mode: '100644' })) } }),
       createBlob: async ({ content }: { content: string }) => { const sha = createHash('sha256').update(content).digest('hex'); blobs.set(sha, content); return { data: { sha } }; },
       createTree: async ({ base_tree, tree }: { base_tree: string; tree: Array<{ path: string; sha: string | null }> }) => {
         const value = { ...trees.get(base_tree) };

@@ -52,6 +52,7 @@ export async function configCommand(): Promise<void> {
   const field = await select({
     message: 'Which setting to change?',
     choices: [
+      { name: `Central API          ${chalk.dim(config.centralApiUrl ?? process.env['TECHUNTER_API_URL'] ?? '(not configured)')}`, value: 'centralApiUrl' },
       { name: `GitHub repo          ${chalk.dim(`${config.github.owner}/${config.github.repo}`)}`, value: 'repo' },
       { name: `Base branch          ${chalk.dim(currentBaseBranch)}`, value: 'baseBranch' },
       { name: `AI access mode       ${chalk.dim(currentAccessMode)}`, value: 'aiAccessMode' },
@@ -67,7 +68,12 @@ export async function configCommand(): Promise<void> {
 
   if (field === 'cancel') return;
 
-  if (field === 'aiAccessMode') {
+  if (field === 'centralApiUrl') {
+    const value = await input({ message: 'Techunter central API URL:', default: config.centralApiUrl ?? process.env['TECHUNTER_API_URL'] });
+    const { centralApiOrigin } = await import('../lib/central-api.js');
+    setConfig({ centralApiUrl: centralApiOrigin({ ...config, centralApiUrl: value }) });
+    console.log(chalk.green('\nCentral API saved.\n'));
+  } else if (field === 'aiAccessMode') {
     const value = await select<'conexus' | 'direct'>({
       message: 'AI access mode:',
       choices: [

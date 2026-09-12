@@ -348,8 +348,31 @@ export class GitHubService {
     if (!headSha || headSha !== current) throw httpError('远程任务分支已有新成果，请先同步工作环境、处理冲突后重新提交。', 409, 'WORKSPACE_BEHIND');
   }
 
+  async submissionTree(task: Task, project: Project, files: PackageFile[], userCredential?: string): Promise<string> {
+    return this.createSubmissionTree(await this.client(userCredential), task, project, files);
+  }
+
+  private async createSubmissionTree(octokit: Octokit, task: Task, project: Project, files: PackageFile[]): Promise<string> {
+    const location = { owner: project.repoOwner, repo: project.repoName };
+    const baseCommit = await octokit.git.getCommit({ ...location, commit_sha: task.baseSha });
+    const modes = new Map<string, string>();
+    if (files.some(file => file.content !== null && file.mode === undefined)) {
+      const baseTree = await octokit.git.getTree({ ...location, tree_sha: baseCommit.data.tree.sha, recursive: 'true' });
+      if (baseTree.data.truncated) throw httpError('仓库目录树不完整，请更新客户端以提交明确的文件模式。', 409);
+      for (const entry of baseTree.data.tree) if (entry.path && entry.mode) modes.set(entry.path, entry.mode);
+    }
+    const tree = await Promise.all(files.map(async file => {
+      if (file.content === null) return { path: file.path, mode: '100644' as const, type: 'blob' as const, sha: null };
+      const mode = file.mode ?? modes.get(file.path) ?? '100644';
+      if (mode !== '100644' && mode !== '100755') throw httpError('不支持提交该 Git 文件类型：' + file.path, 400);
+      const blob = await octokit.git.createBlob({ ...location, content: file.content, encoding: file.encoding === 'base64' ? 'base64' : 'utf-8' });
+      return { path: file.path, mode: mode as '100644' | '100755', type: 'blob' as const, sha: blob.data.sha };
+    }));
+    return (await octokit.git.createTree({ ...location, base_tree: baseCommit.data.tree.sha, tree })).data.sha;
+  }
+
   async publishSubmission(task: Task, project: Project, files: PackageFile[], review: DeliveryReview, userCredential?: string,
-    operation?: { id: string; headSha: string; checkpoint(): Promise<void> }): Promise<string | null> {
+    operation?: { id: string; headSha: string; checkpoint(): Promise<void>; recordTree?(treeSha: string): Promise<void> }): Promise<string | null> {
     if (files.length === 0) return null;
     const octokit = await this.client(userCredential);
     const baseBranch = task.targetBranch || project.sourceBranch || project.defaultBranch;
@@ -365,29 +388,19 @@ export class GitHubService {
     }
     // The package is a complete diff against the frozen task base, not against the
     // last submitted tree. Keep commit ancestry, but rebuild the submitted snapshot.
-    const baseCommit = await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: task.baseSha });
-    const treeItems = await Promise.all(files.map(async (file) => {
-      if (file.content === null) return { path: file.path, mode: '100644' as const, type: 'blob' as const, sha: null };
-      const blob = await octokit.git.createBlob({
-        owner: project.repoOwner,
-        repo: project.repoName,
-        content: file.content,
-        encoding: file.encoding === 'base64' ? 'base64' : 'utf-8',
-      });
-      return { path: file.path, mode: '100644' as const, type: 'blob' as const, sha: blob.data.sha };
-    }));
-    const tree = await octokit.git.createTree({ owner: project.repoOwner, repo: project.repoName, base_tree: baseCommit.data.tree.sha, tree: treeItems });
+    const treeSha = await this.createSubmissionTree(octokit, task, project, files);
+    await operation?.recordTree?.(treeSha);
     const currentCommit = operation ? (await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: workingSha })).data : null;
     // A lost response after pushing is recovered by comparing the full tree.
     // Otherwise only replace the head the submitting workspace actually synced.
-    const alreadyPushed = currentCommit?.tree.sha === tree.data.sha;
+    const alreadyPushed = currentCommit?.tree.sha === treeSha;
     if (!alreadyPushed) {
       if (operation && workingSha !== operation.headSha) throw httpError('远程任务分支已变化，请同步工作环境后重新交付。', 409, 'WORKSPACE_BEHIND');
       await operation?.checkpoint();
       const commit = await octokit.git.createCommit({
         owner: project.repoOwner, repo: project.repoName,
         message: `complete: ${task.title}${operation ? `\n\nTechunter-Submission: ${operation.id}` : ''}`,
-        tree: tree.data.sha, parents: [workingSha],
+        tree: treeSha, parents: [workingSha],
       });
       await operation?.checkpoint();
       if (branchExists) await octokit.git.updateRef({ owner: project.repoOwner, repo: project.repoName, ref: `heads/${branch}`, sha: commit.data.sha, force: false });
@@ -435,7 +448,7 @@ export class GitHubService {
     return url ?? null;
   }
 
-  async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string): Promise<void> {
+  async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string, reviewed?: { treeSha: string; beforeMerge(): Promise<void> }): Promise<void> {
     const octokit = await this.client(userCredential);
     const match = pullRequestUrl?.match(/\/pull\/(\d+)/);
     if (!match || !task.scope) throw httpError('任务缺少可校验的 PR 或文件范围。', 409);
@@ -446,11 +459,16 @@ export class GitHubService {
     if ((pull.state !== 'open' && !pull.merged) || pull.base.ref !== task.targetBranch || pull.head.ref !== expectedBranch || pull.head.repo?.id !== project.githubRepositoryId) {
       throw httpError('PR 状态、目标分支或来源仓库与任务不一致。', 409, 'PULL_SCOPE_INVALID');
     }
+    const expectedTree = reviewed?.treeSha ?? task.latestSubmission?.reviewedTreeSha;
+    if (!expectedTree) throw httpError('提交缺少已审核的代码快照，请重新交付。', 409, 'PULL_REVIEW_MISSING');
+    const commit = await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: pull.head.sha });
+    if (commit.data.tree.sha !== expectedTree) throw httpError('PR 代码已在预审后变化，请要求重新交付并审核。', 409, 'PULL_REVIEW_OUTDATED');
     const files = await octokit.paginate(octokit.pulls.listFiles, { ...location, per_page: 100 });
     assertPullFilesInScope(files, pull.changed_files, task.scope);
     // Reject concurrent pushes during pagination and pin the merge to the checked head.
     const latest = (await octokit.pulls.get(location)).data;
     if (latest.head.sha !== pull.head.sha || latest.base.sha !== pull.base.sha || latest.base.ref !== pull.base.ref) throw httpError('PR 在范围校验期间发生变化，请重新验收。', 409);
+    await reviewed?.beforeMerge();
     if (!latest.merged) {
       const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
       if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409);

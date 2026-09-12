@@ -11,6 +11,12 @@ Add `techunter` to **Project Settings → API → Exposed schemas**. The migrati
 
 Do not put `SUPABASE_SERVICE_ROLE_KEY` in the desktop or Web environment.
 
+The latest system integrity fixes require `migrations/202609120003_system_integrity.sql` after all earlier migrations. Stop old API task writes, apply the migration, replace API processes, and update Desktop and CLI. This migration enforces parent-assignee/admin authorization for child creation and publication, makes project imports and Conexus user initialization atomic, and invalidates workspaces from previous claims without removing local files.
+
+Release now keeps a durable operation and the current claim until GitHub synchronization succeeds. Retry **释放任务** after a failed request (or `POST /api/tasks/:id/release`); a crashed process's lease expires within 90 seconds. Delivery packages preserve bytes and Git executable modes. New submissions persist the reviewed Git tree, and acceptance rejects any PR whose tree changed after review, even when the new edits remain in scope. Ask for changes and submit again to review a new snapshot. Approved submissions predating this migration are checked by reconstructing their saved package using the previous publisher's file-mode rules; they cannot bypass snapshot verification.
+
+The CLI's Central API origin must be configured explicitly; Conexus login and a matching GitHub connection are required. Independent GitHub Issues remain supported using atomic claim refs. Webhooks remain an audit feed: direct Issue/PR edits and old CLI clients do not perform central settlement. Upgrade every participating client and use the API-backed workflow for central tasks.
+
 The scope reconsideration feature requires `migrations/202609080001_scope_requests.sql` before deploying the updated API. It adds service-only request history, atomic approval/withdrawal functions, and invalidation on task lifecycle changes. See [the feature design](../../docs/scope-reconsideration.md) for the GitHub transport boundary and API contract.
 
 The submission recovery fixes require `migrations/202609120001_submission_recovery.sql` **before deploying the updated API**. The migration adds atomic submission/review transitions and calculates task payouts and cancellation refunds from actual descendant ledger payments at every task depth. It preserves existing ledger entries; it does not retroactively debit users who were overpaid by an older version.

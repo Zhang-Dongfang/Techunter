@@ -3,6 +3,7 @@ import { Bot, ChevronDown, ChevronUp, Loader2, Send, Sparkles, Trash2, XCircle }
 
 import type { AgentActivity, AgentChatMessage } from '@techunter/core';
 import { api } from './api';
+import { chatHistory } from './chat-history';
 
 interface DisplayMessage extends AgentChatMessage {
   id: string;
@@ -52,7 +53,7 @@ export function AgentDock({
   async function send(message = input) {
     const text = message.trim();
     if (!configured || busy || !text) return;
-    const history = messages.filter((item) => !item.error).map(({ role, content }) => ({ role, content }));
+    const history = chatHistory(messages);
     const userMessage: DisplayMessage = { id: nextId(), role: 'user', content: text };
     setMessages((current) => [...current, userMessage]);
     setInput('');
