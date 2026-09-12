@@ -8,20 +8,21 @@ const task = { id: 'task', targetBranch: 'main', githubIssueNumber: 12, assignee
   scope: { revision: 2, editablePaths: ['src/feature.ts', 'README.md'], readonlyPaths: [], deniedPaths: [], visibleTests: [], environment: { setupCommands: [], testCommands: [], networkAllowlist: [] } },
 } as unknown as Task;
 
-function fixture(options: { headChanged?: boolean; outOfScope?: boolean; merged?: boolean } = {}) {
+function fixture(options: { headChanged?: boolean; outOfScope?: boolean; merged?: boolean; alreadyMerged?: boolean; closed?: boolean; closeFailsOnce?: boolean } = {}) {
   let reads = 0, closes = 0;
+  let isMerged = options.alreadyMerged ?? false;
   const merges: Array<Record<string, unknown>> = [];
   const service = new GitHubService();
   const client = {
     pulls: {
-      async get() { reads += 1; return { data: { state: 'open', changed_files: 1,
+      async get() { reads += 1; return { data: { state: isMerged || options.closed ? 'closed' : 'open', merged: isMerged, changed_files: 1,
         head: { sha: options.headChanged && reads > 1 ? 'new-head' : 'checked-head', ref: makeTaskBranchName(12, 'worker'), repo: { id: 1 } },
         base: { sha: 'base-sha', ref: 'main' },
       } }; },
       listFiles: () => undefined,
-      async merge(input: Record<string, unknown>) { merges.push(input); return { data: { merged: options.merged ?? true } }; },
+      async merge(input: Record<string, unknown>) { merges.push(input); isMerged = options.merged ?? true; return { data: { merged: isMerged } }; },
     },
-    issues: { async update() { closes += 1; } },
+    issues: { async update() { closes += 1; if (options.closeFailsOnce && closes === 1) throw new Error('Issue temporarily unavailable'); } },
     async paginate() { return [{ filename: options.outOfScope ? 'src/private.ts' : 'README.md' }]; },
   };
   Object.defineProperty(service, 'client', { value: async () => client });
@@ -48,4 +49,21 @@ test('an unmerged PR does not advance issue closure or task settlement', async (
   const value = fixture({ merged: false });
   await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'), /尚未合并/);
   assert.equal(value.closes(), 0);
+});
+
+test('retry resumes issue closure after the PR was merged without merging again', async () => {
+  const value = fixture({ closeFailsOnce: true });
+  await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'), /temporarily unavailable/);
+  await value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8');
+  assert.equal(value.merges.length, 1);
+  assert.equal(value.closes(), 2);
+});
+
+test('merged retries still enforce scope and closed unmerged PRs remain rejected', async () => {
+  for (const options of [{ closed: true }, { alreadyMerged: true, outOfScope: true }]) {
+    const value = fixture(options);
+    await assert.rejects(() => value.service.completeTask(task, project, 'https://github.com/test/fixture/pull/8'));
+    assert.equal(value.merges.length, 0);
+    assert.equal(value.closes(), 0);
+  }
 });

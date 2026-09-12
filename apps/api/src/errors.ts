@@ -8,6 +8,12 @@ export function httpError(message: string, statusCode: number, code?: string): E
 export function translateDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const known: Record<string, [number, string]> = {
+    TASK_NOT_SUBMITTABLE: [409, '任务状态或执行者已变化，请刷新后重新提交。'],
+    WORKSPACE_NOT_READY: [409, '本机工作环境尚未准备完成。'],
+    SUBMISSION_STATE_CONFLICT: [409, '提交状态已变化，请刷新任务后重试。'],
+    SUBMISSION_NOT_APPROVED: [409, '提交尚未通过预审。'],
+    TASK_NOT_SUBMITTED: [409, '任务当前不在待验收状态。'],
+    REVIEW_ACTION_CONFLICT: [409, '该提交已有审核操作正在处理，请重试原来的操作。'],
     SCOPE_TASK_NOT_ACTIVE: [409, '任务状态或接取者已变化，请刷新任务。'],
     SCOPE_REVISION_CONFLICT: [409, '文件范围已更新，请刷新后基于最新范围重新申请。'],
     SCOPE_PARENT_UNAVAILABLE: [409, '父任务缺少有效范围，请先处理父任务权限。'],
@@ -19,7 +25,7 @@ export function translateDatabaseError(error: unknown): never {
     SCOPE_DECISION_INVALID: [400, '审批须说明原因，且只能批准本次申请中的文件。'],
     TASK_ALREADY_CLAIMED: [409, '任务刚刚被其他成员认领。'],
     TASK_NOT_RELEASABLE: [409, '任务当前不能释放。'],
-    OPEN_CHILD_TASKS: [409, '存在未完成子任务，不能释放父任务。'],
+    OPEN_CHILD_TASKS: [409, '存在未完成子任务，请先完成或取消子任务。'],
     INSUFFICIENT_POINTS: [400, '项目可用贡献点不足。'],
     PARENT_BUDGET_EXCEEDED: [400, '子任务预算超过父任务剩余预算。'],
     SELF_REVIEW_FORBIDDEN: [403, '执行者不能验收自己的任务。'],

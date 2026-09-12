@@ -313,7 +313,9 @@ export class GitHubService {
       branchExists = false;
       workingSha = task.baseSha;
     }
-    const baseCommit = await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: workingSha });
+    // The package is a complete diff against the frozen task base, not against the
+    // last submitted tree. Keep commit ancestry, but rebuild the submitted snapshot.
+    const baseCommit = await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: task.baseSha });
     const treeItems = await Promise.all(files.map(async (file) => {
       if (file.content === null) return { path: file.path, mode: '100644' as const, type: 'blob' as const, sha: null };
       const blob = await octokit.git.createBlob({
@@ -371,7 +373,7 @@ export class GitHubService {
     const pull = (await octokit.pulls.get(location)).data;
     const expectedBranch = task.githubIssueNumber && task.assignee?.githubLogin
       ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`;
-    if (pull.state !== 'open' || pull.base.ref !== task.targetBranch || pull.head.ref !== expectedBranch || pull.head.repo?.id !== project.githubRepositoryId) {
+    if ((pull.state !== 'open' && !pull.merged) || pull.base.ref !== task.targetBranch || pull.head.ref !== expectedBranch || pull.head.repo?.id !== project.githubRepositoryId) {
       throw httpError('PR 状态、目标分支或来源仓库与任务不一致。', 409, 'PULL_SCOPE_INVALID');
     }
     const files = await octokit.paginate(octokit.pulls.listFiles, { ...location, per_page: 100 });
@@ -379,8 +381,10 @@ export class GitHubService {
     // Reject concurrent pushes during pagination and pin the merge to the checked head.
     const latest = (await octokit.pulls.get(location)).data;
     if (latest.head.sha !== pull.head.sha || latest.base.sha !== pull.base.sha || latest.base.ref !== pull.base.ref) throw httpError('PR 在范围校验期间发生变化，请重新验收。', 409);
-    const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
-    if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409);
+    if (!latest.merged) {
+      const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
+      if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409);
+    }
     if (task.githubIssueNumber) await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, state: 'closed', labels: [] });
   }
 

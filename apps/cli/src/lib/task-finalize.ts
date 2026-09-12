@@ -136,7 +136,7 @@ export async function executeTaskFinalizePlan(
     }
   }
 
-  if (hasStep(plan, 'ensure_target_branch')) {
+  if (!existingPR && hasStep(plan, 'ensure_target_branch')) {
     try {
       await ensureRemoteBranch(config, plan.targetBranch, plan.baseBranch);
     } catch (err) {
@@ -150,7 +150,7 @@ export async function executeTaskFinalizePlan(
     }
   }
 
-  if (hasStep(plan, 'create_pr')) {
+  if (!existingPR && hasStep(plan, 'create_pr')) {
     const prBody = [
       `Closes #${issue.number}`,
       issue.body ? `\n${issue.body}` : '',

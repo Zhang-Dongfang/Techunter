@@ -10,35 +10,75 @@ import type { LocalProjectSyncResult, LocalWorkspaceResult } from '../shared/des
 
 const execFileAsync = promisify(execFile);
 
-function gitEnvironment(project: Project, accessToken?: string): NodeJS.ProcessEnv {
+export function gitEnvironment(project: Project, accessToken?: string): NodeJS.ProcessEnv {
   const token = accessToken?.trim() || readLocalTechunterConfig().config?.githubToken?.trim();
   if (!token || project.visibility === 'public') return process.env;
   return {
     ...process.env,
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
     GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
+    GIT_CONFIG_KEY_1: 'http.followRedirects',
+    GIT_CONFIG_VALUE_1: 'false',
   };
 }
 
 function safeRemote(value: string): string {
+  if (path.isAbsolute(value)) return value;
   try {
     const url = new URL(value.trim());
-    url.username = '';
-    url.password = '';
+    if (url.protocol === 'https:' || url.protocol === 'http:') {
+      url.username = '';
+      url.password = '';
+    }
     return url.toString().replace(/\/$/, '');
   } catch {
     return value.trim();
   }
 }
 
-function remoteMatchesProject(remote: string, project: Project): boolean {
-  const normalize = (value: string) => safeRemote(value).replaceAll('\\', '/').replace(/\/$/, '').replace(/\.git$/i, '').toLowerCase();
-  const actual = normalize(remote);
-  const expected = normalize(project.cloneUrl);
-  if (actual === expected) return true;
-  const githubPath = `${project.repoOwner}/${project.repoName}`.toLowerCase();
-  return actual.endsWith(`/${githubPath}`) || actual.endsWith(`:${githubPath}`);
+export function remoteMatchesProject(remote: string, project: Project): boolean {
+  // Local repositories are useful for offline fixtures; never compare only a URL suffix.
+  if (path.isAbsolute(project.cloneUrl) && path.isAbsolute(remote)) {
+    const normalize = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+    return normalize(remote) === normalize(project.cloneUrl);
+  }
+  const githubPath = (value: string): string | null => {
+    const scp = /^git@github\.com:([^?#]+)$/i.exec(value);
+    if (scp) return scp[1]!.replace(/\.git$/i, '').toLowerCase();
+    try {
+      const url = new URL(value);
+      if (url.hostname !== 'github.com' || url.port || url.search || url.hash ||
+        !['https:', 'ssh:'].includes(url.protocol)) return null;
+      if (url.protocol === 'ssh:' && url.username !== 'git') return null;
+      return url.pathname.replace(/^\//, '').replace(/\/$/, '').replace(/\.git$/i, '').toLowerCase();
+    } catch { return null; }
+  };
+  const expected = `${project.repoOwner}/${project.repoName}`.toLowerCase();
+  return githubPath(project.cloneUrl) === expected && githubPath(remote) === expected;
+}
+
+async function readWorkspaceFile(root: string, relative: string): Promise<Buffer | null> {
+  let current = root;
+  // Reject aliases even when they point inside the workspace: they can bypass deniedPaths.
+  for (const component of relative.split('/')) {
+    current = path.join(current, component);
+    let stat;
+    try { stat = await fsp.lstat(current); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) throw new Error(`提交文件不能经过符号链接或目录链接：${relative}`);
+  }
+  const real = await fsp.realpath(current);
+  const resolved = path.relative(root, real);
+  if (resolved.startsWith('..') || path.isAbsolute(resolved)) throw new Error(`文件越出工作区：${relative}`);
+  const file = await fsp.open(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!(await file.stat()).isFile()) throw new Error(`提交路径不是普通文件：${relative}`);
+    return await file.readFile();
+  } finally { await file.close(); }
 }
 
 type ProjectLocations = { version: 1; projects: Record<string, string> };
@@ -108,6 +148,7 @@ export class LocalAgent {
   async syncProject(project: Project, parentDirectory: string, accessToken?: string): Promise<LocalProjectSyncResult> {
     if (!path.isAbsolute(parentDirectory)) throw new Error('项目存放目录必须是绝对路径。');
     if (!/^[A-Za-z0-9_.-]+$/.test(project.repoName)) throw new Error('GitHub 仓库名称不能作为本地目录。');
+    if (!remoteMatchesProject(project.cloneUrl, project)) throw new Error('项目的 GitHub clone 地址无效。');
     const parentPath = path.resolve(parentDirectory);
     await fsp.mkdir(parentPath, { recursive: true });
     const repositoryPath = path.join(parentPath, project.repoName);
@@ -120,7 +161,7 @@ export class LocalAgent {
       if (fs.existsSync(repositoryPath) && (await fsp.readdir(repositoryPath)).length > 0) {
         throw new Error(`目标目录已存在且不是 Git 仓库：${repositoryPath}`);
       }
-      await execFileAsync('git', ['clone', '--filter=blob:none', project.cloneUrl, repositoryPath], {
+      await execFileAsync('git', ['clone', '--filter=blob:none', safeRemote(project.cloneUrl), repositoryPath], {
         env: gitEnvironment(project, accessToken),
         timeout: 15 * 60_000,
         windowsHide: true,
@@ -199,6 +240,7 @@ export class LocalAgent {
   private async assertProjectRemote(repositoryPath: string, project: Project): Promise<void> {
     const remote = (await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: repositoryPath, timeout: 10_000 })).stdout.trim();
     if (!remoteMatchesProject(remote, project)) throw new Error(`本地目录的 GitHub remote 不匹配：${safeRemote(remote)}`);
+    if (safeRemote(remote) !== remote) await execFileAsync('git', ['remote', 'set-url', 'origin', safeRemote(remote)], { cwd: repositoryPath, timeout: 10_000 });
   }
 
   private async fetchProject(repositoryPath: string, project: Project, accessToken: string | undefined, updateWorkingTree: boolean): Promise<'updated' | 'fetched'> {
@@ -233,6 +275,8 @@ export class LocalAgent {
     if (!task.scope) throw new Error('任务缺少文件范围。');
     const workspacePath = path.join(this.workspacesRoot, task.id);
     if (!fs.existsSync(workspacePath)) throw new Error('本机没有这个任务的工作环境。');
+    if ((await fsp.lstat(workspacePath)).isSymbolicLink()) throw new Error('任务工作区不能是目录链接。');
+    const workspaceRealPath = await fsp.realpath(workspacePath);
     const base = task.baseSha || 'HEAD';
     const [tracked, untracked] = await Promise.all([
       execFileAsync('git', ['diff', '--no-renames', '--name-only', '-z', base, '--'], { cwd: workspacePath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
@@ -251,12 +295,8 @@ export class LocalAgent {
     for (const relative of changed) {
       const absolute = path.resolve(workspacePath, relative);
       if (!absolute.startsWith(`${path.resolve(workspacePath)}${path.sep}`)) throw new Error(`文件越出工作区：${relative}`);
-      let data: Buffer;
-      try { data = await fsp.readFile(absolute); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') { files.push({ path: relative, content: null, encoding: 'utf-8' }); continue; }
-        throw error;
-      }
+      const data = await readWorkspaceFile(workspaceRealPath, relative);
+      if (data === null) { files.push({ path: relative, content: null, encoding: 'utf-8' }); continue; }
       totalBytes += data.length;
       if (data.length > 2 * 1024 * 1024 || totalBytes > 15 * 1024 * 1024) throw new Error('提交文件超过大小限制。');
       const binary = data.includes(0);

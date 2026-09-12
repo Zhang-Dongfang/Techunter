@@ -17,7 +17,7 @@ import {
 } from '@techunter/core';
 import { AgentService } from './agent-service.js';
 import { config } from './config.js';
-import { database, dataOrThrow } from './database.js';
+import { database, dataOrThrow, type TechunterDatabase } from './database.js';
 import { httpError, translateDatabaseError } from './errors.js';
 import { GitHubService } from './github-service.js';
 import { resolveTaskVersion } from './task-version.js';
@@ -55,10 +55,11 @@ export class TaskService {
   constructor(
     private readonly github: GitHubService,
     private readonly agent: AgentService,
+    private readonly db: () => TechunterDatabase = database,
   ) {}
 
   async projects(): Promise<Project[]> {
-    const rows = dataOrThrow(await database().from('projects').select('*').order('name')) as Row[];
+    const rows = dataOrThrow(await this.db().from('projects').select('*').order('name')) as Row[];
     return Promise.all(rows.map((row) => this.projectFromRow(row)));
   }
 
@@ -78,14 +79,14 @@ export class TaskService {
       head_sha: repository.headSha,
       imported_by: actor.id,
     };
-    const existing = await database().from('projects').select('id').eq('github_repository_id', repository.githubRepositoryId).maybeSingle();
+    const existing = await this.db().from('projects').select('id').eq('github_repository_id', repository.githubRepositoryId).maybeSingle();
     if (existing.error) throw new Error(existing.error.message);
     let row: Row;
     if (existing.data) {
-      row = dataOrThrow(await database().from('projects').update(payload).eq('id', existing.data.id).select('*').single()) as Row;
+      row = dataOrThrow(await this.db().from('projects').update(payload).eq('id', existing.data.id).select('*').single()) as Row;
     } else {
-      row = dataOrThrow(await database().from('projects').insert(payload).select('*').single()) as Row;
-      const allocation = await database().rpc('allocate_project_points', {
+      row = dataOrThrow(await this.db().from('projects').insert(payload).select('*').single()) as Row;
+      const allocation = await this.db().rpc('allocate_project_points', {
         p_project_id: row['id'],
         p_amount: config().initialProjectPoints,
       });
@@ -98,7 +99,7 @@ export class TaskService {
   async syncProject(projectId: string, actor: User, githubCredential: string): Promise<Project> {
     const current = await this.getProject(projectId);
     const repository = await this.github.repository(current.githubRepositoryId, githubCredential, current.sourceBranch);
-    const update = await database().from('projects').update({
+    const update = await this.db().from('projects').update({
       name: repository.name,
       description: repository.description,
       repo_owner: repository.owner,
@@ -128,7 +129,7 @@ export class TaskService {
     const branch = sourceBranch.trim();
     const repository = await this.github.repository(current.githubRepositoryId, githubCredential, branch);
     if (!repository.permissions.pull) throw httpError('当前 GitHub 账号没有读取该仓库的权限。', 403);
-    const update = await database().from('projects').update({
+    const update = await this.db().from('projects').update({
       name: repository.name,
       description: repository.description,
       repo_owner: repository.owner,
@@ -166,13 +167,13 @@ export class TaskService {
       this.projects(),
       this.listTasks(),
       this.balance('user', me.id),
-      database().from('submissions').select('task_id').eq('status', 'approved'),
+      this.db().from('submissions').select('task_id').eq('status', 'approved'),
     ]);
     if (reviewSubmissions.error) throw new Error(reviewSubmissions.error.message);
     const reviewIds = [...new Set((reviewSubmissions.data ?? []).map((row: Row) => String(row['task_id'])))];
     let reviewCount = 0;
     if (reviewIds.length) {
-      const reviewTasks = await database().from('tasks').select('id').in('id', reviewIds).eq('status', 'submitted').neq('assignee_id', me.id);
+      const reviewTasks = await this.db().from('tasks').select('id').in('id', reviewIds).eq('status', 'submitted').neq('assignee_id', me.id);
       if (reviewTasks.error) throw new Error(reviewTasks.error.message);
       reviewCount = reviewTasks.data.length;
     }
@@ -182,14 +183,14 @@ export class TaskService {
   }
 
   async listTasks(filters: { status?: string; assigneeId?: string; search?: string } = {}): Promise<TaskSummary[]> {
-    let query = database().from('tasks').select('*').order('updated_at', { ascending: false });
+    let query = this.db().from('tasks').select('*').order('updated_at', { ascending: false });
     if (filters.status && filters.status !== 'all') query = query.eq('status', filters.status);
     else query = query.neq('status', 'cancelled');
     if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
     if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
     const rows = dataOrThrow(await query) as Row[];
     const summaries = await Promise.all(rows.map((row) => this.summaryFromRow(row)));
-    const pending = dataOrThrow(await database().from('scope_requests').select('task_id').eq('status', 'pending')) as Row[];
+    const pending = dataOrThrow(await this.db().from('scope_requests').select('task_id').eq('status', 'pending')) as Row[];
     const pendingIds = new Set(pending.map((row) => String(row['task_id'])));
     for (const task of summaries) task.pendingScopeRequestCount = pendingIds.has(task.id) ? 1 : 0;
     const order: Record<string, number> = { active: 0, open: 1, submitted: 2 };
@@ -203,9 +204,9 @@ export class TaskService {
       this.getUser(String(row['publisher_id'])),
       row['assignee_id'] ? this.getUser(String(row['assignee_id'])) : Promise.resolve(null),
       row['reviewer_id'] ? this.getUser(String(row['reviewer_id'])) : Promise.resolve(null),
-      database().from('workspaces').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-      database().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-      database().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
+      this.db().from('workspaces').select('*').eq('task_id', id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      this.db().from('submissions').select('*').eq('task_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(),
+      this.db().from('tasks').select('*').eq('parent_task_id', id).order('created_at'),
     ]);
     if (workspaceResult.error) throw new Error(workspaceResult.error.message);
     if (submissionResult.error) throw new Error(submissionResult.error.message);
@@ -265,7 +266,7 @@ export class TaskService {
       if (branch.name !== parentBranch) throw new Error('母任务分支解析不一致。');
       return branch.headSha;
     });
-    const row = dataOrThrow(await database().from('tasks').insert({
+    const row = dataOrThrow(await this.db().from('tasks').insert({
       project_id: project.id,
       parent_task_id: parent?.id ?? null,
       root_task_id: parent ? (parent.rootTaskId ?? parent.id) : null,
@@ -298,7 +299,7 @@ export class TaskService {
       modelCredential: authorization?.credential,
       modelAudience: authorization?.audience,
     });
-    const update = await database().from('tasks').update({
+    const update = await this.db().from('tasks').update({
       summary: analysis.summary,
       acceptance_json: analysis.acceptanceCriteria,
       scope_json: analysis.scope,
@@ -316,7 +317,7 @@ export class TaskService {
     const reward = rewardPoints ?? task.analysis?.suggestedPoints ?? task.rewardPoints;
     const project = await this.getProject(task.projectId);
     const issue = await this.github.createIssue({ ...task, rewardPoints: reward }, project, githubCredential);
-    const result = await database().rpc('publish_task', {
+    const result = await this.db().rpc('publish_task', {
       p_task_id: taskId,
       p_actor_id: actor.id,
       p_reward: reward,
@@ -334,13 +335,13 @@ export class TaskService {
     if (task.status === 'cancelled') throw httpError('任务已经被取消。', 409, 'TASK_ALREADY_CANCELLED');
 
     if (task.status !== 'draft') {
-      const children = await database().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)');
+      const children = await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)');
       if (children.error) throw new Error(children.error.message);
       if (children.data.length) throw httpError(`还有 ${children.data.length} 个未完成子任务，不能移除父任务。`, 409, 'OPEN_CHILD_TASKS');
       await this.github.cancelTask(task, await this.getProject(task.projectId), githubCredential);
     }
 
-    const result = await database().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
+    const result = await this.db().rpc('admin_remove_task', { p_task_id: taskId, p_actor_id: actor.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     const disposition = result.data === 'deleted' ? 'deleted' : 'cancelled';
     return { id: taskId, disposition };
@@ -348,14 +349,14 @@ export class TaskService {
 
   async claimTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     if (!user.githubLogin || !githubCredential) throw httpError('认领任务前请先连接 GitHub 账号。', 400);
-    const result = await database().rpc('claim_task', { p_task_id: taskId, p_user_id: user.id });
+    const result = await this.db().rpc('claim_task', { p_task_id: taskId, p_user_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     const task = await this.getTask(taskId);
     const project = await this.getProject(task.projectId);
     try {
       await this.github.syncClaim(task, project, user.githubLogin, githubCredential);
     } catch (error) {
-      await database().rpc('rollback_claim', { p_task_id: taskId, p_user_id: user.id, p_reason: (error as Error).message });
+      await this.db().rpc('rollback_claim', { p_task_id: taskId, p_user_id: user.id, p_reason: (error as Error).message });
       throw error;
     }
     return task;
@@ -364,7 +365,7 @@ export class TaskService {
   async releaseTask(taskId: string, user: User, githubCredential?: string): Promise<Task> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id) throw httpError('只能释放自己正在执行的任务。', 400);
-    const result = await database().rpc('release_task', { p_task_id: taskId, p_user_id: user.id });
+    const result = await this.db().rpc('release_task', { p_task_id: taskId, p_user_id: user.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     await this.github.syncRelease(task, await this.getProject(task.projectId), githubCredential);
     return this.getTask(taskId);
@@ -374,11 +375,11 @@ export class TaskService {
     const task = await this.getTask(taskId);
     if (task.assignee?.id !== user.id && user.role !== 'admin') throw httpError('当前账号不能创建这个工作环境。', 403);
     if (task.status !== 'active' || !task.scope) throw httpError('只有进行中的有效任务可以创建工作环境。', 400);
-    const existing = await database().from('workspaces').select('*').eq('task_id', taskId).eq('device_id', device.deviceId)
+    const existing = await this.db().from('workspaces').select('*').eq('task_id', taskId).eq('device_id', device.deviceId)
       .in('status', ['queued', 'provisioning', 'running']).order('created_at', { ascending: false }).limit(1).maybeSingle();
     if (existing.error) throw new Error(existing.error.message);
     if (existing.data) return this.workspaceFromRow(existing.data as Row);
-    const row = dataOrThrow(await database().from('workspaces').insert({
+    const row = dataOrThrow(await this.db().from('workspaces').insert({
       task_id: taskId,
       user_id: user.id,
       status: 'queued',
@@ -391,9 +392,9 @@ export class TaskService {
   }
 
   async updateWorkspace(workspaceId: string, user: User, input: { status: 'provisioning' | 'running' | 'failed'; headSha?: string; setupLog?: string; error?: string | null }): Promise<Workspace> {
-    const existing = dataOrThrow(await database().from('workspaces').select('*').eq('id', workspaceId).single()) as Row;
+    const existing = dataOrThrow(await this.db().from('workspaces').select('*').eq('id', workspaceId).single()) as Row;
     if (String(existing['user_id']) !== user.id && user.role !== 'admin') throw httpError('当前账号不能更新这个工作环境。', 403);
-    const row = dataOrThrow(await database().from('workspaces').update({
+    const row = dataOrThrow(await this.db().from('workspaces').update({
       status: input.status,
       head_sha: input.headSha ?? existing['head_sha'],
       setup_log: (input.setupLog ?? existing['setup_log'] ?? '').slice(0, 100_000),
@@ -406,21 +407,13 @@ export class TaskService {
   async submitTask(taskId: string, user: User, input: { summary: string; testOutput: string; files: PackageFile[] }, authorization?: { credential: string; audience: string }, githubCredential?: string): Promise<Submission> {
     const task = await this.getTask(taskId);
     if (task.status !== 'active' || task.assignee?.id !== user.id || !task.scope) throw httpError('只有任务执行者可以提交进行中的任务。', 400);
-    const children = dataOrThrow(await database().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)')) as Row[];
+    const children = dataOrThrow(await this.db().from('tasks').select('id').eq('parent_task_id', taskId).not('status', 'in', '(accepted,cancelled)')) as Row[];
     if (children.length) throw httpError(`还有 ${children.length} 个子任务未完成。`, 400);
     if (task.workspace?.status !== 'running') throw httpError('本机工作环境尚未准备完成。', 400);
     const files = normalizePackageFiles(input.files, task.scope);
     if (!files.length) throw httpError('editablePaths 范围内没有检测到任何改动。', 400);
-    const row = dataOrThrow(await database().from('submissions').insert({
-      task_id: taskId,
-      author_id: user.id,
-      status: 'reviewing',
-      summary: input.summary.trim(),
-      test_output: input.testOutput.trim(),
-      files_json: files,
-    }).select('*').single()) as Row;
-    const markSubmitted = await database().from('tasks').update({ status: 'submitted', lock_version: Number((await this.taskRow(taskId))['lock_version']) + 1 }).eq('id', taskId);
-    if (markSubmitted.error) throw new Error(markSubmitted.error.message);
+    // Model failures must leave the task retryable. The database revalidates the
+    // assignee, scope and lifecycle after this potentially long-running call.
     const review = await this.agent.review({
       title: task.title,
       description: task.description,
@@ -431,31 +424,39 @@ export class TaskService {
       modelCredential: authorization?.credential,
       modelAudience: authorization?.audience,
     });
-    const status = review.verdict === 'approved' ? 'approved' : 'changes_requested';
     const project = await this.getProject(task.projectId);
+    const begun = await this.db().rpc('begin_submission', {
+      p_task_id: taskId, p_author_id: user.id, p_scope: task.scope,
+      p_summary: input.summary.trim(), p_test_output: input.testOutput.trim(), p_files: files, p_review: review,
+    });
+    if (begun.error) translateDatabaseError(new Error(begun.error.message));
+    const submissionId = String(begun.data);
     try {
       const pullUrl = await this.github.publishSubmission({ ...task, status: 'submitted' }, project, files, review, githubCredential);
-      const update = await database().from('submissions').update({ status, review_json: review, pull_request_url: pullUrl }).eq('id', row['id']);
-      if (update.error) throw new Error(update.error.message);
-      if (status === 'changes_requested') await database().from('tasks').update({ status: 'active' }).eq('id', taskId);
+      const finished = await this.db().rpc('finish_submission', { p_submission_id: submissionId, p_succeeded: true, p_pull_url: pullUrl });
+      if (finished.error) translateDatabaseError(new Error(finished.error.message));
     } catch (error) {
-      await Promise.all([
-        database().from('submissions').update({ status: 'changes_requested', review_json: review }).eq('id', row['id']),
-        database().from('tasks').update({ status: 'active' }).eq('id', taskId),
-      ]);
+      const restored = await this.db().rpc('finish_submission', { p_submission_id: submissionId, p_succeeded: false, p_pull_url: null });
+      // A lost success response may mean the submission is already approved.
+      // The RPC refuses to reopen that submission or overwrite a newer one.
+      if (restored.error && !restored.error.message.includes('SUBMISSION_STATE_CONFLICT')) {
+        throw new AggregateError([error, new Error(restored.error.message)], '提交失败，恢复状态时数据库不可用，请刷新任务后重试。');
+      }
       throw error;
     }
-    await this.audit(user.id, 'submission.created', 'submission', String(row['id']), { taskId, changedFiles: files.map((file) => file.path) });
-    return this.getSubmission(String(row['id']));
+    await this.audit(user.id, 'submission.created', 'submission', submissionId, { taskId, changedFiles: files.map((file) => file.path) });
+    return this.getSubmission(submissionId);
   }
 
   async acceptSubmission(submissionId: string, reviewer: User, githubCredential?: string): Promise<Task> {
     const submission = await this.getSubmission(submissionId);
     const task = await this.getTask(submission.taskId);
-    if (submission.status !== 'approved' || task.status !== 'submitted') throw httpError('只有通过预审的待验收提交可以验收。', 400);
+    if (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
+    await this.startReview(submissionId, reviewer, 'accept');
+    if (task.status === 'accepted') return task;
     await this.github.completeTask(task, await this.getProject(task.projectId), submission.pullRequestUrl, githubCredential);
-    const result = await database().rpc('accept_task', { p_submission_id: submissionId, p_reviewer_id: reviewer.id });
+    const result = await this.db().rpc('accept_task', { p_submission_id: submissionId, p_reviewer_id: reviewer.id });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     return this.getTask(task.id);
   }
@@ -464,19 +465,23 @@ export class TaskService {
     const submission = await this.getSubmission(submissionId);
     const task = await this.getTask(submission.taskId);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能审核自己的任务。', 403);
+    if (task.status !== 'submitted' || submission.status !== 'approved' || task.latestSubmission?.id !== submissionId) {
+      throw httpError('只能对最新的待验收提交要求修改。', 409, 'SUBMISSION_STATE_CONFLICT');
+    }
+    await this.startReview(submissionId, reviewer, 'request_changes');
     await this.github.syncChangesNeeded(task, await this.getProject(task.projectId), reason, githubCredential);
-    const [submissionUpdate, taskUpdate] = await Promise.all([
-      database().from('submissions').update({ status: 'changes_requested' }).eq('id', submissionId),
-      database().from('tasks').update({ status: 'active' }).eq('id', task.id),
-    ]);
-    if (submissionUpdate.error) throw new Error(submissionUpdate.error.message);
-    if (taskUpdate.error) throw new Error(taskUpdate.error.message);
-    await this.audit(reviewer.id, 'submission.changes_requested', 'submission', submissionId, { reason });
+    const result = await this.db().rpc('request_submission_changes', { p_submission_id: submissionId, p_reviewer_id: reviewer.id, p_reason: reason });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
     return this.getTask(task.id);
   }
 
+  private async startReview(submissionId: string, reviewer: User, action: 'accept' | 'request_changes'): Promise<void> {
+    const result = await this.db().rpc('start_submission_review', { p_submission_id: submissionId, p_reviewer_id: reviewer.id, p_action: action });
+    if (result.error) translateDatabaseError(new Error(result.error.message));
+  }
+
   async getSubmission(id: string): Promise<Submission> {
-    const row = dataOrThrow(await database().from('submissions').select('*').eq('id', id).single()) as Row;
+    const row = dataOrThrow(await this.db().from('submissions').select('*').eq('id', id).single()) as Row;
     return this.submissionFromRow(row);
   }
 
@@ -484,16 +489,16 @@ export class TaskService {
     const [available, reserved, accounts] = await Promise.all([
       this.balance('user', userId, 'available'),
       this.balance('user', userId, 'reserved'),
-      database().from('point_accounts').select('id').eq('owner_type', 'user').eq('owner_id', userId),
+      this.db().from('point_accounts').select('id').eq('owner_type', 'user').eq('owner_id', userId),
     ]);
     if (accounts.error) throw new Error(accounts.error.message);
     const ids = (accounts.data ?? []).map((row: Row) => row['id']);
     if (!ids.length) return { available, reserved, entries: [] };
-    const transfers = dataOrThrow(await database().from('point_transfers').select('*').or(`from_account_id.in.(${ids.join(',')}),to_account_id.in.(${ids.join(',')})`).order('created_at', { ascending: false }).limit(100)) as Row[];
+    const transfers = dataOrThrow(await this.db().from('point_transfers').select('*').or(`from_account_id.in.(${ids.join(',')}),to_account_id.in.(${ids.join(',')})`).order('created_at', { ascending: false }).limit(100)) as Row[];
     const entries = await Promise.all(transfers.map(async (row) => {
       const [source, destination] = await Promise.all([
-        database().from('point_accounts').select('label').eq('id', row['from_account_id']).single(),
-        database().from('point_accounts').select('label').eq('id', row['to_account_id']).single(),
+        this.db().from('point_accounts').select('label').eq('id', row['from_account_id']).single(),
+        this.db().from('point_accounts').select('label').eq('id', row['to_account_id']).single(),
       ]);
       if (source.error || destination.error) throw new Error(source.error?.message ?? destination.error?.message);
       return {
@@ -507,18 +512,18 @@ export class TaskService {
   }
 
   async auditEvents(): Promise<Row[]> {
-    return dataOrThrow(await database().from('audit_events').select('*').order('created_at', { ascending: false }).limit(200)) as Row[];
+    return dataOrThrow(await this.db().from('audit_events').select('*').order('created_at', { ascending: false }).limit(200)) as Row[];
   }
 
   private async taskRow(id: string): Promise<Row> {
-    const result = await database().from('tasks').select('*').eq('id', id).maybeSingle();
+    const result = await this.db().from('tasks').select('*').eq('id', id).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     if (!result.data) throw httpError('任务不存在。', 404);
     return result.data as Row;
   }
 
   async getProject(id: string): Promise<Project> {
-    const result = await database().from('projects').select('*').eq('id', id).maybeSingle();
+    const result = await this.db().from('projects').select('*').eq('id', id).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     if (!result.data) throw httpError('项目不存在。', 404);
     return this.projectFromRow(result.data as Row);
@@ -546,7 +551,7 @@ export class TaskService {
   }
 
   private async getUser(id: string): Promise<User> {
-    const result = await database().from('users').select('*').eq('id', id).maybeSingle();
+    const result = await this.db().from('users').select('*').eq('id', id).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     if (!result.data) throw httpError('用户不存在。', 404);
     const row = result.data as Row;
@@ -594,13 +599,13 @@ export class TaskService {
   }
 
   private async balance(ownerType: 'project' | 'user', ownerId: string, bucket: 'available' | 'reserved' = 'available'): Promise<number> {
-    const result = await database().from('point_accounts').select('balance').eq('owner_type', ownerType).eq('owner_id', ownerId).eq('bucket', bucket).maybeSingle();
+    const result = await this.db().from('point_accounts').select('balance').eq('owner_type', ownerType).eq('owner_id', ownerId).eq('bucket', bucket).maybeSingle();
     if (result.error) throw new Error(result.error.message);
     return Number(result.data?.balance ?? 0);
   }
 
   private async audit(actorId: string | null, action: string, entityType: string, entityId: string, payload: Record<string, unknown> = {}): Promise<void> {
-    const result = await database().from('audit_events').insert({ actor_id: actorId, action, entity_type: entityType, entity_id: entityId, payload_json: payload });
+    const result = await this.db().from('audit_events').insert({ actor_id: actorId, action, entity_type: entityType, entity_id: entityId, payload_json: payload });
     if (result.error) throw new Error(result.error.message);
   }
 }
