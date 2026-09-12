@@ -8,6 +8,7 @@ export function httpError(message: string, statusCode: number, code?: string): E
 export function translateDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const known: Record<string, [number, string]> = {
+    GITHUB_CONNECTION_CHANGED: [409, 'GitHub 连接状态已变化，请刷新后重新授权。'],
     TASK_VERSION_CONFLICT: [409, '任务已更新或正在发布，请刷新后重试；旧分析结果未写入。'],
     OPERATION_IN_PROGRESS: [409, '该任务的操作仍在处理，请稍后重试恢复操作。'],
     OPERATION_LEASE_LOST: [409, '操作已由另一请求接续，请刷新任务。'],

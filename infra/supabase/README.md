@@ -11,7 +11,22 @@ Add `techunter` to **Project Settings → API → Exposed schemas**. The migrati
 
 Do not put `SUPABASE_SERVICE_ROLE_KEY` in the desktop or Web environment.
 
-The current release requires all migrations in filename order, ending with [`202609120006_role_sources_and_merged_reviews.sql`](migrations/202609120006_role_sources_and_merged_reviews.sql). Stop old API writes (including authentication), apply the migration, replace API processes, and update Desktop. Submissions require the UUID `workspaceId` of the current user's running workspace; old clients must be upgraded.
+The current release requires all migrations in filename order, ending with [`202609120007_delivery_and_connection_recovery.sql`](migrations/202609120007_delivery_and_connection_recovery.sql). Stop old API writes (including authentication), apply the migration, replace API processes, and update Desktop. Submissions require the UUID `workspaceId` of the current user's running workspace; old clients must be upgraded.
+
+Migration 007 preserves the first known submission PR before later Issue synchronization, and supports recovering merged PRs even after their head branches were deleted. Cancellation checks historical PRs associated with the task branch, including when the stored PR URL is missing. Retry **恢复提交** for reviewing submissions, or **核对合并并恢复验收** for an active task's latest changes-requested submission with an approved original review. Recovery validates the saved tree and scope and never initiates a new merge through the latter route. Mismatched evidence or unavailable GitHub history keeps the operation blocked from refunds until reconciled.
+
+Already cancelled/refunded historical tasks are not automatically reopened or charged again. Inspect these candidates against GitHub and the actual ledger before deciding any corrective transfer:
+
+```sql
+select t.id,t.working_branch,s.id as submission_id,s.pull_request_url,s.reviewed_tree_sha,p.repo_owner,p.repo_name
+from techunter.tasks t join techunter.projects p on p.id=t.project_id
+join lateral (select * from techunter.submissions where task_id=t.id order by created_at desc,id desc limit 1) s on true
+where t.status='cancelled' and s.review_json->>'verdict'='approved';
+```
+
+GitHub connections retain a row with empty credentials after disconnect, so an older browser callback cannot recreate the connection. Existing encrypted credentials survive migration. Refresh, connect and disconnect use a renewable 90-second database lease; concurrent requests wait up to 35 seconds, then return a retryable busy error. A crashed instance releases its lease by expiry. If GitHub consumed a refresh token but the new token was lost before persistence, the user may need to reconnect; stale results cannot overwrite a disconnected/rebound generation. Do not run the old API concurrently, because its direct upsert/delete paths do not implement these fences. Browser authorization pages opened before upgrading must be restarted; existing Techunter sessions remain valid.
+
+Task and project lists are fetched in pages within the API to preserve the current complete-list response contract; Desktop continues filtering the complete result. `review_queue_count` aggregates review counts in PostgreSQL independently of PostgREST's row limit. This does not introduce a new client pagination contract.
 
 Migration 006 separates `users.local_role` from `users.conexus_admin`; `role` is the effective role maintained by a trigger. Successful Conexus login/authorization refresh updates the Conexus flag in either direction. A locally granted maintainer/admin role survives Conexus demotion. This is synchronization at login/refresh, not a new upstream revocation webhook.
 

@@ -30,7 +30,7 @@ function fixture(options: { treeChanged?: boolean; headChanged?: boolean; outOfS
       async update() { if (options.mergedDuringClose) isMerged = true; },
     },
     issues: { async update() { closes += 1; if (options.closeFailsOnce && closes === 1) throw new Error('Issue temporarily unavailable'); } },
-    async paginate() { return [{ filename: options.outOfScope ? 'src/private.ts' : 'README.md' }]; },
+    async paginate(method: unknown) { return method === client.pulls.listFiles ? [{ filename: options.outOfScope ? 'src/private.ts' : 'README.md' }] : []; },
   };
   Object.defineProperty(service, 'client', { value: async () => client });
   return { service, merges, closes: () => closes };

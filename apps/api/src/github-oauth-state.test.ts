@@ -17,3 +17,9 @@ test('GitHub OAuth state rejects tampering and expiration', () => {
   assert.throws(() => verifyGitHubOAuthState(`${state}x`, key, 2_000), /signature/);
   assert.throws(() => verifyGitHubOAuthState(state, key, 601_000), /expired/);
 });
+
+test('OAuth state carries the connection generation without changing its session binding', () => {
+  const generation = '00000000-0000-4000-8000-000000000001';
+  const state = issueGitHubOAuthState(sessionTokenHash, key, 1_000, generation);
+  assert.equal(verifyGitHubOAuthState(state, key, 2_000).connectionVersion, generation);
+});

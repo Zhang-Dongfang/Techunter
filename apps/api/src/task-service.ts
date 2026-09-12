@@ -22,6 +22,7 @@ import { httpError, translateDatabaseError } from './errors.js';
 import { GitHubService } from './github-service.js';
 import { resolveTaskVersion } from './task-version.js';
 import { runTaskOperation } from './task-operation.js';
+import { readAllRows } from './database-pagination.js';
 
 type Row = Record<string, any>;
 
@@ -61,7 +62,7 @@ export class TaskService {
   ) {}
 
   async projects(): Promise<Project[]> {
-    const rows = dataOrThrow(await this.db().from('projects').select('*').order('name')) as Row[];
+    const rows = await readAllRows<Row>((from, to) => this.db().from('projects').select('*', { count: 'exact' }).order('name').order('id').range(from, to));
     return Promise.all(rows.map((row) => this.projectFromRow(row)));
   }
 
@@ -143,34 +144,27 @@ export class TaskService {
   }
 
   async dashboard(me: User): Promise<Omit<DashboardResponse, 'runtime'>> {
-    const [projects, tasks, points, reviewSubmissions] = await Promise.all([
+    const [projects, tasks, points, reviews] = await Promise.all([
       this.projects(),
       this.listTasks(),
       this.balance('user', me.id),
-      this.db().from('submissions').select('task_id').eq('status', 'approved'),
+      this.db().rpc('review_queue_count', { p_user_id: me.id }),
     ]);
-    if (reviewSubmissions.error) throw new Error(reviewSubmissions.error.message);
-    const reviewIds = [...new Set((reviewSubmissions.data ?? []).map((row: Row) => String(row['task_id'])))];
-    let reviewCount = 0;
-    if (reviewIds.length) {
-      const reviewTasks = await this.db().from('tasks').select('id').in('id', reviewIds).eq('status', 'submitted').neq('assignee_id', me.id);
-      if (reviewTasks.error) throw new Error(reviewTasks.error.message);
-      reviewCount = reviewTasks.data.length;
-    }
-    reviewCount += tasks.filter((task) => task.assignee?.id !== me.id && (task.publisher.id === me.id || me.role === 'admin'))
-      .reduce((count, task) => count + (task.pendingScopeRequestCount ?? 0), 0);
-    return { me, projects, tasks, myAvailablePoints: points, reviewCount };
+    if (reviews.error) throw new Error(reviews.error.message);
+    return { me, projects, tasks, myAvailablePoints: points, reviewCount: Number(reviews.data) };
   }
 
   async listTasks(filters: { status?: string; assigneeId?: string; search?: string } = {}): Promise<TaskSummary[]> {
-    let query = this.db().from('tasks').select('*').order('updated_at', { ascending: false });
-    if (filters.status && filters.status !== 'all') query = query.eq('status', filters.status);
-    else query = query.neq('status', 'cancelled');
-    if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
-    if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
-    const rows = dataOrThrow(await query) as Row[];
+    const rows = await readAllRows<Row>((from, to) => {
+      let query = this.db().from('tasks').select('*', { count: 'exact' }).order('updated_at', { ascending: false }).order('id', { ascending: false });
+      if (filters.status && filters.status !== 'all') query = query.eq('status', filters.status);
+      else query = query.neq('status', 'cancelled');
+      if (filters.assigneeId) query = query.eq('assignee_id', filters.assigneeId);
+      if (filters.search) query = query.or(`title.ilike.%${filters.search.replaceAll(',', '')}%,description.ilike.%${filters.search.replaceAll(',', '')}%`);
+      return query.range(from, to);
+    });
     const summaries = await this.summariesFromRows(rows);
-    const pending = dataOrThrow(await this.db().from('scope_requests').select('task_id').eq('status', 'pending')) as Row[];
+    const pending = await readAllRows<Row>((from, to) => this.db().from('scope_requests').select('task_id', { count: 'exact' }).eq('status', 'pending').order('id').range(from, to));
     const pendingIds = new Set(pending.map((row) => String(row['task_id'])));
     for (const task of summaries) task.pendingScopeRequestCount = pendingIds.has(task.id) ? 1 : 0;
     const order: Record<string, number> = { active: 0, open: 1, submitted: 2 };
@@ -471,13 +465,19 @@ export class TaskService {
             const saved = await this.db().rpc('record_submission_tree', { p_id: submissionId, p_token: token, p_tree_sha: treeSha });
             if (saved.error) translateDatabaseError(new Error(saved.error.message));
           },
+          recordPull: async (url) => {
+            await checkpoint();
+            const saved = await this.db().rpc('record_submission_pull', { p_id: submissionId, p_token: token, p_pull_url: url });
+            if (saved.error) translateDatabaseError(new Error(saved.error.message));
+          },
         });
       } catch (error) {
         // These checks happen before any branch mutation. A changed remote head
         // needs a fresh workspace package, not retries of the stale snapshot.
         if (['WORKSPACE_BEHIND', 'SUBMISSION_REVIEW_MISSING'].includes((error as { code?: string }).code ?? '')) {
           await checkpoint();
-          const restored = await this.db().rpc('finish_submission_operation', { p_id: submissionId, p_token: token, p_pull_url: null, p_succeeded: false });
+          const saved = await this.getSubmission(submissionId);
+          const restored = await this.db().rpc('finish_submission_operation', { p_id: submissionId, p_token: token, p_pull_url: saved.pullRequestUrl, p_succeeded: false });
           if (restored.error) translateDatabaseError(new Error(restored.error.message));
         }
         throw error;
@@ -496,9 +496,15 @@ export class TaskService {
       && submission.review?.verdict === 'approved' && submission.author.id === task.assignee?.id;
     if ((!recoverMerged && (submission.status !== 'approved' || !['submitted', 'accepted'].includes(task.status))) || task.latestSubmission?.id !== submissionId) throw httpError('只有通过预审的最新待验收提交可以验收。', 409);
     if (task.assignee?.id === reviewer.id) throw httpError('执行者不能验收自己的任务。', 403);
-    if (recoverMerged) await this.github.assertSubmissionMerged(task, await this.getProject(task.projectId), submission.pullRequestUrl, githubCredential);
+    if (recoverMerged) {
+      const project = await this.getProject(task.projectId);
+      if (!submission.pullRequestUrl && submission.reviewedTreeSha) {
+        submission = { ...submission, pullRequestUrl: await this.github.mergedSubmissionUrl(task, project, submission.reviewedTreeSha, githubCredential) };
+      }
+      await this.github.assertSubmissionMerged(task, project, submission.pullRequestUrl, githubCredential);
+    }
     const result = recoverMerged
-      ? await this.db().rpc('begin_merged_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_version: task.version })
+      ? await this.db().rpc('begin_merged_task_review_with_pull', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_version: task.version, p_pull_url: submission.pullRequestUrl })
       : await this.db().rpc('begin_task_review', { p_submission_id: submissionId, p_actor_id: reviewer.id, p_action: 'accept' });
     if (result.error) translateDatabaseError(new Error(result.error.message));
     if (recoverMerged) { submission = await this.getSubmission(submissionId); task = await this.getTask(task.id); }

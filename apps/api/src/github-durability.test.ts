@@ -4,7 +4,7 @@ import test from 'node:test';
 import type { DeliveryReview, Project, Task } from '@techunter/core';
 import { GitHubService } from './github-service.js';
 
-const project = { repoOwner: 'test', repoName: 'fixture' } as Project;
+const project = { repoOwner: 'test', repoName: 'fixture', githubRepositoryId: 501 } as Project;
 const task = { id: 'fixture', title: 'fixture', baseSha: 'base', targetBranch: 'main', githubIssueNumber: 1, assignee: { githubLogin: 'worker' } } as Task;
 const review = { score: 100, summary: 'fixture', verdict: 'approved' } as DeliveryReview;
 function fixture() {
@@ -28,12 +28,13 @@ function fixture() {
       updateRef: async ({ sha, force }: { sha: string; force: boolean }) => { assert.equal(force, false); head = sha; if (losePushResponse) { losePushResponse = false; throw new Error('response lost after successful push'); } },
     },
     pulls: {
+      get: async () => ({ data: { merged, base: { ref: 'main' }, head: { sha: head }, html_url: 'https://example.invalid/pull/1' } }),
       list: async () => ({ data: pullExists ? [{ html_url: 'https://example.invalid/pull/1' }] : [] }),
       create: async () => { assert.equal(pullExists, false); pullExists = true; return { data: { html_url: 'https://example.invalid/pull/1' } }; },
     },
     issues: { update: async () => {}, listComments() {}, createComment: async ({ body }: { body: string }) => { comments.push({ body }); } },
     paginate: async (method: unknown) => method === client.pulls.list
-      ? (merged ? [{ html_url: 'https://example.invalid/pull/1', merged_at: '2026-09-12', head: { sha: head } }] : []) : comments,
+      ? (merged ? [{ number: 1, html_url: 'https://example.invalid/pull/1', merged_at: '2026-09-12', head: { sha: head, ref: 'task-1-worker', repo: { id: 501 } } }] : []) : comments,
   };
   const service = new GitHubService(); Object.defineProperty(service, 'client', { value: async () => client });
   const operation = { id: 'saved-submission', headSha: 'child-head', checkpoint: async () => {} };

@@ -18,7 +18,11 @@ API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包�
 
 ## 版本升级
 
-当前版本先停止旧 API 写入，按顺序应用全部迁移，最后应用 `202609120006_role_sources_and_merged_reviews.sql`，再更新 API 和 Desktop。用户成功登录或续期 Conexus 授权时，会刷新来自 Conexus 的管理员身份；本地角色单独保存。历史已连接 Conexus 的 admin 默认视为来自 Conexus 的授权，如有独立本地授权，需按 [Supabase 升级说明](../../infra/supabase/README.md) 显式记录。
+当前版本须先停止旧 API 写入（包括认证），按顺序应用迁移至 `202609120007_delivery_and_connection_recovery.sql`，再替换 API。该迁移保存已创建的 PR 地址，并为 GitHub 连接增加数据库租约及连接版本；刷新、绑定、断开在多个实例间共享互斥。旧的浏览器 GitHub 授权页面需要重新发起，已有 Techunter 登录和保存的凭据保留。
+
+恢复提交先核对已合并 PR 的原始 HEAD/tree，支持远程分支已删除的情况；取消会检查任务分支关联的历史 PR，缺少数据库 PR 地址不会绕过合并保护。未退款的旧 active/changes_requested 交付可通过原验收入口找回 PR；已经错误退款或取消的历史任务需要人工核对账本，本迁移不会自动补扣款。任务及项目列表在 API 内分批取全，保持现有 Desktop/助手接口；审核计数由 PostgreSQL 聚合，不受单次查询行数上限截断。
+
+此前的 `202609120006_role_sources_and_merged_reviews.sql` 区分角色来源。用户成功登录或续期 Conexus 授权时，会刷新来自 Conexus 的管理员身份；本地角色单独保存。历史已连接 Conexus 的 admin 默认视为来自 Conexus 的授权，如有独立本地授权，需按 [Supabase 升级说明](../../infra/supabase/README.md) 显式记录。
 
 退回修改前后会检查 PR 是否已合并；已合并时保留 approved 提交供验收结算。对于已经处于 active/changes_requested 的旧交付，`POST /api/submissions/:id/accept` 可核对外部合并后恢复结算，但不会合并一个尚未合并的 PR；仍要求当前执行者、最新交付、已通过的原预审、相同审核快照与有效范围。原审核人降权后，当前有权限的审核人可接续其租约已释放或到期的操作。
 

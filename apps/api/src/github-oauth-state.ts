@@ -8,6 +8,7 @@ type GitHubOAuthStateClaims = {
   sessionTokenHash: string;
   expiresAt: number;
   nonce: string;
+  connectionVersion?: string;
 };
 
 function signature(payload: string, key: string): string {
@@ -18,6 +19,7 @@ export function issueGitHubOAuthState(
   sessionTokenHash: string,
   key: string,
   now = Date.now(),
+  connectionVersion?: string,
 ): string {
   if (!SESSION_HASH.test(sessionTokenHash)) throw new Error('GitHub OAuth session hash is invalid.');
   const claims: GitHubOAuthStateClaims = {
@@ -25,6 +27,7 @@ export function issueGitHubOAuthState(
     sessionTokenHash,
     expiresAt: now + 10 * 60_000,
     nonce: randomBytes(24).toString('base64url'),
+    ...(connectionVersion ? { connectionVersion } : {}),
   };
   const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
   return `${PREFIX}.${payload}.${signature(payload, key)}`;
@@ -54,7 +57,8 @@ export function verifyGitHubOAuthState(
   if (
     claims.version !== 1 || !SESSION_HASH.test(claims.sessionTokenHash) ||
     !Number.isSafeInteger(claims.expiresAt) || claims.expiresAt <= now ||
-    typeof claims.nonce !== 'string' || claims.nonce.length < 20
+    typeof claims.nonce !== 'string' || claims.nonce.length < 20 ||
+    (claims.connectionVersion !== undefined && !/^[a-f0-9-]{36}$/.test(claims.connectionVersion))
   ) throw new Error('GitHub OAuth state has expired or is invalid.');
   return claims;
 }

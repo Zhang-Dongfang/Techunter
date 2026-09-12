@@ -410,8 +410,30 @@ export class GitHubService {
     return (await octokit.git.createTree({ ...location, base_tree: baseCommit.data.tree.sha, tree })).data.sha;
   }
 
+  private async taskPulls(octokit: Octokit, task: Task, project: Project) {
+    const branch = this.taskBranch(task);
+    const pulls = await octokit.paginate(octokit.pulls.list, {
+      owner: project.repoOwner, repo: project.repoName, state: 'all', head: `${project.repoOwner}:${branch}`, per_page: 100,
+    });
+    return pulls.filter(pull => pull.head.ref === branch && pull.head.repo?.id === project.githubRepositoryId);
+  }
+
+  async mergedSubmissionUrl(task: Task, project: Project, treeSha: string, userCredential?: string): Promise<string | null> {
+    const octokit = await this.client(userCredential);
+    for (const pull of await this.taskPulls(octokit, task, project)) {
+      if (!pull.merged_at) continue;
+      // The ref may be deleted or recreated. The PR still identifies its immutable head.
+      const current = (await octokit.pulls.get({ owner: project.repoOwner, repo: project.repoName, pull_number: pull.number })).data;
+      if (!current.merged || current.base.ref !== task.targetBranch) throw httpError('已合并 PR 的目标与任务不一致，需要核对后恢复。', 409, 'PULL_SCOPE_INVALID');
+      const commit = (await octokit.git.getCommit({ owner: project.repoOwner, repo: project.repoName, commit_sha: current.head.sha })).data;
+      if (commit.tree.sha !== treeSha) throw httpError('已合并 PR 与已审核快照不一致，不能撤销交付或退款。', 409, 'PULL_REVIEW_OUTDATED');
+      return current.html_url;
+    }
+    return null;
+  }
+
   async publishSubmission(task: Task, project: Project, files: PackageFile[], review: DeliveryReview, userCredential?: string,
-    operation?: { id: string; headSha: string; checkpoint(): Promise<void>; recordTree?(treeSha: string): Promise<void> }): Promise<string | null> {
+    operation?: { id: string; headSha: string; checkpoint(): Promise<void>; recordTree?(treeSha: string): Promise<void>; recordPull?(url: string): Promise<void> }): Promise<string | null> {
     if (files.length === 0) return null;
     const octokit = await this.client(userCredential);
     const baseBranch = task.targetBranch || project.sourceBranch || project.defaultBranch;
@@ -433,6 +455,13 @@ export class GitHubService {
     // A lost response after pushing is recovered by comparing the full tree.
     // Otherwise only replace the head the submitting workspace actually synced.
     const alreadyPushed = currentCommit?.tree.sha === treeSha;
+    if (operation && (!branchExists || workingSha !== operation.headSha || alreadyPushed)) {
+      const mergedUrl = await this.mergedSubmissionUrl(task, project, treeSha, userCredential);
+      if (mergedUrl) {
+        await operation.recordPull?.(mergedUrl);
+        return mergedUrl; // Acceptance reconciles labels and settles the saved review.
+      }
+    }
     if (!alreadyPushed) {
       if (operation && workingSha !== operation.headSha) throw httpError('远程任务分支已变化，请同步工作环境后重新交付。', 409, 'WORKSPACE_BEHIND');
       await operation?.checkpoint();
@@ -447,12 +476,6 @@ export class GitHubService {
     }
     const pulls = await octokit.pulls.list({ owner: project.repoOwner, repo: project.repoName, state: 'open', head: `${project.repoOwner}:${branch}` });
     let url: string | undefined = pulls.data[0]?.html_url;
-    if (!url && operation && alreadyPushed) {
-      // A maintainer may merge the PR while the original request is interrupted.
-      // Recover that exact snapshot, then let normal acceptance settle it.
-      const previous = await octokit.paginate(octokit.pulls.list, { owner: project.repoOwner, repo: project.repoName, state: 'closed', head: `${project.repoOwner}:${branch}`, base: baseBranch, per_page: 100 });
-      url = previous.find(pull => pull.merged_at && pull.head.sha === workingSha)?.html_url;
-    }
     if (!url) {
       await operation?.checkpoint();
       const pull = await octokit.pulls.create({
@@ -474,6 +497,7 @@ export class GitHubService {
       });
       url = pull.data.html_url;
     }
+    if (url) await operation?.recordPull?.(url);
     if (task.githubIssueNumber) {
       await operation?.checkpoint();
       await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, labels: [review.verdict === 'approved' ? taskLabels.inReview : taskLabels.changesNeeded] });
@@ -531,8 +555,13 @@ export class GitHubService {
 
   async cancelTask(task: Task, project: Project, userCredential?: string, checkpoint: () => Promise<void> = async () => {}): Promise<void> {
     const octokit = await this.client(userCredential);
-    const pullRequestNumber = task.latestSubmission?.pullRequestUrl?.match(/\/pull\/(\d+)/)?.[1];
-    if (pullRequestNumber) {
+    const pullRequestNumbers = new Set<number>();
+    const savedNumber = task.latestSubmission?.pullRequestUrl?.match(/\/pull\/(\d+)/)?.[1];
+    if (savedNumber) pullRequestNumbers.add(Number(savedNumber));
+    if (task.latestSubmission) {
+      for (const pull of await this.taskPulls(octokit, task, project)) pullRequestNumbers.add(pull.number);
+    }
+    for (const pullRequestNumber of pullRequestNumbers) {
       const pull = (await octokit.pulls.get({ owner: project.repoOwner, repo: project.repoName, pull_number: Number(pullRequestNumber) })).data;
       if (pull.merged) throw httpError('PR 已合并，请恢复验收结算，不能取消退款。', 409, 'PULL_ALREADY_MERGED');
       await checkpoint();

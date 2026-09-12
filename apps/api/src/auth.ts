@@ -7,11 +7,11 @@ import { decryptCredential, encryptCredential } from './credential-vault.js';
 import { database, dataOrThrow } from './database.js';
 import { httpError } from './errors.js';
 import { issueGitHubOAuthState, verifyGitHubOAuthState } from './github-oauth-state.js';
+import { GitHubConnectionService, type GitHubTokenSet } from './github-connection-service.js';
 
 export const SESSION_ABSOLUTE_TTL_MS = 30 * 24 * 60 * 60_000;
 export const SESSION_IDLE_TTL_MS = 7 * 24 * 60 * 60_000;
 const SESSION_IDLE_TOUCH_THRESHOLD_MS = 6 * 24 * 60 * 60_000;
-const GITHUB_EXPIRY_SKEW_MS = 60_000;
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -36,12 +36,6 @@ type SessionContext = {
   githubConnection: Row | null;
 };
 
-type GitHubTokenSet = {
-  accessToken: string;
-  accessExpiresAt: string | null;
-  refreshToken: string | null;
-  refreshExpiresAt: string | null;
-};
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -165,11 +159,13 @@ function secondsDeadline(value: unknown, now = Date.now()): string | null {
 async function requestGitHubToken(body: Record<string, string>): Promise<GitHubTokenSet> {
   const github = config().github;
   const response = await fetch('https://github.com/login/oauth/access_token', {
+    signal: AbortSignal.timeout(20_000),
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({ client_id: github.clientId, client_secret: github.clientSecret, ...body }),
   });
   const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  if (response.status >= 500) throw httpError('GitHub 授权服务暂时不可用，请稍后重试。', 502, 'GITHUB_AUTHORIZATION_UNAVAILABLE');
   if (!response.ok || !payload || typeof payload['access_token'] !== 'string') {
     throw httpError(String(payload?.['error_description'] ?? 'GitHub 登录失败。'), 401, 'GITHUB_AUTHORIZATION_FAILED');
   }
@@ -181,37 +177,10 @@ async function requestGitHubToken(body: Record<string, string>): Promise<GitHubT
   };
 }
 
-async function saveGitHubConnection(userId: string, tokens: GitHubTokenSet): Promise<void> {
-  const result = await database().from('github_connections').upsert({
-    user_id: userId,
-    credential: encryptCredential(tokens.accessToken),
-    access_expires_at: tokens.accessExpiresAt,
-    refresh_credential: tokens.refreshToken ? encryptCredential(tokens.refreshToken) : null,
-    refresh_expires_at: tokens.refreshExpiresAt,
-  }, { onConflict: 'user_id' });
-  if (result.error) throw new Error(result.error.message);
-}
-
-async function usableGitHubCredential(userId: string, connection: Row | null): Promise<string | undefined> {
-  if (!connection) return undefined;
-  const accessToken = decryptCredential(connection['credential']);
-  const accessExpiresAt = connection['access_expires_at'] ? Date.parse(String(connection['access_expires_at'])) : Number.POSITIVE_INFINITY;
-  if (accessToken && accessExpiresAt > Date.now() + GITHUB_EXPIRY_SKEW_MS) return accessToken;
-  const refreshToken = decryptCredential(connection['refresh_credential']);
-  const refreshExpiresAt = connection['refresh_expires_at'] ? Date.parse(String(connection['refresh_expires_at'])) : Number.NEGATIVE_INFINITY;
-  if (!refreshToken || refreshExpiresAt <= Date.now() + GITHUB_EXPIRY_SKEW_MS) return undefined;
-  try {
-    const refreshed = await requestGitHubToken({ grant_type: 'refresh_token', refresh_token: refreshToken });
-    await saveGitHubConnection(userId, refreshed);
-    return refreshed.accessToken;
-  } catch {
-    return undefined;
-  }
-}
-
 async function revokeGitHubAuthorization(accessToken: string): Promise<void> {
   const github = config().github;
   const response = await fetch(`https://api.github.com/applications/${encodeURIComponent(github.clientId)}/grant`, {
+    signal: AbortSignal.timeout(20_000),
     method: 'DELETE',
     headers: {
       accept: 'application/vnd.github+json',
@@ -238,6 +207,10 @@ async function audit(actorId: string, action: string, payload: Record<string, un
 }
 
 export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountService()): void {
+  const connections = new GitHubConnectionService(
+    refreshToken => requestGitHubToken({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+    revokeGitHubAuthorization,
+  );
   app.decorateRequest('currentUser');
   app.decorateRequest('conexusUserId');
   app.decorateRequest('modelAuthorization');
@@ -273,7 +246,9 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
       const modelAudience = current.row['model_audience'] ? String(current.row['model_audience']) : undefined;
       if (modelCredential && modelAudience) request.modelAuthorization = { credential: modelCredential, audience: modelAudience };
     }
-    request.githubCredential = await usableGitHubCredential(current.user.id, current.githubConnection);
+    if (!(path === '/api/auth/github' && request.method === 'DELETE')) {
+      request.githubCredential = await connections.credential(current.user.id, current.githubConnection);
+    }
     request.githubConnected = Boolean(request.githubCredential);
   });
 
@@ -348,7 +323,7 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
     const github = config().github;
     if (!github.clientId || !github.clientSecret) throw httpError('未配置 GitHub OAuth。', 503);
     if (!request.sessionTokenHash) throw httpError('请先登录 Conexus，再连接 GitHub。', 401);
-    const state = issueGitHubOAuthState(request.sessionTokenHash, config().credentialEncryptionKey);
+    const state = issueGitHubOAuthState(request.sessionTokenHash, config().credentialEncryptionKey, Date.now(), await connections.version(request.currentUser.id));
     const url = new URL('https://github.com/login/oauth/authorize');
     url.searchParams.set('client_id', github.clientId);
     url.searchParams.set('redirect_uri', `${config().publicUrl}/api/auth/github/callback`);
@@ -362,42 +337,39 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
     if (query.error) throw httpError(query.error_description || 'GitHub 授权已取消。', 400);
     if (!query.code || !query.state) throw httpError('GitHub 登录状态校验失败。', 400);
     let sessionTokenHash = '';
+    let connectionVersion = '';
     try {
-      sessionTokenHash = verifyGitHubOAuthState(query.state, config().credentialEncryptionKey).sessionTokenHash;
+      const claims = verifyGitHubOAuthState(query.state, config().credentialEncryptionKey);
+      sessionTokenHash = claims.sessionTokenHash;
+      connectionVersion = claims.connectionVersion ?? '';
+      if (!connectionVersion) throw new Error('请重新发起 GitHub 授权。');
     } catch (error) {
       throw httpError((error as Error).message, 400);
     }
     const current = await sessionByTokenHash(sessionTokenHash);
     if (!current) throw httpError('Techunter 登录已失效，请重新登录 Conexus。', 401);
-    const tokens = await requestGitHubToken({ code: query.code });
-    const headers = { authorization: `Bearer ${tokens.accessToken}`, accept: 'application/vnd.github+json' };
-    const githubUser = await (await fetch('https://api.github.com/user', { headers })).json() as { login: string; avatar_url?: string };
-    const github = config().github;
-    if (github.allowedOrg) {
-      const orgs = await (await fetch('https://api.github.com/user/orgs?per_page=100', { headers })).json() as Array<{ login: string }>;
-      if (!orgs.some((org) => org.login.toLowerCase() === github.allowedOrg.toLowerCase())) throw httpError(`仅允许 ${github.allowedOrg} 企业成员连接。`, 403);
-    }
-    const duplicate = await database().from('users').select('id').eq('github_login', githubUser.login).neq('id', current.user.id).maybeSingle();
-    if (duplicate.error) throw new Error(duplicate.error.message);
-    if (duplicate.data) throw httpError('这个 GitHub 账号已连接到其他 Techunter 用户。', 409);
-    const userUpdate = await database().from('users')
-      .update({ github_login: githubUser.login, avatar_url: githubUser.avatar_url ?? null })
-      .eq('id', current.user.id);
-    if (userUpdate.error) throw new Error(userUpdate.error.message);
-    await saveGitHubConnection(current.user.id, tokens);
-    await audit(current.user.id, 'auth.github_connected', { githubLogin: githubUser.login });
+    await connections.connect(current.user.id, connectionVersion, async () => {
+      const tokens = await requestGitHubToken({ code: query.code! });
+      const headers = { authorization: `Bearer ${tokens.accessToken}`, accept: 'application/vnd.github+json' };
+      const userResponse = await fetch('https://api.github.com/user', { headers, signal: AbortSignal.timeout(20_000) });
+      if (!userResponse.ok) throw httpError('无法核对 GitHub 账号，请重新授权。', 502);
+      const githubUser = await userResponse.json() as { login: string; avatar_url?: string };
+      if (!githubUser.login) throw httpError('GitHub 返回的账号无效。', 502);
+      const github = config().github;
+      if (github.allowedOrg) {
+        const orgs = await (await fetch('https://api.github.com/user/orgs?per_page=100', { headers, signal: AbortSignal.timeout(20_000) })).json() as Array<{ login: string }>;
+        if (!orgs.some((org) => org.login.toLowerCase() === github.allowedOrg.toLowerCase())) throw httpError(`仅允许 ${github.allowedOrg} 企业成员连接。`, 403);
+      }
+      const duplicate = await database().from('users').select('id').eq('github_login', githubUser.login).neq('id', current.user.id).maybeSingle();
+      if (duplicate.error) throw new Error(duplicate.error.message);
+      if (duplicate.data) throw httpError('这个 GitHub 账号已连接到其他 Techunter 用户。', 409);
+      return { tokens, identity: { login: githubUser.login, avatarUrl: githubUser.avatar_url ?? null } };
+    });
     return reply.type('text/html; charset=utf-8').send(githubAuthorizationCompletePage());
   });
 
   app.delete('/api/auth/github', async (request) => {
-    if (request.githubCredential) await revokeGitHubAuthorization(request.githubCredential);
-    const [connectionDelete, userUpdate] = await Promise.all([
-      database().from('github_connections').delete().eq('user_id', request.currentUser.id),
-      database().from('users').update({ github_login: null, avatar_url: null }).eq('id', request.currentUser.id),
-    ]);
-    if (connectionDelete.error) throw new Error(connectionDelete.error.message);
-    if (userUpdate.error) throw new Error(userUpdate.error.message);
-    await audit(request.currentUser.id, 'auth.github_disconnected');
+    await connections.disconnect(request.currentUser.id);
     return { ok: true };
   });
 
