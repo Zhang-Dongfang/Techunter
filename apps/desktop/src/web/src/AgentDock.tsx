@@ -4,11 +4,13 @@ import { Bot, ChevronDown, ChevronUp, Loader2, Send, Sparkles, Trash2, XCircle }
 import type { AgentActivity, AgentChatMessage } from '@techunter/core';
 import { api } from './api';
 import { chatHistory } from './chat-history';
+import { prepareWorkspace } from './prepare-workspace';
 
 interface DisplayMessage extends AgentChatMessage {
   id: string;
   activities?: AgentActivity[];
   error?: boolean;
+  taskId?: string;
 }
 
 const suggestions = ['有哪些任务可以认领？', '查看我的进行中任务', '分析一下当前仓库结构'];
@@ -31,12 +33,16 @@ export function AgentDock({
   authorizationRequired,
   model,
   projectId,
+  userId,
+  onOpenTask,
   onChanged,
 }: {
   configured: boolean;
   authorizationRequired?: boolean;
   model: string | null;
   projectId?: string;
+  userId: string;
+  onOpenTask: (id: string) => void;
   onChanged: () => void;
 }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -69,6 +75,19 @@ export function AgentDock({
         activities: result.activities,
       }]);
       onChanged();
+      for (const request of result.workspaceRequests ?? []) {
+        const id = nextId();
+        setMessages(current => [...current, { id, role: 'assistant', content: '正在本机准备工作环境…', taskId: request.taskId }]);
+        try {
+          const desktop = window.techunterDesktop;
+          if (!desktop) throw new Error('请在 Techunter Desktop 打开任务并准备环境。');
+          const prepared = await prepareWorkspace(api, desktop, request.taskId, userId, request);
+          setMessages(current => current.map(message => message.id === id ? { ...message, content: `工作环境已准备完成：${prepared.path}` } : message));
+        } catch (caught) {
+          setMessages(current => current.map(message => message.id === id ? { ...message, error: true,
+            content: `环境准备未完成：${(caught as Error).message} 可打开任务重试。` } : message));
+        } finally { onChanged(); }
+      }
     } catch (caught) {
       setMessages((current) => [...current, {
         id: nextId(),
@@ -106,6 +125,7 @@ export function AgentDock({
           <div>
             {message.activities && message.activities.length > 0 && <div className="agent-activities">{message.activities.map((activity, index) => <details key={`${activity.name}-${index}`}><summary><i />{activityLabel(activity.name)}</summary>{activity.result && <pre>{activity.result}</pre>}</details>)}</div>}
             <p>{message.content}</p>
+            {message.taskId && <button className="button ghost" onClick={() => onOpenTask(message.taskId!)}>打开任务</button>}
           </div>
         </div>)}
         {busy && <div className="agent-message assistant thinking"><span><Bot size={15} /></span><div><p><Loader2 className="spin" size={14} />Agent 正在思考并调用工具…</p></div></div>}

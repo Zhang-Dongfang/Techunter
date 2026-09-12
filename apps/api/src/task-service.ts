@@ -211,7 +211,8 @@ export class TaskService {
       projectId: project.id,
       version: Number(row['lock_version']),
       pendingPublication: publicationResult.data?.kind === 'publish' ? { rewardPoints: Number(publicationResult.data.payload.reward) } : null,
-      pendingOperation: publicationResult.data ? { id: String(publicationResult.data.id), kind: publicationResult.data.kind } : null,
+      pendingOperation: publicationResult.data ? { id: String(publicationResult.data.id), kind: publicationResult.data.kind,
+        ...(publicationResult.data.payload?.withdrawRequested === true ? { withdrawRequested: true } : {}) } : null,
       projectName: project.name,
       parentTaskId: row['parent_task_id'] ? String(row['parent_task_id']) : null,
       rootTaskId: row['root_task_id'] ? String(row['root_task_id']) : null,
@@ -461,7 +462,11 @@ export class TaskService {
     return this.getTask(taskId);
   }
 
-  async resumeSubmission(submissionId: string, user: User, githubCredential?: string): Promise<Submission> {
+  async withdrawSubmission(submissionId: string, user: User, githubCredential?: string): Promise<Submission> {
+    return this.resumeSubmission(submissionId, user, githubCredential, true);
+  }
+
+  async resumeSubmission(submissionId: string, user: User, githubCredential?: string, withdraw = false): Promise<Submission> {
     const submission = await this.getSubmission(submissionId);
     if (submission.author.id !== user.id && user.role !== 'admin') throw httpError('当前账号不能恢复这个提交。', 403);
     if (submission.status !== 'reviewing') return submission;
@@ -470,6 +475,18 @@ export class TaskService {
     const task = await this.getTask(submission.taskId);
     const project = await this.getProject(task.projectId);
     await runTaskOperation(this.db(), submissionId, user.id, async (payload, token, checkpoint) => {
+      if (withdraw || payload['withdrawRequested'] === true) {
+        await checkpoint();
+        const marked = await this.db().rpc('mark_submission_withdrawal', { p_id: submissionId, p_actor_id: user.id, p_token: token });
+        if (marked.error) translateDatabaseError(new Error(marked.error.message));
+        const outcome = await this.github.withdrawSubmission(task, project, await this.getSubmission(submissionId), githubCredential, checkpoint);
+        await checkpoint();
+        const finished = await this.db().rpc('finish_submission_withdrawal', {
+          p_id: submissionId, p_actor_id: user.id, p_token: token, p_pull_url: outcome.pullUrl, p_merged: outcome.merged,
+        });
+        if (finished.error) translateDatabaseError(new Error(finished.error.message));
+        return;
+      }
       const files = normalizePackageFiles(payload['files'], task.scope!);
       let pullUrl: string | null;
       try {

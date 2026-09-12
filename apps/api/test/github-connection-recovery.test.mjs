@@ -86,7 +86,7 @@ test('separate API instances rotate once and disconnect waits, revokes the lates
   try {
     for (const app of apps) {
       await app.register(cookie); registerAuth(app);
-      app.get('/api/needs-github', (request, reply) => request.githubCredential ? { githubConnected: true } : reply.code(401).send({ code: 'GITHUB_ACCOUNT_REQUIRED' }));
+      app.get('/api/needs-github', async (request, reply) => await request.getGitHubCredential() ? { githubConnected: true } : reply.code(401).send({ code: 'GITHUB_ACCOUNT_REQUIRED' }));
     }
     const headers = { cookie: 'techunter_session=fixture-session' };
     await expire();

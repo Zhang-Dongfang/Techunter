@@ -94,3 +94,9 @@ npm run typecheck --workspace @techunter/desktop
 npm run test --workspace @techunter/desktop
 npm run build --workspace @techunter/desktop
 ```
+
+配合迁移 009 与新版 API，恢复中的交付支持「撤回交付」；网络中断后「继续撤回」沿用原操作。已合并且审核快照一致的交付会转入验收，撤回不会删除分支或直接退还贡献点。
+
+聊天助手的环境准备请求会在当前设备执行，复用任务详情相同的目录选择、授权、worktree/setup 与状态回写流程；相同任务的并发请求共用一次准备。聊天显示实际完成或失败结果，并提供「打开任务」入口重试。开始本机执行前会重新核对账号、认领、设备及最新范围。若聊天响应丢失或客户端在执行前退出，已排队记录保留，可从任务详情继续准备；不会仅凭模型回复宣告环境已完成。
+
+GitHub 令牌服务故障不再阻塞首页和 Conexus 续期。账号菜单始终提供重新连接入口；OAuth 用户修改 GitHub Actions 工作流前应重新授权以授予新增的 `workflow` scope。

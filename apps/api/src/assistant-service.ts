@@ -8,6 +8,7 @@ import {
   type Project,
   type Task,
   type User,
+  type WorkspacePreparationRequest,
 } from '@techunter/core';
 import { config } from './config.js';
 import { GitHubService } from './github-service.js';
@@ -24,6 +25,7 @@ export interface AssistantInput {
   modelCredential?: string;
   modelAudience?: string;
   githubCredential?: string;
+  getGitHubCredential?: () => Promise<string | undefined>;
 }
 
 function json(value: unknown): string {
@@ -64,10 +66,12 @@ export class AssistantService {
     const project = projects.find((candidate) => candidate.id === input.projectId) ?? projects[0];
     if (!project) throw httpError('当前还没有项目，请先从 GitHub 导入。', 400);
     const activities: AgentActivity[] = [];
-    const tools = this.taskTools(input, project);
+    const workspaceRequests: WorkspacePreparationRequest[] = [];
+    const tools = this.taskTools(input, project, workspaceRequests);
     let checkout: Awaited<ReturnType<GitHubService['materialize']>> | undefined;
     try {
-      checkout = await this.github.materialize(project, input.githubCredential).catch(() => undefined);
+      try { checkout = await this.github.materialize(project, await this.githubCredential(input)); }
+      catch { /* Task queries still work when repository access is unavailable. */ }
       if (checkout) tools.push(...createRepositoryTools({ root: checkout.root, allowCommands: false }));
       const reply = await runAgentLoop({
         config: {
@@ -86,6 +90,7 @@ export class AssistantService {
           'Use tools for platform state. Never invent IDs, balances, repository facts, or action results.',
           'Only create, claim, or queue work when the user explicitly requests it.',
           'Repository tools are read-only in the central API; environment setup runs on the user device.',
+          'create_workspace queues a Desktop action, it does not run setup here. Say preparation was requested; Desktop will report its actual outcome.',
         ].join('\n'),
         history: input.history,
         userMessage: input.message,
@@ -98,13 +103,13 @@ export class AssistantService {
           },
         },
       });
-      return { reply, activities };
+      return { reply, activities, workspaceRequests };
     } finally {
       await checkout?.cleanup();
     }
   }
 
-  private taskTools(input: AssistantInput, project: Project): AgentTool[] {
+  private taskTools(input: AssistantInput, project: Project, workspaceRequests: WorkspacePreparationRequest[] = []): AgentTool[] {
     return [
       {
         definition: {
@@ -135,20 +140,21 @@ export class AssistantService {
         },
         execute: async (toolInput) => {
           const projectId = typeof toolInput['project_id'] === 'string' ? toolInput['project_id'] : project.id;
-          if (!input.githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401);
+          const githubCredential = await this.githubCredential(input);
+          if (!githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401);
           const authorization = input.modelCredential && input.modelAudience
             ? { credential: input.modelCredential, audience: input.modelAudience } : undefined;
           if (this.configuration().ai.accessMode === 'conexus' && !authorization) {
             throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
           }
-          await this.tasks.syncProject(projectId, input.user, input.githubCredential);
+          await this.tasks.syncProject(projectId, input.user, githubCredential);
           const draft = await this.tasks.createDraft({
             projectId,
             title: String(toolInput['title'] ?? ''),
             description: String(toolInput['description'] ?? ''),
             publisherId: input.user.id,
-          }, input.githubCredential);
-          await this.tasks.analyzeTask(draft.id, input.user, authorization, input.githubCredential);
+          }, githubCredential);
+          await this.tasks.analyzeTask(draft.id, input.user, authorization, githubCredential);
           return json(taskForAgent(await this.tasks.getTask(draft.id)));
         },
       },
@@ -157,7 +163,7 @@ export class AssistantService {
           type: 'function',
           function: { name: 'claim_task', description: 'Claim an open task.', parameters: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] } },
         },
-        execute: async (toolInput) => json(taskForAgent(await this.tasks.claimTask((await this.resolveTask(String(toolInput['task_id'] ?? ''))).id, input.user, input.githubCredential))),
+        execute: async (toolInput) => json(taskForAgent(await this.tasks.claimTask((await this.resolveTask(String(toolInput['task_id'] ?? ''))).id, input.user, await this.githubCredential(input)))),
       },
       {
         definition: {
@@ -167,10 +173,18 @@ export class AssistantService {
         execute: async (toolInput) => {
           if (!input.deviceId) throw httpError('当前客户端不是可执行本机环境的 Techunter Desktop。', 400);
           const task = await this.resolveTask(String(toolInput['task_id'] ?? ''));
-          return json(await this.tasks.createWorkspace(task.id, input.user, { deviceId: input.deviceId, deviceLabel: input.deviceLabel ?? 'Techunter Desktop' }));
+          const workspace = await this.tasks.createWorkspace(task.id, input.user, { deviceId: input.deviceId, deviceLabel: input.deviceLabel ?? 'Techunter Desktop' });
+          if (!workspaceRequests.some(item => item.workspaceId === workspace.id)) {
+            workspaceRequests.push({ taskId: task.id, workspaceId: workspace.id, deviceId: workspace.deviceId });
+          }
+          return json({ ...workspace, nextStep: 'Desktop will prepare the environment and report success or failure.' });
         },
       },
     ];
+  }
+
+  private async githubCredential(input: AssistantInput): Promise<string | undefined> {
+    return input.getGitHubCredential ? input.getGitHubCredential() : input.githubCredential;
   }
 
   private async resolveTask(reference: string): Promise<Task> {

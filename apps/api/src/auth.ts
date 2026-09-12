@@ -19,8 +19,9 @@ declare module 'fastify' {
     conexusUserId?: string;
     modelAuthorization?: { credential: string; audience: string };
     modelAuthorizationExpiresAt?: string;
-    githubCredential?: string;
+    getGitHubCredential(): Promise<string | undefined>;
     githubConnected: boolean;
+    githubConnectionVersion?: string;
     sessionTokenHash?: string;
     sessionExpiresAt?: string;
     sessionIdleExpiresAt?: string;
@@ -215,8 +216,9 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
   app.decorateRequest('conexusUserId');
   app.decorateRequest('modelAuthorization');
   app.decorateRequest('modelAuthorizationExpiresAt');
-  app.decorateRequest('githubCredential');
+  app.decorateRequest('getGitHubCredential');
   app.decorateRequest('githubConnected', false);
+  app.decorateRequest('githubConnectionVersion');
   app.decorateRequest('sessionTokenHash');
   app.decorateRequest('sessionExpiresAt');
   app.decorateRequest('sessionIdleExpiresAt');
@@ -246,10 +248,17 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
       const modelAudience = current.row['model_audience'] ? String(current.row['model_audience']) : undefined;
       if (modelCredential && modelAudience) request.modelAuthorization = { credential: modelCredential, audience: modelAudience };
     }
-    if (!(path === '/api/auth/github' && request.method === 'DELETE')) {
-      request.githubCredential = await connections.credential(current.user.id, current.githubConnection);
-    }
-    request.githubConnected = Boolean(request.githubCredential);
+    // Authentication and account pages must not depend on GitHub availability.
+    // This describes a saved connection; operations validate/refresh it on demand.
+    request.githubConnected = Boolean(current.githubConnection?.['credential']);
+    request.githubConnectionVersion = current.githubConnection?.['connection_version'];
+    let credential: Promise<string | undefined> | undefined;
+    request.getGitHubCredential = () => credential ??= connections.credential(current.user.id, current.githubConnection).then(value => {
+      // A broken saved authorization must not silently switch a GitHub write to
+      // the shared installation's identity and permissions.
+      if (!value && current.githubConnection?.['credential']) throw httpError('GitHub 授权已失效，请在账号菜单重新连接。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+      return value;
+    });
   });
 
   app.get('/api/auth/conexus/config', async () => ({
@@ -312,6 +321,7 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
   app.get('/api/auth/me', async (request) => ({
     user: request.currentUser,
     githubConnected: request.githubConnected,
+    githubConnectionVersion: request.githubConnectionVersion ?? null,
     modelAuthorizationExpiresAt: request.modelAuthorizationExpiresAt ?? null,
     session: {
       expiresAt: request.sessionExpiresAt,
@@ -323,13 +333,14 @@ export function registerAuth(app: FastifyInstance, conexus = new ConexusAccountS
     const github = config().github;
     if (!github.clientId || !github.clientSecret) throw httpError('未配置 GitHub OAuth。', 503);
     if (!request.sessionTokenHash) throw httpError('请先登录 Conexus，再连接 GitHub。', 401);
-    const state = issueGitHubOAuthState(request.sessionTokenHash, config().credentialEncryptionKey, Date.now(), await connections.version(request.currentUser.id));
+    const connectionVersion = await connections.version(request.currentUser.id);
+    const state = issueGitHubOAuthState(request.sessionTokenHash, config().credentialEncryptionKey, Date.now(), connectionVersion);
     const url = new URL('https://github.com/login/oauth/authorize');
     url.searchParams.set('client_id', github.clientId);
     url.searchParams.set('redirect_uri', `${config().publicUrl}/api/auth/github/callback`);
-    url.searchParams.set('scope', 'repo read:user read:org');
+    url.searchParams.set('scope', 'repo read:user read:org workflow');
     url.searchParams.set('state', state);
-    return { authorizationUrl: url.toString() };
+    return { authorizationUrl: url.toString(), connectionVersion };
   });
 
   app.get('/api/auth/github/callback', async (request, reply) => {

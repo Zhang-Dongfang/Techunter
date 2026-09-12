@@ -40,6 +40,7 @@ import {
 import type { DashboardResponse, GitHubBranch, GitHubRepositoryCandidate, LedgerEntry, Project, Submission, Task, TaskStatus, TaskSummary, User } from '@techunter/core';
 import type { DesktopUpdateState } from '../../shared/desktop-contracts';
 import { AgentDock } from './AgentDock';
+import { prepareWorkspace } from './prepare-workspace';
 import { ApiError, api } from './api';
 import { ConexusLogin } from './ConexusLogin';
 import { TaskDocument } from './TaskDocument';
@@ -421,25 +422,9 @@ function TaskDetail({
   async function provisionWorkspace() {
     const desktop = window.techunterDesktop;
     if (!desktop) throw new Error('自动同步和环境配置仅在 Techunter Desktop 中可用。');
-    if (!project) throw new Error('找不到任务所属项目。');
-    const checkout = await api.checkoutAuthorization(project.id);
-    const projectLocation = await desktop.locateProject(project.id);
-    if (!projectLocation.path) {
-      const synced = await desktop.syncProject({ project, accessToken: checkout.token });
-      if (!synced) throw new Error('已取消本地目录选择，尚未准备任务工作环境。');
-    }
-    const identity = await desktop.identity();
-    setDeviceId(identity.deviceId);
-    const workspace = await api.workspace(task.id, identity);
-    await api.updateWorkspace(workspace.id, { status: 'provisioning' });
-    try {
-      const result = await desktop.provision({ project, task, accessToken: checkout.token });
-      setLocalPath(result.path);
-      await api.updateWorkspace(workspace.id, { status: 'running', headSha: result.headSha, setupLog: result.setupLog, error: null });
-    } catch (caught) {
-      await api.updateWorkspace(workspace.id, { status: 'failed', error: (caught as Error).message }).catch(() => undefined);
-      throw caught;
-    }
+    const result = await prepareWorkspace(api, desktop, task.id, me.id);
+    setLocalPath(result.path);
+    setDeviceId((await desktop.identity()).deviceId);
   }
 
   async function submitDelivery() {
@@ -511,7 +496,7 @@ function TaskDetail({
             {task.githubIssueUrl && <a className="github-box" href={task.githubIssueUrl} target="_blank" rel="noreferrer"><Github size={18} /><span><small>GitHub Issue</small>#{task.githubIssueNumber}</span><ExternalLink size={15} /></a>}
 
             <div className="action-stack">
-              {task.status === 'submitted' && submission?.status === 'reviewing' && (mine || me.role === 'admin') && <><p className="muted">交付已保存。连接中断后可继续处理，无需重新运行模型审查。</p><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('resume', () => api.resumeSubmission(submission.id))}>{busy === 'resume' ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}恢复提交</button></>}
+              {task.status === 'submitted' && submission?.status === 'reviewing' && (mine || me.role === 'admin') && <><p className="muted">{task.pendingOperation?.withdrawRequested ? '正在撤回交付，重试会继续核对和关闭 PR。' : '交付已保存。可以恢复提交；若无法继续，可撤回后修改再交付。'} 已合并的交付会保留并转入验收。</p><button className="button primary full" disabled={Boolean(busy)} onClick={() => action('resume', () => api.resumeSubmission(submission.id))}>{busy === 'resume' ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}{task.pendingOperation?.withdrawRequested ? '继续撤回' : '恢复提交'}</button>{!task.pendingOperation?.withdrawRequested && <button className="button secondary full" disabled={Boolean(busy)} onClick={() => action('withdraw', () => api.withdrawSubmission(submission.id))}>撤回交付</button>}</>}
               {task.status === 'draft' && <>
                 {task.pendingPublication && <p className="muted">发布进度已保存，可继续发布或撤回后调整任务。</p>}
                 <button className="button secondary full" disabled={Boolean(busy) || Boolean(task.pendingPublication)} onClick={() => action('analyze', async () => (await api.analyze(task.id)).task)}>{busy === 'analyze' ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}重新分析</button>
@@ -771,13 +756,13 @@ export function App() {
     setGitHubConnecting(true);
     setGitHubError('');
     try {
-      const { authorizationUrl } = await api.beginGitHubAuthorization();
+      const { authorizationUrl, connectionVersion } = await api.beginGitHubAuthorization();
       await window.techunterDesktop.openAuthenticationUrl(authorizationUrl);
       const deadline = Date.now() + 5 * 60_000;
       while (Date.now() < deadline) {
         await new Promise((resolve) => window.setTimeout(resolve, 1_500));
-        const { githubConnected } = await api.me();
-        if (!githubConnected) continue;
+        const { githubConnected, githubConnectionVersion } = await api.me();
+        if (!githubConnected || githubConnectionVersion === connectionVersion) continue;
         await load();
         setProfileOpen(false);
         return;
@@ -952,7 +937,7 @@ export function App() {
       <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={() => { setBranchReloadKey((value) => value + 1); void load(); }}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
         <span>{dashboard.me.email ?? `@${dashboard.me.login}`}</span>
         {dashboard.runtime.conexusAuthorizationRequired && <button disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}<div><strong>{conexusConnecting ? '等待浏览器授权' : '续期 Conexus 模型授权'}</strong>{conexusError && <small>{conexusError}</small>}</div></button>}
-        {!dashboard.runtime.githubConnected && dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : dashboard.me.githubLogin ? '重新连接 GitHub' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}
+        {dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : dashboard.me.githubLogin ? '重新连接 GitHub' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}
         {!dashboard.runtime.githubConnected && !dashboard.runtime.githubAccountLinkConfigured && <span>GitHub 尚未连接</span>}
         {dashboard.runtime.githubConnected && <><span>GitHub · @{dashboard.me.githubLogin}</span><button disabled={githubConnecting} onClick={() => { void disconnectGitHub(); }}><Unplug size={14} /><div><strong>断开 GitHub</strong>{githubError && <small>{githubError}</small>}</div></button></>}
         <button onClick={() => { void logout(); }}><LogOut size={14} /><div><strong>退出登录</strong></div></button>
@@ -1024,6 +1009,9 @@ export function App() {
     </main>
 
     <AgentDock
+      key={dashboard.me.id}
+      userId={dashboard.me.id}
+      onOpenTask={openTask}
       configured={dashboard.runtime.agentConfigured}
       authorizationRequired={dashboard.runtime.conexusAuthorizationRequired}
       model={dashboard.runtime.agentModel}

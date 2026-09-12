@@ -76,17 +76,19 @@ export const api = {
   me: () => request<{
     user: User;
     githubConnected: boolean;
+    githubConnectionVersion: string | null;
     modelAuthorizationExpiresAt: string | null;
     session: { expiresAt: string; idleExpiresAt: string };
   }>('/api/auth/me'),
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
-  beginGitHubAuthorization: () => post<{ authorizationUrl: string }>('/api/auth/github'),
+  beginGitHubAuthorization: () => post<{ authorizationUrl: string; connectionVersion: string }>('/api/auth/github'),
   disconnectGitHub: () => request<{ ok: boolean }>('/api/auth/github', { method: 'DELETE' }),
   dashboard: () => request<DashboardResponse>('/api/dashboard'),
   tasks: (query = '') => request<{ tasks: TaskSummary[] }>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
   recoverySubmissions: (id: string) => request<{ submissions: Submission[] }>(`/api/tasks/${id}/submissions/recovery`),
   projects: () => request<{ projects: Project[] }>('/api/projects'),
+  project: (id: string) => request<Project>(`/api/projects/${id}`),
   githubRepositories: () => request<{ repositories: GitHubRepositoryCandidate[] }>('/api/github/repositories'),
   importProject: (githubRepositoryId: number) => post<Project>('/api/projects/import', { githubRepositoryId }),
   projectBranches: (projectId: string) => retryTransientRequest(() =>
@@ -118,6 +120,7 @@ export const api = {
     request<Workspace>(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   submit: (id: string, body: { workspaceId: string; summary: string; testOutput: string; files: PackageFile[]; headSha: string }) => post<Submission>(`/api/tasks/${id}/submissions`, body),
   resumeSubmission: (id: string) => post<Submission>(`/api/submissions/${id}/resume`),
+  withdrawSubmission: (id: string) => post<Submission>(`/api/submissions/${id}/withdraw`),
   accept: (submissionId: string) => post<Task>(`/api/submissions/${submissionId}/accept`),
   requestChanges: (submissionId: string, reason: string) =>
     post<Task>(`/api/submissions/${submissionId}/request-changes`, { reason }),

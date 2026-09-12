@@ -93,7 +93,7 @@ export interface Task {
   id: string;
   version: number;
   pendingPublication?: { rewardPoints: number } | null;
-  pendingOperation?: { id: string; kind: 'publish' | 'submit' | 'claim' | 'release' | 'accept' | 'request_changes' | 'cancel' } | null;
+  pendingOperation?: { id: string; kind: 'publish' | 'submit' | 'claim' | 'release' | 'accept' | 'request_changes' | 'cancel'; withdrawRequested?: boolean } | null;
   projectId: string;
   projectName: string;
   parentTaskId: string | null;
@@ -242,4 +242,11 @@ export interface AgentActivity {
 export interface AgentChatResponse {
   reply: string;
   activities: AgentActivity[];
+  workspaceRequests?: WorkspacePreparationRequest[];
+}
+
+export interface WorkspacePreparationRequest {
+  taskId: string;
+  workspaceId: string;
+  deviceId: string;
 }

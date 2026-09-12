@@ -2,6 +2,14 @@
 
 审查基线：`56c25d07abd7abc3eec6dd56415b61398b4654ef`。核对现有六轮报告、API、数据库迁移、GitHub 授权及交付流程、共享 Core 和 Desktop。本轮确认三项现存问题：一项 P1、两项 P2。优先级表示建议修复顺序，隔离复现不代表线上已经发生事故。
 
+**修复更新：以下三项已按用户要求修复。** 下文编号条目保留审查时的触发条件和旧行号，不表示修复后仍存在。
+
+- 新增迁移 `202609120009_submission_withdrawal.sql` 和「撤回交付」入口。撤回意图在原提交租约内持久化，重试恢复时继续撤回；核对并关闭未合并 PR 后恢复 active，保留执行者、分支成果及冻结贡献点。已合并且原审核快照匹配的提交恢复为待验收，仍按原作者结算。网络失败或证据不匹配时不允许取消退款。OAuth 授权补充 `workflow`，账号菜单允许已有连接重新授权，并按连接版本确认成功。
+- GitHub 凭据改为按需获取。首页、账号信息和 Conexus 续期不再刷新 GitHub 令牌；需要 GitHub 的操作仍保留刷新租约并明确报告故障，失效的用户令牌不会悄悄切换到共享 App 凭据。助手在无法读取仓库时仍可查询任务。
+- 助手响应携带结构化环境准备请求，由当前 Desktop 执行；与任务详情复用设备/账号校验、目录选择、setup 和状态回写，相同任务共用进行中的准备。聊天显示实际结果并提供失败后的任务入口。模型正文不会作为本机命令执行。聊天响应丢失或执行前退出后，可从任务详情继续已排队的请求。
+
+新增 15 项正式回归（API 9、Desktop 6），总计 157 项测试通过；全 workspace 类型检查和完整构建通过。回归覆盖真实迁移 008 的未完成提交升级、永久拒绝撤回、撤回中断恢复、丢失 PR 地址、合并竞争、快照不一致、防止重复结算、权限/租约、GitHub 刷新故障隔离和 Desktop 准备/重试。正式回归位于 [task-recovery-round7.test.mjs](../apps/api/test/task-recovery-round7.test.mjs) 和 [prepare-workspace.test.ts](../apps/desktop/src/web/src/prepare-workspace.test.ts)；原诊断入口现转发正式回归。部署前停止旧 API 写入，先应用迁移 009，再更新 API 和 Desktop。旧 OAuth 连接需重新授权以取得工作流权限。本次未执行生产迁移或部署。
+
 1. **P1 · 永久性的 GitHub 交付拒绝会留下无法撤回的提交，持续占用任务和贡献点。**
 
    位置：[task-service.ts:490](../apps/api/src/task-service.ts#L490)、[auth.ts:330](../apps/api/src/auth.ts#L330)、[取消操作检查](../infra/supabase/migrations/202609120004_task_coordination.sql#L194)、[Desktop 恢复入口](../apps/desktop/src/web/src/App.tsx#L514)。
@@ -53,7 +61,7 @@
 | `npm audit --json` | 当前锁文件 0 项漏洞告警 |
 | 独立诊断 | 3 项通过，断言本轮观察到的问题行为 |
 
-诊断保存在 [review-round7.mjs](diagnostics/review-round7.mjs)，不纳入正常 `npm test`；当前断言用于复现缺陷，修复后应改为验证期望行为。运行方式：
+上表为修复前审查基线。原诊断已转为随 `npm test` 执行的正式回归，[review-round7.mjs](diagnostics/review-round7.mjs) 保留为兼容运行入口，断言修复后的正确行为。运行方式：
 
 ```powershell
 npm run build --workspace @techunter/core
@@ -61,6 +69,6 @@ npm run build --workspace @techunter/api
 node --test docs/diagnostics/review-round7.mjs
 ```
 
-本轮只新增报告和诊断脚本，没有修改业务代码。数据库为内存 PGlite，GitHub、Supabase HTTP 和模型均使用本地替身；没有访问生产数据库、执行线上迁移、写入真实 GitHub 或调用付费模型。未验证安装包、自动更新、真实 OAuth 授权页面、生产配置及非 Windows 平台。
+审查阶段只新增报告和诊断脚本；之后的修复包含业务代码、迁移及正式回归。数据库为内存 PGlite，GitHub、Supabase HTTP 和模型均使用本地替身；没有访问生产数据库、执行线上迁移、写入真实 GitHub 或调用付费模型。未验证安装包、自动更新、真实 OAuth 授权页面、生产配置及非 Windows 平台。
 
 此前报告中的私有仓库自动邀请、共享任务详情中的日志/邮箱，以及宿主机命令执行的信任边界仍保留，详见[第五轮报告](system-review-round5-2026-09-12.md)。这些不是本轮新增项；现有自动化测试通过也不等于这些部署边界已经解决。

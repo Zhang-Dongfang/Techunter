@@ -44,3 +44,7 @@ npm run migrate:sqlite --workspace @techunter/api -- apps/desktop/.data/techunte
 ```
 
 脚本迁移共享业务数据，但不会迁移会话和机器本地工作区路径。迁移完成后不存在 SQLite 双写或运行时回退。
+
+本轮升级还需应用 `202609120009_submission_withdrawal.sql`。作者或管理员可调用 `POST /api/submissions/:id/withdraw` 安全撤回尚在恢复中的交付；撤回意图持久化，普通 resume 也会继续撤回。未合并 PR 关闭后任务回到 active，原分支、执行者和冻结贡献点保留；已合并且审核快照匹配时转回待验收。网络错误或证据不匹配时仍禁止取消退款。部署前停止旧 API 写入，迁移后同时更新 API/Desktop。
+
+会话认证不再调用 GitHub 刷新；只有需要 GitHub 的接口按需取得凭据。Dashboard 的 `githubConnected` 表示账号保存了连接，不保证远端实时可用；需要 GitHub 的操作仍会明确报告授权或服务故障。`/api/auth/me` 与发起 GitHub 授权的响应携带连接版本，Desktop 用其确认重新授权已完成。OAuth 连接新增 `workflow` scope，旧用户可在账号菜单重新连接；GitHub App 使用 Workflows write 权限。助手响应中的 `workspaceRequests` 是经过任务/设备校验的准备请求，Desktop 消费该结构化字段，不解析模型正文来执行命令。

@@ -16,6 +16,7 @@ import {
   type Project,
   type Task,
   type DeliveryReview,
+  type Submission,
 } from '@techunter/core';
 import { config } from './config.js';
 import { httpError } from './errors.js';
@@ -436,6 +437,53 @@ export class GitHubService {
       owner: project.repoOwner, repo: project.repoName, state: 'all', head: `${project.repoOwner}:${branch}`, per_page: 100,
     });
     return pulls.filter(pull => pull.head.ref === branch && pull.head.repo?.id === project.githubRepositoryId);
+  }
+
+  async withdrawSubmission(task: Task, project: Project, submission: Submission, userCredential?: string,
+    checkpoint: () => Promise<void> = async () => {}): Promise<{ merged: boolean; pullUrl: string | null }> {
+    const octokit = await this.client(userCredential);
+    let pullUrl = submission.pullRequestUrl;
+    const inspect = async () => {
+      // A missing saved URL is not evidence that no PR was created.
+      const numbers = new Set((await this.taskPulls(octokit, task, project)).map(pull => pull.number));
+      if (pullUrl) numbers.add(this.submissionPull(project, pullUrl).pull_number);
+      for (const number of numbers) {
+        const location = { owner: project.repoOwner, repo: project.repoName, pull_number: number };
+        let pull = (await octokit.pulls.get(location)).data;
+        if (!pull.merged && pull.state === 'open') {
+          await checkpoint();
+          try { await octokit.pulls.update({ ...location, state: 'closed' }); }
+          catch (error) {
+            pull = (await octokit.pulls.get(location)).data;
+            if (!pull.merged) throw error;
+          }
+          pull = (await octokit.pulls.get(location)).data;
+        }
+        if (pull.merged) {
+          if (submission.review?.verdict !== 'approved' || !submission.reviewedTreeSha) {
+            throw httpError('PR 已合并但缺少通过预审的快照，需要核对交付后恢复，不能撤回。', 409, 'PULL_REVIEW_MISSING');
+          }
+          await this.completeTask(task, project, pull.html_url, userCredential, {
+            treeSha: submission.reviewedTreeSha, mergedOnly: true, verifyOnly: true, beforeMerge: async () => {},
+          });
+          return pull.html_url;
+        }
+        if (pull.state !== 'closed') throw httpError('PR 尚未关闭，请重试撤回。', 409, 'PULL_SCOPE_INVALID');
+        pullUrl ??= pull.html_url;
+      }
+      return null;
+    };
+    let mergedUrl = await inspect();
+    if (mergedUrl) return { merged: true, pullUrl: mergedUrl };
+    if (task.githubIssueNumber) {
+      await checkpoint();
+      await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName,
+        issue_number: task.githubIssueNumber, labels: [taskLabels.changesNeeded] });
+    }
+    // Include merges/reopened PRs racing with Issue synchronization. Never reset
+    // the branch: it may contain accepted child work and local users may rely on it.
+    mergedUrl = await inspect();
+    return { merged: Boolean(mergedUrl), pullUrl: mergedUrl ?? pullUrl };
   }
 
   async mergedSubmissionUrl(task: Task, project: Project, treeSha: string, userCredential?: string): Promise<string | null> {

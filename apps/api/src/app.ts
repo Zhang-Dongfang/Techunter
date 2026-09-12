@@ -102,33 +102,39 @@ export async function buildApp() {
   app.get('/api/projects', async () => ({ projects: await tasks.projects() }));
   app.get('/api/projects/:id', async (request) => tasks.getProject(idParams.parse(request.params).id));
   app.get('/api/github/repositories', async (request) => {
-    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     const projects = await tasks.projects();
-    return { repositories: await github.listRepositories(request.githubCredential, new Set(projects.map((project) => project.githubRepositoryId))) };
+    return { repositories: await github.listRepositories(githubCredential, new Set(projects.map((project) => project.githubRepositoryId))) };
   });
   app.post('/api/projects/import', async (request, reply) => {
-    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    const repository = await github.repository(importProjectBody.parse(request.body).githubRepositoryId, request.githubCredential);
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    const repository = await github.repository(importProjectBody.parse(request.body).githubRepositoryId, githubCredential);
     return reply.code(201).send(await tasks.importProject(repository, request.currentUser));
   });
   app.get('/api/projects/:id/branches', async (request) => {
-    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    return tasks.projectBranches(idParams.parse(request.params).id, request.githubCredential);
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    return tasks.projectBranches(idParams.parse(request.params).id, githubCredential);
   });
   app.patch('/api/projects/:id/branch', async (request) => {
-    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     assertRole(request, ['admin', 'maintainer']);
     const projectId = idParams.parse(request.params).id;
-    return tasks.switchProjectBranch(projectId, switchProjectBranchBody.parse(request.body).sourceBranch, request.currentUser, request.githubCredential);
+    return tasks.switchProjectBranch(projectId, switchProjectBranchBody.parse(request.body).sourceBranch, request.currentUser, githubCredential);
   });
   app.get('/api/projects/:id/checkout-authorization', async (request) => {
-    if (!request.githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
     const project = await tasks.getProject(idParams.parse(request.params).id);
-    return github.checkoutAuthorization(project, request.githubCredential);
+    return github.checkoutAuthorization(project, githubCredential);
   });
   app.post('/api/projects/:id/collaboration-request', async (request) => {
-    if (!request.githubCredential) throw httpError('提交合作者申请前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    return tasks.requestProjectCollaboration(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('提交合作者申请前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    return tasks.requestProjectCollaboration(idParams.parse(request.params).id, request.currentUser, githubCredential);
   });
 
   app.get('/api/tasks', async (request) => {
@@ -150,7 +156,7 @@ export async function buildApp() {
     const task = await tasks.getTask(id);
     let githubSynced: boolean | null = null;
     if (decision.approvedPaths.length) {
-      try { await github.syncTaskScope(task, await tasks.getProject(task.projectId), request.githubCredential); githubSynced = true; }
+      try { await github.syncTaskScope(task, await tasks.getProject(task.projectId), await request.getGitHubCredential()); githubSynced = true; }
       catch { githubSynced = false; } // A transport failure must not undo or duplicate an atomic decision.
     }
     return { request: decision, task, githubSynced };
@@ -162,39 +168,41 @@ export async function buildApp() {
   app.post('/api/tasks/:id/scope/sync', async (request) => {
     const task = await tasks.getTask(idParams.parse(request.params).id);
     if (!canReviewScope(task, request.currentUser)) throw httpError('只有任务发布者或管理员可以同步范围。', 403);
-    await github.syncTaskScope(task, await tasks.getProject(task.projectId), request.githubCredential);
+    await github.syncTaskScope(task, await tasks.getProject(task.projectId), await request.getGitHubCredential());
     return { synced: true };
   });
   app.delete('/api/tasks/:id', async (request) => {
-    return tasks.removeTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
+    return tasks.removeTask(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential());
   });
   app.post('/api/tasks', async (request, reply) => {
     const body = createTaskBody.parse(request.body);
-    if (!request.githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    await tasks.syncProject(body.projectId, request.currentUser, request.githubCredential);
-    return reply.code(201).send(await tasks.createDraft({ ...body, publisherId: request.currentUser.id }, request.githubCredential));
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('创建任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    await tasks.syncProject(body.projectId, request.currentUser, githubCredential);
+    return reply.code(201).send(await tasks.createDraft({ ...body, publisherId: request.currentUser.id }, githubCredential));
   });
   app.post('/api/tasks/:id/analyze', async (request) => {
     if (config().ai.accessMode === 'conexus' && !request.modelAuthorization) {
       throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
     }
     const { id } = idParams.parse(request.params);
-    const analysis = await tasks.analyzeTask(id, request.currentUser, request.modelAuthorization, request.githubCredential);
+    const analysis = await tasks.analyzeTask(id, request.currentUser, request.modelAuthorization, await request.getGitHubCredential());
     return { analysis, task: await tasks.getTask(id) };
   });
   app.post('/api/tasks/:id/publish', async (request) => {
     const { id } = idParams.parse(request.params);
-    return tasks.publishTask(id, request.currentUser, publishBody.parse(request.body ?? {}).rewardPoints, request.githubCredential);
+    return tasks.publishTask(id, request.currentUser, publishBody.parse(request.body ?? {}).rewardPoints, await request.getGitHubCredential());
   });
-  app.post('/api/tasks/:id/claim', async (request) => tasks.claimTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
-  app.post('/api/tasks/:id/cancel-publication', async (request) => tasks.cancelPublication(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
-  app.post('/api/tasks/:id/release', async (request) => tasks.releaseTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
+  app.post('/api/tasks/:id/claim', async (request) => tasks.claimTask(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential()));
+  app.post('/api/tasks/:id/cancel-publication', async (request) => tasks.cancelPublication(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential()));
+  app.post('/api/tasks/:id/release', async (request) => tasks.releaseTask(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential()));
   app.post('/api/tasks/:id/subtasks', async (request, reply) => {
     const parentId = idParams.parse(request.params).id;
     const body = createTaskBody.omit({ parentTaskId: true }).parse(request.body);
-    if (!request.githubCredential) throw httpError('创建子任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
-    await tasks.syncProject(body.projectId, request.currentUser, request.githubCredential);
-    return reply.code(201).send(await tasks.createDraft({ ...body, parentTaskId: parentId, publisherId: request.currentUser.id }, request.githubCredential));
+    const githubCredential = await request.getGitHubCredential();
+    if (!githubCredential) throw httpError('创建子任务前请先连接 GitHub 账号。', 401, 'GITHUB_ACCOUNT_REQUIRED');
+    await tasks.syncProject(body.projectId, request.currentUser, githubCredential);
+    return reply.code(201).send(await tasks.createDraft({ ...body, parentTaskId: parentId, publisherId: request.currentUser.id }, githubCredential));
   });
   app.post('/api/tasks/:id/workspaces', async (request, reply) => reply.code(201).send(await tasks.createWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceBody.parse(request.body))));
   app.patch('/api/workspaces/:id', async (request) => tasks.updateWorkspace(idParams.parse(request.params).id, request.currentUser, workspaceUpdateBody.parse(request.body)));
@@ -202,17 +210,19 @@ export async function buildApp() {
     if (config().ai.accessMode === 'conexus' && !request.modelAuthorization) {
       throw httpError('Conexus 模型授权已过期，请重新授权。', 401, 'CONEXUS_AUTHORIZATION_REQUIRED');
     }
-    return reply.code(201).send(await tasks.submitTask(idParams.parse(request.params).id, request.currentUser, submitBody.parse(request.body), request.modelAuthorization, request.githubCredential));
+    return reply.code(201).send(await tasks.submitTask(idParams.parse(request.params).id, request.currentUser, submitBody.parse(request.body), request.modelAuthorization, await request.getGitHubCredential()));
   });
   app.post('/api/submissions/:id/accept', async (request) => {
     assertRole(request, ['admin', 'maintainer']);
-    return tasks.acceptSubmission(idParams.parse(request.params).id, request.currentUser, request.githubCredential);
+    return tasks.acceptSubmission(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential());
   });
   app.post('/api/submissions/:id/resume', async (request) =>
-    tasks.resumeSubmission(idParams.parse(request.params).id, request.currentUser, request.githubCredential));
+    tasks.resumeSubmission(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential()));
+  app.post('/api/submissions/:id/withdraw', async (request) =>
+    tasks.withdrawSubmission(idParams.parse(request.params).id, request.currentUser, await request.getGitHubCredential()));
   app.post('/api/submissions/:id/request-changes', async (request) => {
     assertRole(request, ['admin', 'maintainer']);
-    return tasks.requestChanges(idParams.parse(request.params).id, request.currentUser, changesBody.parse(request.body).reason, request.githubCredential);
+    return tasks.requestChanges(idParams.parse(request.params).id, request.currentUser, changesBody.parse(request.body).reason, await request.getGitHubCredential());
   });
   app.get('/api/points', async (request) => tasks.points(request.currentUser.id));
   app.get('/api/audit', async (request) => {
@@ -221,7 +231,7 @@ export async function buildApp() {
   });
   app.post('/api/agent/chat', async (request) => {
     const body = assistantBody.parse(request.body);
-    return assistant.chat({ ...body, user: request.currentUser, modelCredential: request.modelAuthorization?.credential, modelAudience: request.modelAuthorization?.audience, githubCredential: request.githubCredential });
+    return assistant.chat({ ...body, user: request.currentUser, modelCredential: request.modelAuthorization?.credential, modelAudience: request.modelAuthorization?.audience, getGitHubCredential: request.getGitHubCredential });
   });
 
   app.post('/api/github/webhook', { config: { rawBody: true } }, async (request, reply) => {
