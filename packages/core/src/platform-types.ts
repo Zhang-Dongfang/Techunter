@@ -131,7 +131,36 @@ export type TaskSummary = Pick<
   | 'assignee'
   | 'createdAt'
   | 'updatedAt'
->;
+> & { pendingScopeRequestCount?: number };
+
+export interface ScopeRequestInput {
+  scopeRevision: number;
+  files: Array<{ path: string; reason: string }>;
+  reason: string;
+  evidence: string;
+  alternatives: string;
+  validationPlan: string;
+  retryOf?: string;
+}
+
+export interface ScopeRequestDecision {
+  decision: 'approve' | 'reject';
+  approvedPaths: string[];
+  reason: string;
+}
+
+export interface ScopeRequest extends ScopeRequestInput {
+  id: string;
+  taskId: string;
+  requesterId: string;
+  status: 'pending' | 'approved' | 'partially_approved' | 'rejected' | 'withdrawn' | 'superseded';
+  approvedPaths: string[];
+  reviewerId: string | null;
+  reviewReason: string | null;
+  resultingRevision: number | null;
+  createdAt: string;
+  resolvedAt: string | null;
+}
 
 export interface Workspace {
   id: string;

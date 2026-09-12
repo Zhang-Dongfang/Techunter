@@ -16,6 +16,10 @@ Techunter 登录会话具有 30 天绝对期限和 7 天空闲期限。Conexus R
 
 API Docker 镜像只构建中央 API 和它依赖的 `@techunter/core`，不包含或托管 Web UI。Electron 在本机提供打包后的 UI，并通过 HTTPS 调用这里的 API。
 
+## 修改范围复议升级
+
+部署带有复议接口的 API 前，先应用 `infra/supabase/migrations/202609080001_scope_requests.sql`。接取者在 Desktop 任务详情提交逐文件申请，发布者或管理员在审核中心审批；批准后更新范围版本并尝试同步 GitHub Issue。同步失败可以单独重试，不会撤销授权。完整边界、流程与接口见 [复议机制设计](../../docs/scope-reconsideration.md)。
+
 ## 本地 SQLite 一次性迁移
 
 正式切换前可以运行：

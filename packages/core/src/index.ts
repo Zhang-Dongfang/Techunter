@@ -6,3 +6,4 @@ export * from './repository-tools.js';
 export * from './task-agents.js';
 export * from './task-conventions.js';
 export * from './platform-types.js';
+export * from './scope-policy.js';

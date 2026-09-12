@@ -15,8 +15,10 @@ import { httpError } from './errors.js';
 import { GitHubService } from './github-service.js';
 import { desktopCorsMethods } from './http-policy.js';
 import { TaskService } from './task-service.js';
+import { canReviewScope, ScopeRequestService } from './scope-request-service.js';
 
 const idParams = z.object({ id: z.string().uuid() });
+const scopeRequestParams = idParams.extend({ requestId: z.string().uuid() });
 const createTaskBody = z.object({
   projectId: z.string().uuid(),
   title: z.string().trim().min(3).max(160),
@@ -62,6 +64,7 @@ export async function buildApp() {
   const github = new GitHubService();
   const agent = new AgentService(github);
   const tasks = new TaskService(github, agent);
+  const scopeRequests = new ScopeRequestService(tasks);
   const assistant = new AssistantService(tasks, github);
 
   await app.register(cookie);
@@ -130,6 +133,31 @@ export async function buildApp() {
     return { tasks: await tasks.listTasks({ status: query.status, assigneeId: query.mine === 'true' ? request.currentUser.id : undefined, search: query.search }) };
   });
   app.get('/api/tasks/:id', async (request) => tasks.getTask(idParams.parse(request.params).id));
+  app.get('/api/tasks/:id/scope-requests', async (request) => ({ requests: await scopeRequests.list(idParams.parse(request.params).id, request.currentUser) }));
+  app.post('/api/tasks/:id/scope-requests', async (request, reply) => reply.code(201).send(
+    await scopeRequests.create(idParams.parse(request.params).id, request.currentUser, request.body as Parameters<ScopeRequestService['create']>[2]),
+  ));
+  app.post('/api/tasks/:id/scope-requests/:requestId/decision', async (request) => {
+    const { id, requestId } = scopeRequestParams.parse(request.params);
+    const decision = await scopeRequests.decide(id, requestId, request.currentUser, request.body as Parameters<ScopeRequestService['decide']>[3]);
+    const task = await tasks.getTask(id);
+    let githubSynced: boolean | null = null;
+    if (decision.approvedPaths.length) {
+      try { await github.syncTaskScope(task, await tasks.getProject(task.projectId), request.githubCredential); githubSynced = true; }
+      catch { githubSynced = false; } // A transport failure must not undo or duplicate an atomic decision.
+    }
+    return { request: decision, task, githubSynced };
+  });
+  app.post('/api/tasks/:id/scope-requests/:requestId/withdraw', async (request) => {
+    const { id, requestId } = scopeRequestParams.parse(request.params);
+    return scopeRequests.withdraw(id, requestId, request.currentUser);
+  });
+  app.post('/api/tasks/:id/scope/sync', async (request) => {
+    const task = await tasks.getTask(idParams.parse(request.params).id);
+    if (!canReviewScope(task, request.currentUser)) throw httpError('只有任务发布者或管理员可以同步范围。', 403);
+    await github.syncTaskScope(task, await tasks.getProject(task.projectId), request.githubCredential);
+    return { synced: true };
+  });
   app.delete('/api/tasks/:id', async (request) => {
     assertRole(request, ['admin']);
     return tasks.removeTask(idParams.parse(request.params).id, request.currentUser, request.githubCredential);

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Project, Task } from '@techunter/core';
+import { expandTaskScope, type Project, type Task } from '@techunter/core';
 import { LocalAgent } from './local-agent.js';
 
 const exec = promisify(execFile);
@@ -64,5 +64,10 @@ describe('LocalAgent', () => {
     expect(changes.files).toEqual([{ path: 'src/feature.ts', content: 'export const enabled = true;\n', encoding: 'utf-8' }]);
     await fs.writeFile(path.join(result.path, 'README.md'), '# changed\n');
     await expect(agent.collectChanges(task)).rejects.toThrow('超出任务 editablePaths');
+    const approvedTask = { ...task, scope: expandTaskScope(task.scope!, ['README.md']) };
+    const approvedChanges = await agent.collectChanges(approvedTask);
+    expect(approvedChanges.files.map((file) => file.path)).toEqual(['README.md', 'src/feature.ts']);
+    await fs.writeFile(path.join(result.path, 'src', 'branch-only.ts'), 'unauthorized change');
+    await expect(agent.collectChanges(approvedTask)).rejects.toThrow('branch-only.ts');
   });
 });

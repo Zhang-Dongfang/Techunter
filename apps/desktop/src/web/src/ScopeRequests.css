@@ -1,0 +1,30 @@
+.scope-requests .section-title { gap: 9px; }
+.scope-requests .section-title .icon-button { margin-left: auto; }
+.scope-help, .scope-review > p { color: var(--muted-2); font-size: 12px; line-height: 1.7; }
+.scope-help svg { vertical-align: middle; }
+.scope-notice { padding: 12px; border: 1px solid #36473a; background: #17231c; color: #b8d5c0; font-size: 12px; line-height: 1.7; border-radius: 8px; overflow-wrap: anywhere; }
+.scope-request-form { margin-top: 16px; padding: 16px; border: 1px solid #30363d; border-radius: 9px; background: #11151a; }
+.scope-request-form > strong { font-size: 13px; }
+.scope-file-input { display: grid; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #30363d; }
+.scope-file-input > .icon-button { justify-self: end; }
+.scope-history { display: grid; gap: 10px; margin-top: 16px; }
+.scope-history > details { border: 1px solid #30363d; border-radius: 9px; overflow: hidden; }
+.scope-history summary { cursor: pointer; padding: 12px; font-size: 12px; line-height: 1.8; }
+.scope-history summary span { margin-right: 12px; }
+.scope-history summary small { color: var(--muted-2); white-space: nowrap; }
+.scope-history-body { padding: 0 14px 14px; font-size: 12px; }
+.scope-history-body dt { margin-top: 14px; color: var(--muted-2); font-size: 11px; }
+.scope-history-body dd { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.scope-history-file { padding: 10px 0; border-bottom: 1px solid #30363d; }
+.scope-history-file code, .scope-checkbox code { overflow-wrap: anywhere; white-space: normal; }
+.scope-history-file > span { margin-left: 10px; color: #b8d5c0; }
+.scope-history-file p { margin: 7px 0 0; color: var(--muted-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.scope-review { margin-top: 18px; padding-top: 12px; border-top: 1px solid #30363d; }
+.scope-review label.scope-checkbox { display: flex; align-items: center; gap: 10px; }
+.scope-review .scope-checkbox input { width: 16px; height: 16px; flex-shrink: 0; accent-color: #a6cc86; }
+.scope-pending-badge { font-size: 10px; color: #dec891; border: 1px solid #554a31; border-radius: 5px; padding: 3px 5px; }
+@media (max-width: 640px) {
+  .scope-request-form { padding: 12px; }
+  .scope-requests .form-actions { flex-wrap: wrap; }
+  .scope-history summary small { display: block; }
+}

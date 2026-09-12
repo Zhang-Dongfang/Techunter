@@ -19,6 +19,7 @@ import {
 } from '@techunter/core';
 import { config } from './config.js';
 import { httpError } from './errors.js';
+import { assertPullFilesInScope, scopeIssueBody } from './github-scope.js';
 
 function visibility(value: unknown, privateRepository: boolean): GitHubRepositoryCandidate['visibility'] {
   if (value === 'internal') return 'internal';
@@ -261,6 +262,14 @@ export class GitHubService {
     return { name, headSha: created.data.object.sha, created: true };
   }
 
+  async syncTaskScope(task: Task, project: Project, userCredential?: string): Promise<void> {
+    if (!task.githubIssueNumber || !task.scope) throw httpError('任务缺少 GitHub Issue 或文件范围。', 409);
+    const octokit = await this.client(userCredential);
+    const location = { owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber };
+    const issue = await octokit.issues.get(location);
+    await octokit.issues.update({ ...location, body: scopeIssueBody(issue.data.body ?? '', task.scope) });
+  }
+
   async syncClaim(task: Task, project: Project, githubLogin: string, userCredential?: string): Promise<void> {
     if (!task.githubIssueNumber) return;
     const octokit = await this.client(userCredential);
@@ -357,7 +366,21 @@ export class GitHubService {
   async completeTask(task: Task, project: Project, pullRequestUrl: string | null, userCredential?: string): Promise<void> {
     const octokit = await this.client(userCredential);
     const match = pullRequestUrl?.match(/\/pull\/(\d+)/);
-    if (match) await octokit.pulls.merge({ owner: project.repoOwner, repo: project.repoName, pull_number: Number(match[1]), merge_method: 'merge' });
+    if (!match || !task.scope) throw httpError('任务缺少可校验的 PR 或文件范围。', 409);
+    const location = { owner: project.repoOwner, repo: project.repoName, pull_number: Number(match[1]) };
+    const pull = (await octokit.pulls.get(location)).data;
+    const expectedBranch = task.githubIssueNumber && task.assignee?.githubLogin
+      ? makeTaskBranchName(task.githubIssueNumber, task.assignee.githubLogin) : `task-${task.id.slice(0, 8)}`;
+    if (pull.state !== 'open' || pull.base.ref !== task.targetBranch || pull.head.ref !== expectedBranch || pull.head.repo?.id !== project.githubRepositoryId) {
+      throw httpError('PR 状态、目标分支或来源仓库与任务不一致。', 409, 'PULL_SCOPE_INVALID');
+    }
+    const files = await octokit.paginate(octokit.pulls.listFiles, { ...location, per_page: 100 });
+    assertPullFilesInScope(files, pull.changed_files, task.scope);
+    // Reject concurrent pushes during pagination and pin the merge to the checked head.
+    const latest = (await octokit.pulls.get(location)).data;
+    if (latest.head.sha !== pull.head.sha || latest.base.sha !== pull.base.sha || latest.base.ref !== pull.base.ref) throw httpError('PR 在范围校验期间发生变化，请重新验收。', 409);
+    const merged = await octokit.pulls.merge({ ...location, sha: pull.head.sha, merge_method: 'merge' });
+    if (!merged.data.merged) throw httpError('GitHub 尚未合并 PR，请处理合并限制后重新验收。', 409);
     if (task.githubIssueNumber) await octokit.issues.update({ owner: project.repoOwner, repo: project.repoName, issue_number: task.githubIssueNumber, state: 'closed', labels: [] });
   }
 
