@@ -18,12 +18,21 @@ export interface AgentTool {
       parameters?: Record<string, unknown>;
     };
   };
-  execute(input: Record<string, unknown>): Promise<string>;
+  execute(input: Record<string, unknown>, context?: { signal: AbortSignal }): Promise<string>;
+}
+
+export interface AgentUsage {
+  iteration: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  elapsedMs: number;
 }
 
 export interface AgentHooks {
   onToolCall?(name: string, input: Record<string, unknown>): void;
   onToolResult?(name: string, result: string): void;
+  onUsage?(usage: AgentUsage): void;
 }
 
 export interface AgentChatMessage {

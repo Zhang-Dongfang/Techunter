@@ -8,7 +8,7 @@ export function isTransientRequestError(error: unknown): boolean {
   if (error instanceof TypeError) return true;
   if (!error || typeof error !== 'object' || !('status' in error)) return false;
   const status = Number((error as { status?: unknown }).status);
-  return status === 429 || (status >= 500 && status <= 599);
+  return status === 0 || status === 429 || (status >= 500 && status <= 599);
 }
 
 export async function retryTransientRequest<T>(

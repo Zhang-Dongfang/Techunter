@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Bot, ChevronDown, ChevronUp, Loader2, Send, Sparkles, Trash2, XCircle } from 'lucide-react';
 
 import type { AgentActivity, AgentChatMessage } from '@techunter/core';
@@ -50,6 +50,23 @@ export function AgentDock({
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const sequence = useRef(0);
+  const activeRequest = useRef<AbortController | null>(null);
+  const sending = useRef(false);
+  const [preparing, setPreparing] = useState(false);
+  const thread = useRef<HTMLDivElement>(null);
+  const context = useRef(projectId);
+  // A conversation belongs to the project in which it started. Preserve it
+  // during a local setup, then clear it before sending into a new project.
+  useEffect(() => {
+    if (context.current === projectId || busy) return;
+    context.current = projectId;
+    setMessages([]);
+    setInput('');
+  }, [projectId, busy]);
+  useEffect(() => () => { activeRequest.current?.abort(); }, []);
+  useEffect(() => {
+    if (thread.current) thread.current.scrollTop = thread.current.scrollHeight;
+  }, [messages, busy, expanded]);
 
   function nextId(): string {
     sequence.current += 1;
@@ -58,7 +75,10 @@ export function AgentDock({
 
   async function send(message = input) {
     const text = message.trim();
-    if (!configured || busy || !text) return;
+    if (!configured || sending.current || !text) return;
+    sending.current = true;
+    const controller = new AbortController();
+    activeRequest.current = controller;
     const history = chatHistory(messages);
     const userMessage: DisplayMessage = { id: nextId(), role: 'user', content: text };
     setMessages((current) => [...current, userMessage]);
@@ -67,7 +87,9 @@ export function AgentDock({
     setBusy(true);
     try {
       const identity = await window.techunterDesktop?.identity();
-      const result = await api.chat({ message: text, history, projectId, ...identity });
+      controller.signal.throwIfAborted();
+      const result = await api.chat({ message: text, history, projectId, ...identity }, controller.signal);
+      controller.signal.throwIfAborted();
       setMessages((current) => [...current, {
         id: nextId(),
         role: 'assistant',
@@ -76,6 +98,7 @@ export function AgentDock({
       }]);
       onChanged();
       for (const request of result.workspaceRequests ?? []) {
+        setPreparing(true);
         const id = nextId();
         setMessages(current => [...current, { id, role: 'assistant', content: '正在本机准备工作环境…', taskId: request.taskId }]);
         try {
@@ -92,10 +115,14 @@ export function AgentDock({
       setMessages((current) => [...current, {
         id: nextId(),
         role: 'assistant',
-        content: (caught as Error).message,
-        error: true,
+        content: controller.signal.aborted ? '已停止等待。若已执行任务操作，请刷新查看最新状态。' : (caught as Error).message,
+        error: !controller.signal.aborted,
       }]);
+      if (controller.signal.aborted) onChanged();
     } finally {
+      activeRequest.current = null;
+      sending.current = false;
+      setPreparing(false);
       setBusy(false);
     }
   }
@@ -106,7 +133,7 @@ export function AgentDock({
   }
 
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       void send();
     }
@@ -116,10 +143,10 @@ export function AgentDock({
     {expanded && <div className="agent-thread">
       <div className="agent-thread-head">
         <div><span className="agent-avatar"><Bot size={17} /></span><div><strong>Techunter Agent</strong><small>{model ?? '未配置模型'}</small></div></div>
-        <div><button title="清空对话" onClick={() => setMessages([])}><Trash2 size={15} /></button><button title="收起" onClick={() => setExpanded(false)}><ChevronDown size={17} /></button></div>
+        <div><button title="清空对话" disabled={busy} onClick={() => setMessages([])}><Trash2 size={15} /></button><button title="收起" onClick={() => setExpanded(false)}><ChevronDown size={17} /></button></div>
       </div>
-      <div className="agent-messages">
-        {messages.length === 0 && <div className="agent-welcome"><Sparkles size={20} /><strong>任务与代码助手</strong><span>可以查询任务、创建任务草稿、认领工作、扫描代码或执行仓库命令。</span><div>{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</button>)}</div></div>}
+      <div className="agent-messages" ref={thread}>
+        {messages.length === 0 && <div className="agent-welcome"><Sparkles size={20} /><strong>任务与代码助手</strong><span>可以查询任务、创建任务草稿、认领工作和分析仓库代码。</span><div>{suggestions.map((suggestion) => <button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</button>)}</div></div>}
         {messages.map((message) => <div key={message.id} className={`agent-message ${message.role}${message.error ? ' error' : ''}`}>
           <span>{message.role === 'assistant' ? <Bot size={15} /> : '你'}</span>
           <div>
@@ -128,7 +155,7 @@ export function AgentDock({
             {message.taskId && <button className="button ghost" onClick={() => onOpenTask(message.taskId!)}>打开任务</button>}
           </div>
         </div>)}
-        {busy && <div className="agent-message assistant thinking"><span><Bot size={15} /></span><div><p><Loader2 className="spin" size={14} />Agent 正在思考并调用工具…</p></div></div>}
+        {busy && <div className="agent-message assistant thinking" role="status"><span><Bot size={15} /></span><div><p><Loader2 className="spin" size={14} />{preparing ? '正在本机准备环境，请稍候…' : 'Agent 正在思考并调用工具…'}</p></div></div>}
       </div>
     </div>}
 
@@ -136,6 +163,7 @@ export function AgentDock({
       <button type="button" className="agent-orb" onClick={() => setExpanded((value) => !value)} title={expanded ? '收起对话' : '展开对话'}><Bot size={20} />{!expanded && messages.length > 0 && <i />}</button>
       <div><textarea rows={1} value={input} onFocus={() => setExpanded(true)} onChange={(event) => setInput(event.target.value)} onKeyDown={keyDown} disabled={!configured || busy} placeholder={configured ? '交给 Agent：查询任务、发布工作、分析代码…' : authorizationRequired ? 'Conexus 模型授权已到期，请先续期' : 'Agent 未配置，请联系管理员配置模型服务'} /><span>Enter 发送 · Shift Enter 换行</span></div>
       <button className="agent-send" disabled={!configured || busy || !input.trim()} title="发送">{busy ? <Loader2 className="spin" size={18} /> : <Send size={18} />}</button>
+      {busy && !preparing && <button type="button" className="button ghost" onClick={() => activeRequest.current?.abort()}>停止</button>}
       {!expanded && <button type="button" className="agent-expand" onClick={() => setExpanded(true)} title="展开对话"><ChevronUp size={17} /></button>}
       {!configured && <span className="agent-config-error"><XCircle size={14} />{authorizationRequired ? '待续期' : '未连接'}</span>}
     </form>

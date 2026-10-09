@@ -64,10 +64,10 @@ function verifyWebhook(raw: string, signature: string | undefined): boolean {
 export async function buildApp() {
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024, trustProxy: true });
   const github = new GitHubService();
-  const agent = new AgentService(github);
+  const agent = new AgentService(github, usage => app.log.info({ agent: 'task', ...usage }, 'Agent usage'));
   const tasks = new TaskService(github, agent);
   const scopeRequests = new ScopeRequestService(tasks);
-  const assistant = new AssistantService(tasks, github);
+  const assistant = new AssistantService(tasks, github, config, usage => app.log.info({ agent: 'assistant', ...usage }, 'Agent usage'));
 
   await app.register(cookie);
   await app.register(cors, {
@@ -229,9 +229,19 @@ export async function buildApp() {
     assertRole(request, ['admin', 'maintainer']);
     return { events: await tasks.auditEvents() };
   });
-  app.post('/api/agent/chat', async (request) => {
+  app.post('/api/agent/chat', async (request, reply) => {
     const body = assistantBody.parse(request.body);
-    return assistant.chat({ ...body, user: request.currentUser, modelCredential: request.modelAuthorization?.credential, modelAudience: request.modelAuthorization?.audience, getGitHubCredential: request.getGitHubCredential });
+    const controller = new AbortController();
+    const disconnected = () => {
+      if (!reply.raw.writableFinished) controller.abort(new Error('客户端已断开，Agent 请求已取消。'));
+    };
+    reply.raw.on('close', disconnected);
+    try {
+      return await assistant.chat({ ...body, user: request.currentUser, modelCredential: request.modelAuthorization?.credential,
+        modelAudience: request.modelAuthorization?.audience, getGitHubCredential: request.getGitHubCredential, signal: controller.signal });
+    } finally {
+      reply.raw.off('close', disconnected);
+    }
   });
 
   app.post('/api/github/webhook', { config: { rawBody: true } }, async (request, reply) => {

@@ -208,6 +208,7 @@ export interface LedgerEntry {
   id: string;
   type: string;
   amount: number;
+  direction?: 'income' | 'expense' | 'internal';
   fromLabel: string;
   toLabel: string;
   taskId: string | null;

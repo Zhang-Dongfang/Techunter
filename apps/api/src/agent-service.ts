@@ -5,6 +5,7 @@ import {
   type PackageFile,
   type Project,
   type TaskSpec,
+  type AgentUsage,
 } from '@techunter/core';
 import { config } from './config.js';
 import { GitHubService } from './github-service.js';
@@ -43,7 +44,7 @@ export function reviewEvidence(input: ReviewInput) {
 }
 
 export class AgentService {
-  constructor(private readonly github: GitHubService) {}
+  constructor(private readonly github: GitHubService, private readonly onUsage?: (usage: AgentUsage) => void) {}
 
   get configured(): boolean {
     const value = config().ai;
@@ -58,6 +59,7 @@ export class AgentService {
         config: aiConfig,
         title: input.title,
         description: input.description,
+        hooks: { onUsage: this.onUsage },
         repository: {
           root: checkout.root,
           editablePatterns: input.editableLimit,
@@ -81,6 +83,7 @@ export class AgentService {
       changedFiles: evidence,
       testOutput: input.testOutput,
       summary: input.summary,
+      hooks: { onUsage: this.onUsage },
     });
     review.risks = [...new Set([...review.risks, '测试输出来自执行者本机，中央服务未独立复跑测试。'])];
     return review;

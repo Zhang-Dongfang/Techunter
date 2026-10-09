@@ -8,10 +8,19 @@ export function ConexusLogin({ onAuthorized }: { onAuthorized: () => void }) {
   const [config, setConfig] = useState<ConexusAuthConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [configAttempt, setConfigAttempt] = useState(0);
+  const [configLoading, setConfigLoading] = useState(true);
 
   useEffect(() => {
-    api.conexusConfig().then(setConfig).catch((caught) => setError((caught as Error).message));
-  }, []);
+    const controller = new AbortController();
+    setError(''); setConfigLoading(true);
+    api.conexusConfig(controller.signal).then(result => {
+      if (!controller.signal.aborted) setConfig(result);
+    }).catch(caught => {
+      if (!controller.signal.aborted) setError((caught as Error).message);
+    }).finally(() => { if (!controller.signal.aborted) setConfigLoading(false); });
+    return () => controller.abort();
+  }, [configAttempt]);
 
   async function signIn() {
     if (!config || busy) return;
@@ -40,9 +49,10 @@ export function ConexusLogin({ onAuthorized }: { onAuthorized: () => void }) {
       <h1>登录科技猎人</h1>
       <p>使用 Conexus 企业账号进入。模型额度、请求日志和 Token 用量将归属当前用户。</p>
       <button className="button primary conexus-login-button" onClick={signIn} disabled={!config || busy}>
-        {busy ? <><Loader2 className="spin" size={17} />等待浏览器授权</> : <><LogIn size={17} />使用浏览器登录</>}
+        {configLoading ? <><Loader2 className="spin" size={17} />正在连接登录服务…</> : busy ? <><Loader2 className="spin" size={17} />等待浏览器授权</> : <><LogIn size={17} />使用浏览器登录</>}
       </button>
       {error && <div className="form-error"><XCircle size={16} />{error}</div>}
+      {!config && !configLoading && <button className="button secondary" onClick={() => setConfigAttempt(current => current + 1)}>重新连接登录服务</button>}
       <small>系统浏览器会复用已保存的 Conexus 会话；Techunter 仅接收短期、限定作用域的 Run Ticket。</small>
     </section>
   </main>;

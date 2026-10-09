@@ -218,6 +218,9 @@ textarea::placeholder, input::placeholder { color: #4c535c; }.form-actions { dis
 .conexus-login-card > small { display: block; margin-top: 14px; color: var(--muted-2); font-size: 9px; line-height: 1.6; }
 .profile-menu a { display: flex; align-items: center; gap: 8px; padding: 9px 11px; color: var(--text); font-size: 10px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.task-loading-notice { position: fixed; top: 80px; right: 28px; z-index: 1100; display: flex; align-items: center; gap: 12px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 8px 32px #0005; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+:focus-visible { outline: 2px solid var(--purple); outline-offset: 3px; }
 @keyframes fadeIn { from { opacity: 0; } }
 @keyframes modalIn { from { opacity: 0; transform: translateY(8px) scale(.99); } }
 

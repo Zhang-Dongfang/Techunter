@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity,
   ArrowLeft,
@@ -46,6 +46,8 @@ import { ConexusLogin } from './ConexusLogin';
 import { TaskDocument } from './TaskDocument';
 import { ScopeRequests } from './ScopeRequests';
 import { deviceWorkspace } from './task-workspace';
+import { Modal } from './Modal';
+import { appendTerminalOutput } from './terminal-output';
 
 type View = 'market' | 'mine' | 'review' | 'points';
 type TaskView = Exclude<View, 'points'>;
@@ -155,17 +157,6 @@ function ProjectDirectoryCard({ project, tasks, onOpen }: { project: Project; ta
     <div className="project-directory-statuses">{statusCounts.length ? statusCounts.map(({ status, count }) => <span key={status} className={STATUS[status].className}><i />{STATUS[status].label} {count}</span>) : <span className="project-directory-empty">当前视图暂无任务</span>}</div>
     <div className="project-directory-foot"><span><GitBranch size={13} />{project.defaultBranch}</span><span><Coins size={13} />{project.availablePoints} CP</span></div>
   </button>;
-}
-
-function Modal({ children, onClose, wide = false }: { children: ReactNode; onClose: () => void; wide?: boolean }) {
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => event.key === 'Escape' && onClose();
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-    <div className={cn('modal', wide && 'modal-wide')}>{children}</div>
-  </div>;
 }
 
 function CollaborationRequestModal({
@@ -309,33 +300,54 @@ function CreateTaskModal({
   </Modal>;
 }
 
-function TerminalPanel({ cwd, onClose }: { cwd: string; onClose: () => void }) {
+export function TerminalPanel({ cwd, onClose }: { cwd: string; onClose: () => void }) {
   const [command, setCommand] = useState('git status');
   const [workingDir, setWorkingDir] = useState(cwd);
   const [output, setOutput] = useState('Techunter Local Shell\n');
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const currentSession = useRef<string | null>(null);
+  const pendingEvents = useRef<Array<{ sessionId: string; text: string; exited?: boolean }>>([]);
+  const startingRef = useRef(false);
   const desktop = window.techunterDesktop;
 
   useEffect(() => {
     if (!desktop) return;
     const offOutput = desktop.onOutput((event) => {
-      if (!sessionId || event.sessionId === sessionId) setOutput((value) => value + event.data);
+      if (startingRef.current) {
+        pendingEvents.current.push({ sessionId: event.sessionId, text: event.data.slice(-100_000) });
+        if (pendingEvents.current.length > 100) pendingEvents.current.shift();
+      } else if (event.sessionId === currentSession.current) setOutput(value => appendTerminalOutput(value, event.data));
     });
     const offExit = desktop.onExit((event) => {
-      if (!sessionId || event.sessionId === sessionId) {
-        setOutput((value) => `${value}\n[process exited ${event.exitCode ?? 'unknown'}]\n`);
+      const text = `\n[process exited ${event.exitCode ?? 'unknown'}]\n`;
+      if (startingRef.current) pendingEvents.current.push({ sessionId: event.sessionId, text, exited: true });
+      else if (event.sessionId === currentSession.current) {
+        setOutput(value => appendTerminalOutput(value, text));
+        currentSession.current = null;
         setSessionId(null);
       }
     });
     return () => { offOutput(); offExit(); };
-  }, [desktop, sessionId]);
+  }, [desktop]);
 
   async function run(event: FormEvent) {
     event.preventDefault();
-    if (!desktop || !command.trim()) return;
-    setOutput((value) => `${value}\n> ${command}\n`);
-    const result = await desktop.run({ command, cwd: workingDir });
-    setSessionId(result.sessionId);
+    if (!desktop || !command.trim() || startingRef.current || currentSession.current) return;
+    startingRef.current = true; setStarting(true);
+    pendingEvents.current = [];
+    setOutput(value => appendTerminalOutput(value, `\n> ${command}\n`));
+    try {
+      const result = await desktop.run({ command, cwd: workingDir });
+      const events = pendingEvents.current.filter(event => event.sessionId === result.sessionId);
+      setOutput(value => appendTerminalOutput(value, events.map(event => event.text).join('')));
+      currentSession.current = events.some(event => event.exited) ? null : result.sessionId;
+      setSessionId(currentSession.current);
+    } catch (caught) {
+      setOutput(value => appendTerminalOutput(value, `\n启动失败：${(caught as Error).message}\n`));
+    } finally {
+      startingRef.current = false; setStarting(false); pendingEvents.current = [];
+    }
   }
 
   return <Modal onClose={onClose} wide>
@@ -343,7 +355,7 @@ function TerminalPanel({ cwd, onClose }: { cwd: string; onClose: () => void }) {
       <div className="terminal-titlebar"><span className="terminal-lights"><i /><i /><i /></span><span><TerminalSquare size={15} />本地命令台</span><button onClick={onClose}><X size={17} /></button></div>
       <div className="terminal-cwd">cwd <input value={workingDir} onChange={(event) => setWorkingDir(event.target.value)} /></div>
       <pre>{desktop ? output : '本地命令台仅在 Electron 桌面端可用。'}</pre>
-      <form className="terminal-input" onSubmit={run}><span>❯</span><input value={command} onChange={(event) => setCommand(event.target.value)} disabled={!desktop || Boolean(sessionId)} /><button disabled={!desktop || Boolean(sessionId)}>{sessionId ? '运行中' : '执行'}</button>{sessionId && <button type="button" className="danger-text" onClick={() => desktop?.cancel(sessionId)}>终止</button>}</form>
+      <form className="terminal-input" onSubmit={run}><span>❯</span><input value={command} onChange={(event) => setCommand(event.target.value)} disabled={!desktop || starting || Boolean(sessionId)} /><button disabled={!desktop || starting || Boolean(sessionId)}>{sessionId ? '运行中' : '执行'}</button>{sessionId && <button type="button" className="danger-text" onClick={() => { void desktop?.cancel(sessionId).catch(caught => setOutput(value => appendTerminalOutput(value, `\n${caught.message}\n`))); }}>终止</button>}</form>
     </div>
   </Modal>;
 }
@@ -581,8 +593,8 @@ function UpdateControl({ state, onAction }: { state: DesktopUpdateState | null; 
 }
 
 function PointsView({ points, entries }: { points: number; entries: LedgerEntry[] }) {
-  const incoming = entries.filter((entry) => entry.toLabel !== '系统发行').reduce((sum, entry) => sum + entry.amount, 0);
-  return <div className="points-layout"><div className="balance-hero"><div className="balance-glow" /><span>可用贡献点</span><strong>{points.toLocaleString()} <em>CP</em></strong><p>企业内部贡献记录，不与现金兑换</p><div className="balance-stats"><div><small>历史流入</small><b>+{incoming}</b></div><div><small>交易笔数</small><b>{entries.length}</b></div></div></div><div className="ledger-panel"><div className="panel-title"><div><span className="eyebrow">LEDGER</span><h3>贡献点明细</h3></div><ShieldCheck size={22} /></div>{entries.length ? <div className="ledger-list">{entries.map((entry) => <div key={entry.id}><span className={cn('ledger-icon', entry.type === 'task_settlement' && 'income')}><Coins size={17} /></span><div><strong>{entry.memo}</strong><small>{entry.fromLabel} → {entry.toLabel} · {new Date(entry.createdAt).toLocaleString('zh-CN')}</small></div><b>+{entry.amount} CP</b></div>)}</div> : <EmptyState icon={<WalletCards />} title="还没有账单" description="完成第一个任务后，贡献点会出现在这里。" />}</div></div>;
+  const incoming = entries.filter((entry) => entry.direction === 'income').reduce((sum, entry) => sum + entry.amount, 0);
+  return <div className="points-layout"><div className="balance-hero"><div className="balance-glow" /><span>可用贡献点</span><strong>{points.toLocaleString()} <em>CP</em></strong><p>企业内部贡献记录，不与现金兑换</p><div className="balance-stats"><div><small>最近记录流入</small><b>+{incoming}</b></div><div><small>最近交易笔数（最多 100 笔）</small><b>{entries.length}</b></div></div></div><div className="ledger-panel"><div className="panel-title"><div><span className="eyebrow">LEDGER</span><h3>贡献点明细</h3></div><ShieldCheck size={22} /></div>{entries.length ? <div className="ledger-list">{entries.map((entry) => <div key={entry.id}><span className={cn('ledger-icon', entry.direction === 'income' && 'income')}><Coins size={17} /></span><div><strong>{entry.memo}</strong><small>{entry.fromLabel} → {entry.toLabel} · {new Date(entry.createdAt).toLocaleString('zh-CN')}{entry.direction === 'internal' ? ' · 账户内划转' : ''}</small></div><b>{entry.direction === 'income' ? '+' : entry.direction === 'expense' ? '-' : ''}{entry.amount} CP</b></div>)}</div> : <EmptyState icon={<WalletCards />} title="还没有账单" description="完成第一个任务后，贡献点会出现在这里。" />}</div></div>;
 }
 
 export function App() {
@@ -605,10 +617,18 @@ export function App() {
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const branchControlRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [pointsData, setPointsData] = useState<{ available: number; entries: LedgerEntry[] } | null>(null);
+  const [pointsLoading, setPointsLoading] = useState(false);
+  const [pointsError, setPointsError] = useState('');
+  const [pointsRevision, setPointsRevision] = useState(0);
+  const [taskLoading, setTaskLoading] = useState(false);
+  const taskRequest = useRef<AbortController | null>(null);
+  const dashboardRequest = useRef<AbortController | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [githubConnecting, setGitHubConnecting] = useState(false);
@@ -616,6 +636,15 @@ export function App() {
   const [conexusConnecting, setConexusConnecting] = useState(false);
   const [conexusError, setConexusError] = useState('');
   const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null);
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !document.querySelector('[role="dialog"]')) {
+        event.preventDefault(); searchInput.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', focusSearch);
+    return () => window.removeEventListener('keydown', focusSearch);
+  }, []);
 
   useEffect(() => {
     const desktop = window.techunterDesktop;
@@ -630,25 +659,42 @@ export function App() {
   }, []);
 
   const load = useCallback(async () => {
+    dashboardRequest.current?.abort();
+    const controller = new AbortController();
+    dashboardRequest.current = controller;
     setLoading(true); setError('');
     try {
-      const data = await api.dashboard();
+      const data = await api.dashboard(controller.signal);
+      if (controller.signal.aborted) return;
       setDashboard(data);
+      setPointsRevision(current => current + 1);
       setSelectedProjectId((current) => data.projects.some((project) => project.id === current) ? current : '');
       setAuthRequired(false);
     } catch (caught) {
+      if (controller.signal.aborted) return;
       if (caught instanceof ApiError && caught.status === 401) {
+        taskRequest.current?.abort();
+        setTaskLoading(false);
+        setSelectedTask(null);
+        setPointsData(null);
+        setCreateOpen(false);
+        setImportOpen(false);
+        setProfileOpen(false);
         setDashboard(null);
         setAuthRequired(true);
         return;
       }
       setError((caught as Error).message);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => {
+    dashboardRequest.current?.abort();
+    taskRequest.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!branchMenuOpen) return;
@@ -699,8 +745,19 @@ export function App() {
   }, [selectedProjectId, dashboard?.runtime.githubConnected, branchReloadKey]);
 
   useEffect(() => {
-    if (view === 'points') api.points().then((result) => setPointsData({ available: result.available, entries: result.entries })).catch((caught) => setError((caught as Error).message));
-  }, [view, dashboard]);
+    if (view !== 'points' || !dashboard?.me.id) return;
+    const controller = new AbortController();
+    setPointsLoading(true);
+    setPointsError('');
+    api.points(controller.signal).then((result) => {
+      if (!controller.signal.aborted) setPointsData({ available: result.available, entries: result.entries });
+    }).catch((caught) => {
+      if (!controller.signal.aborted) setPointsError((caught as Error).message);
+    }).finally(() => {
+      if (!controller.signal.aborted) setPointsLoading(false);
+    });
+    return () => controller.abort();
+  }, [view, dashboard?.me.id, pointsRevision]);
 
   useEffect(() => {
     let active = true;
@@ -723,15 +780,36 @@ export function App() {
   }, [selectedProjectId]);
 
   async function openTask(id: string) {
+    taskRequest.current?.abort();
+    const controller = new AbortController();
+    taskRequest.current = controller;
+    setTaskLoading(true);
     setError('');
-    try { setSelectedTask(await api.task(id)); } catch (caught) { setError((caught as Error).message); }
+    try {
+      const task = await api.task(id, controller.signal);
+      if (!controller.signal.aborted) setSelectedTask(task);
+    } catch (caught) {
+      if (!controller.signal.aborted) setError((caught as Error).message);
+    } finally { if (!controller.signal.aborted) setTaskLoading(false); }
+  }
+
+  function closeTask() {
+    taskRequest.current?.abort();
+    setTaskLoading(false);
+    setSelectedTask(null);
   }
 
   async function logout() {
-    await api.logout();
-    setProfileOpen(false);
-    setDashboard(null);
-    setAuthRequired(true);
+    try {
+      await api.logout();
+      dashboardRequest.current?.abort();
+      closeTask();
+      setPointsData(null);
+      setProfileOpen(false);
+      setDashboard(null);
+      setAuthRequired(true);
+      setLoading(false);
+    } catch (caught) { setError((caught as Error).message); }
   }
 
   async function refreshConexus() {
@@ -878,31 +956,37 @@ export function App() {
     }
   }
 
+  const projectsById = useMemo(() => new Map(dashboard?.projects.map(project => [project.id, project]) ?? []), [dashboard?.projects]);
   const visibleTasks = useMemo(() => {
     if (!dashboard) return [];
-    const normalizedSearch = search.trim().toLowerCase();
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
     return dashboard.tasks.filter((task) => {
       if (view === 'mine' && task.assignee?.id !== dashboard.me.id) return false;
       if (view === 'review' && task.status !== 'submitted' && !(task.pendingScopeRequestCount && task.assignee?.id !== dashboard.me.id && (task.publisher.id === dashboard.me.id || dashboard.me.role === 'admin'))) return false;
       if (statusFilter !== 'all' && task.status !== statusFilter) return false;
-      const project = dashboard.projects.find((candidate) => candidate.id === task.projectId);
+      const project = projectsById.get(task.projectId);
       if (normalizedSearch && !`${task.title} ${task.summary} ${task.projectName} ${project?.description ?? ''} ${project?.repoOwner ?? ''} ${project?.repoName ?? ''}`.toLowerCase().includes(normalizedSearch)) return false;
       return true;
     });
-  }, [dashboard, view, statusFilter, search]);
+  }, [dashboard, view, statusFilter, deferredSearch, projectsById]);
 
   const projectEntries = useMemo(() => {
     if (!dashboard || view === 'points') return [];
-    const normalizedSearch = search.trim().toLowerCase();
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+    const tasksByProject = new Map<string, TaskSummary[]>();
+    for (const task of visibleTasks) {
+      const group = tasksByProject.get(task.projectId) ?? [];
+      group.push(task); tasksByProject.set(task.projectId, group);
+    }
     return dashboard.projects.map((project) => ({
       project,
-      tasks: visibleTasks.filter((task) => task.projectId === project.id),
+      tasks: tasksByProject.get(project.id) ?? [],
       projectMatches: !normalizedSearch || `${project.name} ${project.description} ${project.repoOwner} ${project.repoName}`.toLowerCase().includes(normalizedSearch),
     })).filter((entry) => {
       if (entry.tasks.length) return true;
       return view === 'market' && statusFilter === 'all' && entry.projectMatches;
     });
-  }, [dashboard, search, statusFilter, view, visibleTasks]);
+  }, [dashboard, deferredSearch, statusFilter, view, visibleTasks]);
 
   if (loading && !dashboard) return <div className="boot-screen"><div className="brand-mark"><CrosshairIcon /></div><h1>TECHUNTER</h1><Loader2 className="spin" /></div>;
   if (authRequired) return <ConexusLogin onAuthorized={() => { void load(); }} />;
@@ -929,12 +1013,12 @@ export function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="logo"><div className="brand-mark"><CrosshairIcon /></div><div><strong>TECHUNTER</strong><span>科技猎人</span></div></div>
-      <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => { setView(item.id); setSelectedProjectId(''); setSelectedTask(null); setStatusFilter('all'); }}>{item.icon}<span>{item.label}</span>{Boolean(item.count) && <b>{item.count}</b>}</button>)}</nav>
+      <nav>{nav.map((item) => <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => { setView(item.id); setSelectedProjectId(''); closeTask(); setStatusFilter('all'); }}>{item.icon}<span>{item.label}</span>{Boolean(item.count) && <b>{item.count}</b>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="secure-note"><ShieldCheck size={17} /><div><strong>企业内部模式</strong><span>限定文件 · 全程审计</span></div></div><UpdateControl state={updateState} onAction={() => { void handleUpdateAction(); }} /></div>
     </aside>
 
     <main className="content">
-      <header className="topbar"><div className="searchbox"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" onClick={() => { setBranchReloadKey((value) => value + 1); void load(); }}><RefreshCw size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
+      <header className="topbar"><div className="searchbox"><Search size={18} /><input ref={searchInput} aria-label="搜索任务与项目" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索任务、项目或猎人..." /><kbd>Ctrl / ⌘ K</kbd></div><div className="top-actions"><div className={cn('core-pill', dashboard.runtime.agentConfigured && dashboard.runtime.githubConfigured && dashboard.runtime.githubConnected ? 'ready' : 'missing')} title={`模型：${dashboard.runtime.agentModel ?? '未授权'} · GitHub：${dashboard.runtime.githubConnected ? '已连接' : '未连接'}`}><Bot size={15} /><i /><span>{dashboard.runtime.modelAccessMode === 'conexus' ? 'CONEXUS' : 'DIRECT'}</span></div><div className="points-pill"><Coins size={17} /><strong>{dashboard.myAvailablePoints}</strong><span>CP</span></div><button className="refresh-button" disabled={loading} aria-label="刷新" onClick={() => { setBranchReloadKey((value) => value + 1); void load(); }}><RefreshCw className={loading ? 'spin' : undefined} size={17} /></button><div className="profile-wrap"><button className="profile-button" onClick={() => setProfileOpen((value) => !value)}><Avatar user={dashboard.me} /><div><strong>{dashboard.me.name}</strong><span>{dashboard.me.role}</span></div><ChevronDown size={15} /></button>{profileOpen && <div className="profile-menu">
         <span>{dashboard.me.email ?? `@${dashboard.me.login}`}</span>
         {dashboard.runtime.conexusAuthorizationRequired && <button disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}<div><strong>{conexusConnecting ? '等待浏览器授权' : '续期 Conexus 模型授权'}</strong>{conexusError && <small>{conexusError}</small>}</div></button>}
         {dashboard.runtime.githubAccountLinkConfigured && <button disabled={githubConnecting} onClick={() => { void connectGitHub(); }}>{githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}<div><strong>{githubConnecting ? '等待浏览器授权' : dashboard.me.githubLogin ? '重新连接 GitHub' : '使用浏览器连接 GitHub'}</strong>{githubError && <small>{githubError}</small>}</div></button>}
@@ -944,15 +1028,16 @@ export function App() {
       </div>}</div></div></header>
 
       <div className="page">
+        {error && <div role="alert" className="page-error"><XCircle size={17} />{error}</div>}
         {dashboard.runtime.conexusAuthorizationRequired && <div className="authorization-banner"><KeyRound size={19} /><div><strong>模型授权已到期</strong><span>Techunter 仍保持登录，任务与 GitHub 功能不受影响。续期后可继续使用 Agent。</span>{conexusError && <small>{conexusError}</small>}</div><button className="button secondary" disabled={conexusConnecting} onClick={() => { void refreshConexus(); }}>{conexusConnecting ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}{conexusConnecting ? '等待浏览器授权' : '续期授权'}</button></div>}
         {taskView && viewCopy && <>
           {!selectedProject ? <>
             <div className="page-head"><div><span className="eyebrow">{viewCopy.eyebrow}</span><h1>{viewCopy.title}</h1><p>{viewCopy.description}</p></div>{taskView === 'market' && <button className="button primary" onClick={() => setImportOpen(true)}><Plus size={18} />导入 GitHub 项目</button>}</div>
             <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><FolderGit2 size={16} />{projectEntries.length} 个项目 · {visibleTasks.length} 个任务</div></div>
-            {error && <div className="page-error"><XCircle size={17} />{error}</div>}
-            {projectEntries.length ? <div className="project-directory-grid">{projectEntries.map(({ project, tasks }) => <ProjectDirectoryCard key={project.id} project={project} tasks={tasks} onOpen={() => { setSelectedProjectId(project.id); setSelectedTask(null); }} />)}</div> : <EmptyState icon={<FolderGit2 />} title={search || statusFilter !== 'all' ? '没有匹配的项目' : viewCopy.emptyTitle} description={search || statusFilter !== 'all' ? '调整搜索或筛选条件后重试。' : viewCopy.emptyDescription} />}
+
+            {projectEntries.length ? <div className="project-directory-grid">{projectEntries.map(({ project, tasks }) => <ProjectDirectoryCard key={project.id} project={project} tasks={tasks} onOpen={() => { setSelectedProjectId(project.id); closeTask(); }} />)}</div> : <EmptyState icon={<FolderGit2 />} title={search || statusFilter !== 'all' ? '没有匹配的项目' : viewCopy.emptyTitle} description={search || statusFilter !== 'all' ? '调整搜索或筛选条件后重试。' : viewCopy.emptyDescription} />}
           </> : <>
-            <button className="project-directory-back" onClick={() => { setSelectedProjectId(''); setSelectedTask(null); }}><ArrowLeft size={15} />返回项目目录</button>
+            <button className="project-directory-back" onClick={() => { setSelectedProjectId(''); closeTask(); }}><ArrowLeft size={15} />返回项目目录</button>
             <div className="project-context-head">
               <div className="project-context-icon"><FolderGit2 size={24} /></div>
               <div className="project-context-main"><span className="eyebrow">{viewCopy.eyebrow} · PROJECT</span><h1>{selectedProject.name}</h1><p>{selectedProject.description || '该项目的任务、交付和审核记录。'}</p><div><span><Github size={14} />{selectedProject.repoOwner}/{selectedProject.repoName}</span><span><GitBranch size={14} />默认分支 {selectedProject.defaultBranch}</span><span><Coins size={14} />{selectedProject.availablePoints} CP</span></div></div>
@@ -1000,11 +1085,15 @@ export function App() {
             </div>
             {projectSyncNotice && <div className={cn('project-sync-notice', projectSyncNotice.tone)}>{projectSyncNotice.tone === 'success' ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{projectSyncNotice.text}</div>}
             <div className="market-toolbar"><div className="filter-tabs">{viewFilters.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status === 'all' ? '全部' : STATUS[status].label}</button>)}</div><div className="market-count"><UsersRound size={16} />{selectedProjectTasks.length} 个任务</div></div>
-            {error && <div className="page-error"><XCircle size={17} />{error}</div>}
+
             {selectedProjectTasks.length ? <div className="task-grid">{selectedProjectTasks.map((task) => <TaskCard key={task.id} task={task} onOpen={() => openTask(task.id)} />)}</div> : <EmptyState icon={<Search />} title="这个项目中没有匹配的任务" description="可以直接发布任务；本地仓库只需在认领并执行任务时准备。" />}
           </>}
         </>}
-        {view === 'points' && <><div className="page-head"><div><span className="eyebrow">CONTRIBUTION LEDGER</span><h1>贡献点与账单</h1><p>每一笔分配、冻结和结算都有不可变更的来源记录。</p></div></div><PointsView points={pointsData?.available ?? dashboard.myAvailablePoints} entries={pointsData?.entries ?? []} /></>}
+        {view === 'points' && <><div className="page-head"><div><span className="eyebrow">CONTRIBUTION LEDGER</span><h1>贡献点与账单</h1><p>每一笔分配、冻结和结算都有不可变更的来源记录。</p></div></div>
+          {pointsLoading && <div role="status" className="project-sync-notice"><Loader2 className="spin" size={17} />正在加载账单…</div>}
+          {pointsError && <div role="alert" className="page-error">{pointsError}<button className="button secondary" onClick={() => setPointsRevision(current => current + 1)}>重试</button></div>}
+          {pointsData && <PointsView points={pointsData.available} entries={pointsData.entries} />}
+        </>}
       </div>
     </main>
 
@@ -1022,6 +1111,7 @@ export function App() {
     {createOpen && <CreateTaskModal projects={dashboard.projects} defaultProjectId={selectedProject?.id} onClose={() => setCreateOpen(false)} onCreated={(task) => { setCreateOpen(false); setSelectedProjectId(task.projectId); setSelectedTask(task); void load(); }} />}
     {importOpen && <ImportProjectModal onClose={() => setImportOpen(false)} onImported={(project) => { setImportOpen(false); setSelectedProjectId(project.id); void load(); }} />}
     {collaborationProject && <CollaborationRequestModal project={collaborationProject} githubLogin={dashboard.me.githubLogin} onClose={() => setCollaborationProject(null)} onContinue={() => continuePrivateProjectSync(collaborationProject)} />}
-    {selectedTask && <TaskDetail task={selectedTask} me={dashboard.me} projects={dashboard.projects} onClose={() => setSelectedTask(null)} onChanged={(task) => { setSelectedTask(task); void load(); }} onRemoved={(result) => { setSelectedTask(null); setProjectSyncNotice({ tone: 'success', text: result.disposition === 'deleted' ? '任务草稿已永久删除。' : '任务已取消并从任务市场移除。' }); void load(); }} onOpenTask={openTask} />}
+    {taskLoading && <div role="status" className="task-loading-notice"><Loader2 className="spin" size={17} />正在打开任务…<button className="button ghost" onClick={closeTask}>取消</button></div>}
+    {selectedTask && <TaskDetail key={selectedTask.id} task={selectedTask} me={dashboard.me} projects={dashboard.projects} onClose={closeTask} onChanged={(task) => { setSelectedTask(current => current?.id === task.id ? task : current); void load(); }} onRemoved={(result) => { setSelectedTask(current => current?.id === selectedTask.id ? null : current); setProjectSyncNotice({ tone: 'success', text: result.disposition === 'deleted' ? '任务草稿已永久删除。' : '任务已取消并从任务市场移除。' }); void load(); }} onOpenTask={openTask} />}
   </div>;
 }

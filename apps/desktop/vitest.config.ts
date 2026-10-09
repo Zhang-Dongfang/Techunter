@@ -5,7 +5,7 @@ export default defineConfig({
   root: path.resolve(__dirname),
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     testTimeout: 60_000,
   },
 });

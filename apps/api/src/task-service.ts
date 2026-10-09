@@ -66,7 +66,18 @@ export class TaskService {
       const query = this.db().from('projects').select('*', { count: 'exact' }).order('id').limit(500);
       return after ? query.gt('id', after) : query;
     });
-    return Promise.all(rows.sort((a, b) => String(a['name']).localeCompare(String(b['name']))).map((row) => this.projectFromRow(row)));
+    const [accounts, importers] = await Promise.all([
+      this.rowsByIds('point_accounts', 'id,owner_type,owner_id,bucket,balance', rows.map(row => String(row['id'])), 'owner_id'),
+      this.rowsByIds('users', '*', [...new Set(rows.flatMap(row => row['imported_by'] ? [String(row['imported_by'])] : []))]),
+    ]);
+    const balances = new Map(accounts.filter(row => row['owner_type'] === 'project' && row['bucket'] === 'available')
+      .map(row => [String(row['owner_id']), Number(row['balance'])]));
+    const users = new Map(importers.map(row => [String(row['id']), this.userFromRow(row)]));
+    return Promise.all(rows.sort((a, b) => String(a['name']).localeCompare(String(b['name']))).map(row => {
+      const importedBy = row['imported_by'] ? users.get(String(row['imported_by'])) : null;
+      if (importedBy === undefined) throw httpError('用户不存在。', 404);
+      return this.projectFromRow(row, { availablePoints: balances.get(String(row['id'])) ?? 0, importedBy });
+    }));
   }
 
   async importProject(repository: GitHubRepositoryCandidate & { headSha: string }, actor: User): Promise<Project> {
@@ -629,19 +640,24 @@ export class TaskService {
     const ids = (accounts.data ?? []).map((row: Row) => row['id']);
     if (!ids.length) return { available, reserved, entries: [] };
     const transfers = dataOrThrow(await this.db().from('point_transfers').select('*').or(`from_account_id.in.(${ids.join(',')}),to_account_id.in.(${ids.join(',')})`).order('created_at', { ascending: false }).limit(100)) as Row[];
-    const entries = await Promise.all(transfers.map(async (row) => {
-      const [source, destination] = await Promise.all([
-        this.db().from('point_accounts').select('label').eq('id', row['from_account_id']).single(),
-        this.db().from('point_accounts').select('label').eq('id', row['to_account_id']).single(),
-      ]);
-      if (source.error || destination.error) throw new Error(source.error?.message ?? destination.error?.message);
+    const accountIds = [...new Set(transfers.flatMap(row => [String(row['from_account_id']), String(row['to_account_id'])]))];
+    const accountRows = await this.rowsByIds('point_accounts', 'id,label', accountIds);
+    const labels = new Map(accountRows.map(row => [String(row['id']), String(row['label'])]));
+    const ownedAccounts = new Set(ids.map(String));
+    const entries = transfers.map((row) => {
+      const fromLabel = labels.get(String(row['from_account_id']));
+      const toLabel = labels.get(String(row['to_account_id']));
+      if (fromLabel === undefined || toLabel === undefined) throw new Error('积分交易关联的账户不存在。');
       return {
         id: String(row['id']), type: String(row['type']), amount: Number(row['amount']),
-        fromLabel: String(source.data.label), toLabel: String(destination.data.label),
+        fromLabel, toLabel,
+        direction: ownedAccounts.has(String(row['from_account_id']))
+          ? ownedAccounts.has(String(row['to_account_id'])) ? 'internal' : 'expense'
+          : 'income',
         taskId: row['task_id'] ? String(row['task_id']) : null,
         memo: String(row['memo']), createdAt: String(row['created_at']),
       } satisfies LedgerEntry;
-    }));
+    });
     return { available, reserved, entries };
   }
 
@@ -663,7 +679,7 @@ export class TaskService {
     return this.projectFromRow(result.data as Row);
   }
 
-  private async projectFromRow(row: Row): Promise<Project> {
+  private async projectFromRow(row: Row, related?: Pick<Project, 'availablePoints' | 'importedBy'>): Promise<Project> {
     return {
       id: String(row['id']),
       githubRepositoryId: Number(row['github_repository_id']),
@@ -677,8 +693,8 @@ export class TaskService {
       sourceBranch: String(row['source_branch'] ?? row['default_branch']),
       visibility: row['visibility'] as Project['visibility'],
       headSha: String(row['head_sha']),
-      availablePoints: await this.balance('project', String(row['id'])),
-      importedBy: row['imported_by'] ? await this.getUser(String(row['imported_by'])) : null,
+      availablePoints: related ? related.availablePoints : await this.balance('project', String(row['id'])),
+      importedBy: related ? related.importedBy : row['imported_by'] ? await this.getUser(String(row['imported_by'])) : null,
       createdAt: String(row['created_at']),
       updatedAt: String(row['updated_at']),
     };
@@ -736,12 +752,12 @@ export class TaskService {
     });
   }
 
-  private async rowsByIds(table: string, columns: string, ids: string[]): Promise<Row[]> {
+  private async rowsByIds(table: string, columns: string, ids: string[], column = 'id'): Promise<Row[]> {
     const batches: Array<PromiseLike<Row[]>> = [];
     for (let start = 0; start < ids.length; start += 100) {
       const batch = ids.slice(start, start + 100);
       batches.push(readRowsById<Row>(after => {
-        const query = this.db().from(table).select(columns, { count: 'exact' }).in('id', batch).order('id').limit(100);
+        const query = this.db().from(table).select(columns, { count: 'exact' }).in(column, batch).order('id').limit(100);
         return after ? query.gt('id', after) : query;
       }));
     }

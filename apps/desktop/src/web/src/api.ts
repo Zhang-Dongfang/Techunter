@@ -20,17 +20,8 @@ import type {
   ScopeRequestDecision,
 } from '@techunter/core';
 import { retryTransientRequest } from './request-retry';
-
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
+import { ApiError, httpRequest } from './http-request';
+export { ApiError } from './http-request';
 
 const apiBaseUrl = (window.techunterDesktop?.apiBaseUrl || import.meta.env.VITE_TECHUNTER_API_URL || '').replace(/\/+$/, '');
 
@@ -39,30 +30,21 @@ function endpoint(path: string): string {
 }
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(endpoint(url), {
-    ...init,
-    credentials: 'include',
-    headers: {
-      ...(init.body ? { 'content-type': 'application/json' } : {}),
-      ...init.headers,
-    },
-  });
-  const body = await response.json().catch(() => ({})) as { error?: string; code?: string };
-  if (!response.ok) {
-    if (body.code === 'CONEXUS_AUTHORIZATION_REQUIRED') {
+  try { return await httpRequest<T>(endpoint(url), init); }
+  catch (error) {
+    if (error instanceof ApiError && error.code === 'CONEXUS_AUTHORIZATION_REQUIRED') {
       window.dispatchEvent(new Event('techunter:conexus-authorization-required'));
     }
-    throw new ApiError(body.error || `请求失败 (${response.status})`, response.status, body.code);
+    throw error;
   }
-  return body as T;
 }
 
-function post<T>(url: string, body: unknown = {}): Promise<T> {
-  return request<T>(url, { method: 'POST', body: JSON.stringify(body) });
+function post<T>(url: string, body: unknown = {}, signal?: AbortSignal): Promise<T> {
+  return request<T>(url, { method: 'POST', body: JSON.stringify(body), signal });
 }
 
 export const api = {
-  conexusConfig: () => request<ConexusAuthConfig>('/api/auth/conexus/config'),
+  conexusConfig: (signal?: AbortSignal) => request<ConexusAuthConfig>('/api/auth/conexus/config', { signal }),
   authorizeConexus: (authorization: ConexusAccountAuthorization, audience: string) =>
     post<{ user: User; session: { expiresAt: string; idleExpiresAt: string }; modelAuthorizationExpiresAt: string }>('/api/auth/conexus', {
       runTicket: authorization.runTicket,
@@ -83,9 +65,9 @@ export const api = {
   logout: () => post<{ ok: boolean }>('/api/auth/logout'),
   beginGitHubAuthorization: () => post<{ authorizationUrl: string; connectionVersion: string }>('/api/auth/github'),
   disconnectGitHub: () => request<{ ok: boolean }>('/api/auth/github', { method: 'DELETE' }),
-  dashboard: () => request<DashboardResponse>('/api/dashboard'),
+  dashboard: (signal?: AbortSignal) => request<DashboardResponse>('/api/dashboard', { signal }),
   tasks: (query = '') => request<{ tasks: TaskSummary[] }>(`/api/tasks${query}`),
-  task: (id: string) => request<Task>(`/api/tasks/${id}`),
+  task: (id: string, signal?: AbortSignal) => request<Task>(`/api/tasks/${id}`, { signal }),
   recoverySubmissions: (id: string) => request<{ submissions: Submission[] }>(`/api/tasks/${id}/submissions/recovery`),
   projects: () => request<{ projects: Project[] }>('/api/projects'),
   project: (id: string) => request<Project>(`/api/projects/${id}`),
@@ -124,7 +106,7 @@ export const api = {
   accept: (submissionId: string) => post<Task>(`/api/submissions/${submissionId}/accept`),
   requestChanges: (submissionId: string, reason: string) =>
     post<Task>(`/api/submissions/${submissionId}/request-changes`, { reason }),
-  points: () => request<{ available: number; reserved: number; entries: LedgerEntry[] }>('/api/points'),
-  chat: (body: { message: string; history: AgentChatMessage[]; projectId?: string; deviceId?: string; deviceLabel?: string }) =>
-    post<AgentChatResponse>('/api/agent/chat', body),
+  points: (signal?: AbortSignal) => request<{ available: number; reserved: number; entries: LedgerEntry[] }>('/api/points', { signal }),
+  chat: (body: { message: string; history: AgentChatMessage[]; projectId?: string; deviceId?: string; deviceLabel?: string }, signal?: AbortSignal) =>
+    post<AgentChatResponse>('/api/agent/chat', body, signal),
 };

@@ -9,6 +9,7 @@ import {
   type Task,
   type User,
   type WorkspacePreparationRequest,
+  type AgentUsage,
 } from '@techunter/core';
 import { config } from './config.js';
 import { GitHubService } from './github-service.js';
@@ -26,6 +27,7 @@ export interface AssistantInput {
   modelAudience?: string;
   githubCredential?: string;
   getGitHubCredential?: () => Promise<string | undefined>;
+  signal?: AbortSignal;
 }
 
 function json(value: unknown): string {
@@ -50,9 +52,16 @@ function taskForAgent(task: Task) {
 }
 
 export class AssistantService {
-  constructor(private readonly tasks: TaskService, private readonly github: GitHubService, private readonly configuration = config) {}
+  constructor(
+    private readonly tasks: TaskService,
+    private readonly github: GitHubService,
+    private readonly configuration = config,
+    private readonly onUsage?: (usage: AgentUsage) => void,
+    private readonly runAgent = runAgentLoop,
+  ) {}
 
   async chat(input: AssistantInput): Promise<AgentChatResponse> {
+    input.signal?.throwIfAborted();
     const value = this.configuration();
     const credential = value.ai.accessMode === 'conexus' ? input.modelCredential : value.ai.apiKey;
     if (!credential || (value.ai.accessMode === 'conexus' && !input.modelAudience)) {
@@ -69,11 +78,25 @@ export class AssistantService {
     const workspaceRequests: WorkspacePreparationRequest[] = [];
     const tools = this.taskTools(input, project, workspaceRequests);
     let checkout: Awaited<ReturnType<GitHubService['materialize']>> | undefined;
+    let repositoryTools: Promise<AgentTool[]> | undefined;
+    const loadRepositoryTools = () => repositoryTools ??= (async () => {
+      checkout = await this.github.materialize(project, await this.githubCredential(input));
+      return createRepositoryTools({ root: checkout.root, allowCommands: false });
+    })();
+    // Expose the read-only tool schemas immediately, but download source only
+    // when the model actually needs repository evidence. Reuse one checkout.
+    tools.push(...createRepositoryTools({ root: '.', allowCommands: false }).map(template => ({
+      definition: template.definition,
+      execute: async (toolInput: Record<string, unknown>, context?: { signal: AbortSignal }) => {
+        context?.signal.throwIfAborted();
+        const repositoryTool = (await loadRepositoryTools()).find(tool => tool.definition.function.name === template.definition.function.name)!;
+        context?.signal.throwIfAborted();
+        return repositoryTool.execute(toolInput, context);
+      },
+    })));
     try {
-      try { checkout = await this.github.materialize(project, await this.githubCredential(input)); }
-      catch { /* Task queries still work when repository access is unavailable. */ }
-      if (checkout) tools.push(...createRepositoryTools({ root: checkout.root, allowCommands: false }));
-      const reply = await runAgentLoop({
+      const reply = await this.runAgent({
+        signal: input.signal,
         config: {
           aiApiKey: credential,
           aiAccessMode: value.ai.accessMode,
@@ -96,6 +119,7 @@ export class AssistantService {
         userMessage: input.message,
         tools,
         hooks: {
+          onUsage: this.onUsage,
           onToolCall(name, toolInput) { activities.push({ name, input: toolInput }); },
           onToolResult(name, result) {
             const activity = [...activities].reverse().find((item) => item.name === name && item.result === undefined);

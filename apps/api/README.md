@@ -1,5 +1,13 @@
 # Techunter API
 
+## Agent 运行限制
+
+共享 Agent 默认最多运行 30 轮，模型请求受 180 秒总期限约束；调用方可传入 `AbortSignal`，聊天客户端断开时中央 API 会取消模型请求。已开始的业务工具通过其原有的持久化操作恢复，不会因聊天取消而直接回滚。
+
+默认上下文上限为 250,000 字符，每次模型输出最多 4,096 tokens，累计模型 usage 达到 120,000 tokens 后停止继续调用。累计用量依赖供应商返回的 usage，单次请求仍可能跨过累计阈值。工具输出超过 16,000 字符时附带截断提示，Agent 应缩小查询；模型输出被截断时直接报错，不接受残缺结果。
+
+Fastify 日志以 `Agent usage` 记录累计输入/输出 tokens、轮数和耗时，不记录提示词、仓库内容或凭据。聊天仅在实际调用源码工具时下载仓库，同一轮聊天复用临时 checkout，并在结束或失败后清理。普通任务查询不下载代码，也不刷新 GitHub 凭据。
+
 `@techunter/api` 是部署到 Railway 的独立中央控制面。它连接 Supabase 的 `techunter` schema，管理共享项目、任务、原子认领、审核和贡献点；还负责 Conexus 登录、GitHub OAuth/App、Webhook 和模型调用。
 
 它不 clone 长期仓库、不保存本机路径，也不执行用户项目环境命令。任务分析需要代码证据时，会从 GitHub 下载短期 archive 到临时目录并在调用结束后删除。Conexus 与 GitHub 都由 Desktop 发起系统浏览器授权；GitHub callback 使用与当前 Techunter session 绑定的短期签名 state，不依赖系统浏览器共享 Desktop Cookie。
