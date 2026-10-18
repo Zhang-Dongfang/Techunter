@@ -15,6 +15,7 @@ import { config } from './config.js';
 import { GitHubService } from './github-service.js';
 import { TaskService } from './task-service.js';
 import { httpError } from './errors.js';
+import { createAssistantNodeTool } from './assistant-nodes.js';
 
 export interface AssistantInput {
   message: string;
@@ -94,17 +95,39 @@ export class AssistantService {
         return repositoryTool.execute(toolInput, context);
       },
     })));
+    const aiConfig = {
+      aiApiKey: credential,
+      aiAccessMode: value.ai.accessMode,
+      aiBaseUrl: value.ai.baseUrl,
+      aiModel: value.ai.model,
+      ...(input.modelAudience ? { aiAudience: input.modelAudience } : {}),
+      ...(value.ai.accessMode === 'conexus' ? { aiPublicationSlug: value.conexus.publicationSlug } : {}),
+    };
+    let rootUsage: AgentUsage | undefined;
+    let nodeUsage: AgentUsage | undefined;
+    const reportUsage = () => {
+      const usage = rootUsage ?? nodeUsage;
+      if (!usage) return;
+      this.onUsage?.(rootUsage && nodeUsage ? {
+        iteration: rootUsage.iteration + nodeUsage.iteration,
+        promptTokens: rootUsage.promptTokens + nodeUsage.promptTokens,
+        completionTokens: rootUsage.completionTokens + nodeUsage.completionTokens,
+        totalTokens: rootUsage.totalTokens + nodeUsage.totalTokens,
+        elapsedMs: Math.max(rootUsage.elapsedMs, nodeUsage.elapsedMs),
+      } : usage);
+    };
+    tools.push(createAssistantNodeTool({
+      config: aiConfig, tools, runAgent: this.runAgent,
+      hooks: {
+        onUsage(usage) { nodeUsage = usage; reportUsage(); },
+        onNodeState(event) { activities.push({ name: 'agent_node', input: { ...event } }); },
+      },
+    }));
     try {
       const reply = await this.runAgent({
         signal: input.signal,
-        config: {
-          aiApiKey: credential,
-          aiAccessMode: value.ai.accessMode,
-          aiBaseUrl: value.ai.baseUrl,
-          aiModel: value.ai.model,
-          ...(input.modelAudience ? { aiAudience: input.modelAudience } : {}),
-          ...(value.ai.accessMode === 'conexus' ? { aiPublicationSlug: value.conexus.publicationSlug } : {}),
-        },
+        config: aiConfig,
+        maxTotalTokens: 60_000,
         systemPrompt: [
           'You are Techunter, an AI task-market assistant backed by the shared control plane.',
           `Current user: ${input.user.name} (@${input.user.login}), role: ${input.user.role}.`,
@@ -112,6 +135,7 @@ export class AssistantService {
           'Reply in the same language as the user and keep ordinary answers concise.',
           'Use tools for platform state. Never invent IDs, balances, repository facts, or action results.',
           'Only create, claim, or queue work when the user explicitly requests it.',
+          'For complex research use run_agent_nodes to delegate independent repository, planning or verification work. Supply concrete assignments and success criteria; cross-check and integrate their results. Simple queries need no delegation.',
           'Repository tools are read-only in the central API; environment setup runs on the user device.',
           'create_workspace queues a Desktop action, it does not run setup here. Say preparation was requested; Desktop will report its actual outcome.',
         ].join('\n'),
@@ -119,7 +143,7 @@ export class AssistantService {
         userMessage: input.message,
         tools,
         hooks: {
-          onUsage: this.onUsage,
+          onUsage(usage) { rootUsage = usage; reportUsage(); },
           onToolCall(name, toolInput) { activities.push({ name, input: toolInput }); },
           onToolResult(name, result) {
             const activity = [...activities].reverse().find((item) => item.name === name && item.result === undefined);

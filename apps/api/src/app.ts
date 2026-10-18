@@ -64,7 +64,9 @@ function verifyWebhook(raw: string, signature: string | undefined): boolean {
 export async function buildApp() {
   const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024, trustProxy: true });
   const github = new GitHubService();
-  const agent = new AgentService(github, usage => app.log.info({ agent: 'task', ...usage }, 'Agent usage'));
+  const agent = new AgentService(github,
+    usage => app.log.info({ agent: 'task', ...usage }, 'Agent usage'),
+    event => app.log.info({ agent: 'task', ...event }, 'Agent node state'));
   const tasks = new TaskService(github, agent);
   const scopeRequests = new ScopeRequestService(tasks);
   const assistant = new AssistantService(tasks, github, config, usage => app.log.info({ agent: 'assistant', ...usage }, 'Agent usage'));

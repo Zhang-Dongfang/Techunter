@@ -30,6 +30,7 @@ export interface AgentUsage {
 }
 
 export interface AgentHooks {
+  onNodeState?(event: import('./agent-graph.js').AgentNodeEvent): void;
   onToolCall?(name: string, input: Record<string, unknown>): void;
   onToolResult?(name: string, result: string): void;
   onUsage?(usage: AgentUsage): void;

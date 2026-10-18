@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './client.js';
 export * from './agent-runtime.js';
+export * from './agent-graph.js';
 export * from './repository-tools.js';
 export * from './task-agents.js';
 export * from './task-conventions.js';

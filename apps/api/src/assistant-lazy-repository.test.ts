@@ -14,6 +14,40 @@ const user = { id: 'user', name: 'User', login: 'user', role: 'member' } as User
 const configuration = () => ({ ai: { accessMode: 'direct', apiKey: 'fixture-key' }, conexus: {} }) as ApiConfig;
 const tasks = { projects: async () => [project] } as unknown as TaskService;
 
+test('chat delegates parallel research with one lazy checkout, node activities and combined usage', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'techunter-assistant-nodes-'));
+  await fs.writeFile(path.join(root, 'README.md'), 'fixture evidence');
+  let downloads = 0, cleanups = 0, refreshes = 0;
+  const github = { materialize: async () => {
+    downloads++;
+    return { root, cleanup: async () => { cleanups++; } };
+  } } as unknown as GitHubService;
+  const reported: AgentUsage[] = [];
+  const runner: typeof runAgentLoop = async input => {
+    input.hooks?.onUsage?.({ iteration: 1, promptTokens: 10, completionTokens: 2, totalTokens: 12, elapsedMs: 1 });
+    const delegate = input.tools!.find(tool => tool.definition.function.name === 'run_agent_nodes');
+    if (delegate) {
+      assert.equal(input.maxTotalTokens, 60_000);
+      await delegate.execute({ tasks: [{ node: 'repository', task: 'find source' }, { node: 'verification', task: 'verify source' }] },
+        { signal: new AbortController().signal });
+      assert.equal(cleanups, 0);
+      return 'Integrated evidence';
+    }
+    const list = input.tools!.find(tool => tool.definition.function.name === 'list_files')!;
+    assert.match(await list.execute({}, { signal: input.signal! }), /README.md/);
+    return 'README.md: fixture evidence';
+  };
+  try {
+    const service = new AssistantService(tasks, github, configuration, usage => reported.push(usage), runner);
+    const result = await service.chat({ user, message: 'inspect and verify', history: [],
+      getGitHubCredential: async () => { refreshes++; return 'credential'; } });
+    assert.deepEqual([downloads, refreshes, cleanups], [1, 1, 1]);
+    assert.equal(result.reply, 'Integrated evidence');
+    assert.equal(result.activities.filter(activity => activity.name === 'agent_node').length, 4);
+    assert.equal(reported.at(-1)!.totalTokens, 36);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('task-only conversations need neither a repository download nor GitHub credential refresh', async () => {
   const github = { materialize: async () => { throw new Error('repository must not be loaded'); } } as unknown as GitHubService;
   const runner: typeof runAgentLoop = async input => {
